@@ -726,20 +726,27 @@ def serve_web(root):
 
 
 def install_web():
-    """Called only by the LAN installer; restore web files if lighttpd rejects them."""
+    """Install changed web files only; reload lighttpd only when its config changed."""
     previous = {}
+    proxy_path = Path('/etc/lighttpd/conf.d/turris-federation.conf')
+    proxy_changed = False
     try:
         for name, content in WEB_FILES.items():
             path = Path(name)
-            previous[path] = (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
+            old_content = path.read_bytes() if path.exists() else None
+            if old_content == content:
+                continue
+            previous[path] = (old_content, path.stat().st_mode & 0o777) if old_content is not None else None
             # These shared directories must be traversable by lighttpd/WebApps.
             if not path.parent.exists():
                 path.parent.mkdir(parents=True, mode=0o755)
                 path.parent.chmod(0o755)
             atomic(path, content)
             path.chmod(0o644)
-        run(['lighttpd', '-tt', '-f', '/etc/lighttpd/lighttpd.conf'])
-        run(['/etc/init.d/lighttpd', 'reload'])
+            proxy_changed = proxy_changed or path == proxy_path
+        if proxy_changed:
+            run(['lighttpd', '-tt', '-f', '/etc/lighttpd/lighttpd.conf'])
+            run(['/etc/init.d/lighttpd', 'reload'])
     except Exception:
         for path, old in previous.items():
             if old is None:
@@ -747,11 +754,12 @@ def install_web():
             else:
                 atomic(path, old[0])
                 path.chmod(old[1])
-        # A failed reload may already have affected the running web server.
-        try:
-            run(['/etc/init.d/lighttpd', 'reload'])
-        except Exception:
-            pass
+        # Restore the old lighttpd configuration only when we touched it.
+        if proxy_changed:
+            try:
+                run(['/etc/init.d/lighttpd', 'reload'])
+            except Exception:
+                pass
         raise
 
 
@@ -988,7 +996,7 @@ def controller(root, req):
                 'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
-                'steps': ['Nainstalovat Python 3, OpenSSL a WireGuard z repozitáře routeru.',
+                'steps': ['Doinstalovat pouze chybějící závislosti z repozitáře routeru.',
                           ('Aktualizovat agenta přes přímou LAN; zachovat identitu a předchozí soubor agenta.' if updating else 'Nainstalovat agenta přes přímou LAN a přijmout stanoviště pod kotvu důvěry notebooku.'),
                           'Nainstalovat webový přehled s přihlášením routeru a dlaždici na úvodní stránce Turrisu.',
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
@@ -1017,7 +1025,9 @@ def controller(root, req):
     installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
     check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
     installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
-    installer += "opkg update >&2; opkg install python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file >&2; "
+    packages = 'python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file'
+    installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
+    installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
     installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
     installer += 'printf %s ' + shell_quote(base64.b64encode(source).decode()) + ' | base64 -d > ' + PROGRAM + '.new; '
     installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
