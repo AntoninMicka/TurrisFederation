@@ -318,6 +318,105 @@ class FederationTests(unittest.TestCase):
         f.validate_document(doc)
         self.assertNotIn('artifactHash', doc)
 
+    def test_new_member_pushes_revision_to_first_router_without_notebook(self):
+        first, second = self.root / 'first', self.root / 'second'
+        for site in [first, second]:
+            f.atomic(site / 'root.pub', self.public.encode())
+        old = f.snapshot(self.root, self.config, {node(1)['id']: self.member(1)})
+        f.accept(first, old)
+        latest = f.snapshot(self.root, self.config, {node(i)['id']: self.member(i) for i in [1, 2]})
+        current = f.accept(second, latest)
+        calls = []
+
+        def transport(ip, method, path, payload=None):
+            self.assertEqual(node(1)['zeroTierAddress'], ip)
+            self.assertEqual('/bundle', path)
+            calls.append(method)
+            if method == 'POST':
+                with f.locked(first):
+                    f.accept(first, payload)
+                return {}
+            return f.read(first / 'accepted.json')
+
+        with patch.object(f, 'request_http', side_effect=transport), patch.object(f, 'ssh') as ssh:
+            f.exchange_bundles(second, current, node(2)['id'])
+        ssh.assert_not_called()
+        self.assertEqual(['POST', 'GET'], calls)
+        self.assertEqual(latest, f.read(first / 'accepted.json'))
+        self.assertIn(node(2)['id'], f.verify(self.public, f.read(first / 'accepted.json'))['members'])
+        self.assertFalse((first / 'root.pem').exists())
+        self.assertEqual('pending', f.read(first / 'report.json')['state'])
+
+    def test_rejected_push_still_pulls_newer_revision(self):
+        old = f.snapshot(self.root, self.config, {node(i)['id']: self.member(i) for i in [1, 2]})
+        current = f.accept(self.root, old)
+        changed = copy.deepcopy(self.config)
+        changed['nodes'][0]['name'] = 'New name'
+        latest = f.snapshot(self.root, changed, current['members'])
+        with patch.object(f, 'request_http', side_effect=[ValueError('older revision'), latest]) as http:
+            f.exchange_bundles(self.root, current, node(1)['id'])
+        self.assertEqual(2, http.call_count)
+        self.assertEqual(latest, f.read(self.root / 'accepted.json'))
+
+    def test_peer_retries_delivery_after_pending_apply_finishes(self):
+        old = f.snapshot(self.root, self.config, {node(1)['id']: self.member(1)})
+        f.accept(self.root, old)
+        f.atomic(self.root / 'pending.json', {'revision': 1})
+        latest = f.snapshot(self.root, self.config, {node(i)['id']: self.member(i) for i in [1, 2]})
+        second = self.root / 'second'
+        f.atomic(second / 'root.pub', self.public.encode())
+        current = f.accept(second, latest)
+
+        def transport(ip, method, path, payload=None):
+            if method == 'POST':
+                f.accept(self.root, payload)
+                return {}
+            return f.read(self.root / 'accepted.json')
+
+        with patch.object(f, 'request_http', side_effect=transport):
+            f.exchange_bundles(second, current, node(2)['id'])
+            self.assertEqual(old, f.read(self.root / 'accepted.json'))
+            (self.root / 'pending.json').unlink()
+            f.exchange_bundles(second, current, node(2)['id'])
+        self.assertEqual(latest, f.read(self.root / 'accepted.json'))
+
+    def test_second_deploy_distributes_settings_and_preserves_offline_status(self):
+        target = self.nodes[1]
+        members = {node(1)['id']: self.member(1)}
+        f.atomic(self.root / 'members.json', members)
+        f.snapshot(self.root, self.config, members)
+        f.atomic(self.root / 'reports.json', {node(1)['id']: {'appliedRevision': 1}})
+        lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.2.10'}
+        plan = {'id': 'deploy-second', 'expiresAt': time.time() + 600, 'configHash': f.digest(self.config),
+                'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
+                'sshHash': f.digest({k: target[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
+                'lan': lan, 'artifactHash': f.artifact_hash(), 'routerHash': 'hash'}
+        f.atomic(self.root / ('plan-' + target['id'] + '.json'), plan)
+        req = {'action': 'deploy', 'nodes': self.nodes, 'networkId': self.config['networkId'],
+               'nodeId': target['id'], 'planId': plan['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'remote', side_effect=[self.member(2), {'token': 'ok'},
+                    {'state': 'waiting_peers', 'appliedRevision': 2}]) as remote, \
+                patch.object(f, 'request_http', side_effect=ValueError('offline')) as http:
+            result = f.controller(self.root, req)
+        self.assertEqual(2, result['revision'])
+        self.assertEqual(2, result['nodes'][target['id']]['appliedRevision'])
+        self.assertFalse(result['nodes'][node(1)['id']]['reachable'])
+        self.assertEqual(1, result['nodes'][node(1)['id']]['appliedRevision'])
+        self.assertTrue(all(call.args[0]['id'] == target['id'] for call in ssh.call_args_list + remote.call_args_list))
+        self.assertEqual(node(1)['zeroTierAddress'], http.call_args.args[0])
+        self.assertEqual(('POST', '/bundle'), http.call_args.args[1:3])
+        self.assertEqual(2, f.verify(self.public, http.call_args.args[3])['revision'])
+        # Explicit retry reuses this signed revision; receipt is not application.
+        with patch.object(f, 'request_http', return_value={}), \
+                patch.object(f, 'peer_status', return_value={'receivedRevision': 2, 'appliedRevision': 1, 'state': 'pending'}):
+            f.distribute_bundle(self.root, f.read(self.root / 'published.json'), exclude=target['id'])
+        first = f.read(self.root / 'reports.json')[node(1)['id']]
+        self.assertTrue(first['reachable'])
+        self.assertNotIn('error', first)
+        self.assertEqual(1, first['appliedRevision'])
+        self.assertEqual(2, first['receivedRevision'])
+
     def test_network_sync_refuses_software_and_commands(self):
         for key in ['software', 'command', 'artifact', 'update']:
             doc = self.document()

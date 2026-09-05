@@ -625,6 +625,28 @@ def serve(root):
             worker.join()
 
 
+def exchange_bundles(root, current, own_id):
+    root = Path(root)
+    with locked(root):
+        envelope = read(root / 'accepted.json')
+    for peer in current['config']['nodes']:
+        if peer['id'] == own_id or peer['id'] not in current['members']:
+            continue
+        # Push first: a previously enrolled router does not yet know the new
+        # member and cannot discover it by pulling from its old member list.
+        try:
+            request_http(peer['zeroTierAddress'], 'POST', '/bundle', envelope)
+        except Exception:
+            pass
+        # A rejected/older push must not prevent us from fetching a newer one.
+        try:
+            received = request_http(peer['zeroTierAddress'], 'GET', '/bundle')
+            with locked(root):
+                accept(root, received)
+        except Exception:
+            pass
+
+
 def sync_loop(root):
     next_sync = 0
     while True:
@@ -636,15 +658,7 @@ def sync_loop(root):
             with locked(root):
                 current = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
             own_id = read(root / 'node.json')['nodeId']
-            for peer in current['config']['nodes']:
-                if peer['id'] == own_id or peer['id'] not in current['members']:
-                    continue
-                try:
-                    envelope = request_http(peer['zeroTierAddress'], 'GET', '/bundle')
-                    with locked(root):
-                        accept(root, envelope)
-                except Exception:
-                    pass
+            exchange_bundles(root, current, own_id)
             with locked(root):
                 current = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
                 report = read(root / 'report.json', {})
@@ -1041,6 +1055,21 @@ def overview(root, config):
             'nodes': {n['id']: {'enrolled': n['id'] in members, **reports.get(n['id'], {})} for n in config['nodes']}}
 
 
+def distribute_bundle(root, envelope, exclude=None):
+    root = Path(root)
+    doc = verify(public_key(root / 'root.pem'), envelope)
+    results = read(root / 'reports.json', {})
+    for peer in doc['config']['nodes']:
+        if peer['id'] not in doc['members'] or peer['id'] == exclude:
+            continue
+        try:
+            request_http(peer['zeroTierAddress'], 'POST', '/bundle', envelope)
+            results[peer['id']] = dict(peer_status(peer, doc['members'][peer['id']], root / 'root.pem'), reachable=True)
+        except Exception as error:
+            results[peer['id']] = dict(results.get(peer['id'], {}), error=str(error), reachable=False)
+    atomic(root / 'reports.json', results)
+
+
 def controller(root, req):
     root = Path(root)
     nodes = req['nodes']
@@ -1050,18 +1079,7 @@ def controller(root, req):
         return overview(root, config)
     if action == 'publish':
         envelope = snapshot(root, config, read(root / 'members.json', {}))
-        doc = verify(public_key(root / 'root.pem'), envelope)
-        results = read(root / 'reports.json', {})
-        for peer in config['nodes']:
-            if peer['id'] not in doc['members']:
-                continue
-            try:
-                request_http(peer['zeroTierAddress'], 'POST', '/bundle', envelope)
-                results[peer['id']] = dict(peer_status(peer, doc['members'][peer['id']], root / 'root.pem'), reachable=True)
-            except Exception as error:
-                previous = results.get(peer['id'], {})
-                results[peer['id']] = dict(previous, error=str(error), reachable=False)
-        atomic(root / 'reports.json', results)
+        distribute_bundle(root, envelope)
         return overview(root, config)
     node = next(n for n in nodes if n['id'] == req['nodeId'])
     target = next(n for n in config['nodes'] if n['id'] == node['id'])
@@ -1090,7 +1108,8 @@ def controller(root, req):
                           'Nainstalovat webový přehled s přihlášením routeru a dlaždici na úvodní stránce Turrisu.',
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
-                          'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.'],
+                          'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
+                          'Předat nové síťové nastavení ostatním přijatým routerům přes ZeroTier; nedostupné uzly je převezmou po obnovení spojení.'],
                 'config': config, 'validatedAt': time.time()}
         atomic(root / ('plan-' + node['id'] + '.json'), plan)
         return plan
@@ -1139,6 +1158,7 @@ def controller(root, req):
     ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
     ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
     (root / ('plan-' + node['id'] + '.json')).unlink()
+    distribute_bundle(root, envelope, exclude=node['id'])
     return overview(root, config)
 
 

@@ -406,7 +406,7 @@ async function submitConnection() {
       <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
       <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
       <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
-      <p>Po opravách u druhého routeru aktualizujte první při návratu. Jakmile funguje zabezpečené spojení, publikované opravy si routery předávají automaticky. Nedostupný uzel může zůstat na starší revizi.</p>
+      <p>Při deployi druhého routeru se nové členství a síťové nastavení předá prvnímu přes ZeroTier. Routery předání opakují i bez notebooku. Nedostupný uzel zůstává na starší revizi do obnovení spojení; sledujte přijatou a aplikovanou revizi.</p>
       <div class="node-actions">
         <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
         <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
@@ -519,7 +519,7 @@ async function submitConnection() {
           <strong>Plán nasazení na {{ connectionNode.name }}</strong>
           <ol><li v-for="step in plans[connectionNode.id].steps" :key="step">{{ step }}</li></ol>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
-          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci / aktualizaci přes přímou LAN a aplikování tohoto plánu.</label>
+          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci / aktualizaci přes přímou LAN a aplikování plánu včetně předání síťových změn ostatním přijatým routerům přes ZeroTier.</label>
         </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>

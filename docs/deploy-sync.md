@@ -78,6 +78,36 @@ WG klíčů, šifrovaná záloha identity a provozní ověření zůstávají ot
 Nasazení ZeroTier je podle uživatele nefunkční; oprava je odložená do
 [TODO](../ROADMAP.md). Deploy nelze považovat za provozně ověřený.
 
+## Deploy druhé Omnie a aktualizace nastavení první
+
+Notebook nasadí software druhé Omnie přes její přímou LAN a podepíše novou
+revizi obsahující oba přijaté členy. Po potvrzení deploye a spuštění služby
+zkusí tutéž revizi odeslat ostatním přijatým routerům přes ZeroTier. Chyba
+spojení s prvním routerem nezruší úspěšný deploy druhého; v přehledu zůstane
+poslední známý stav prvního routeru s chybou dostupnosti.
+
+Agent druhé Omnie v pravidelné synchronizaci nejprve odešle svou podepsanou
+revizi sousedovi a pak zkusí stáhnout jeho revizi. To řeší první přijetí:
+první Omnia dosud druhou nemá ve svém seznamu členů, a sama by od ní nic
+nestahovala. Příjem `/bundle` ověřuje podpis notebooku, proto lze touto cestou
+bezpečně doručit i rozšířený seznam členů. Router novou konfiguraci sám
+aplikuje a potvrzuje stávajícím mechanismem včetně watchdogu. Přenos ani
+potvrzení nevyžadují, aby notebook zůstal připojený.
+
+Při nedostupnosti, odmítnutí starší revize nebo čekající předchozí operaci
+se další pokus uskuteční v následujícím synchronizačním cyklu. Odmítnutý
+push neblokuje stažení novější konfigurace. Obě zařízení potřebují funkční
+ZeroTier IPv4 cestu a povolený TCP/8844. Aktualizace softwaru první Omnie
+se tímto neprovádí; ta nadále vyžaduje přímou LAN.
+
+Přijetí revize není potvrzením aplikování ani WireGuard spojení. V přehledu
+je nutné porovnat požadovanou, přijatou a aplikovanou revizi. Místní přehled
+ukazuje uložené výsledky; akce „Podepsat a synchronizovat opravy“ znovu
+zkusí doručení a načte stav dostupných členů. Lokální testy pokrývají přenos
+nového členství mezi dvěma úložišti, opakování po nepotvrzené změně,
+stažení novější revize po odmítnutém odeslání a deploy s nedostupným prvním
+routerem. Ověření celého scénáře na dvou Omniích zbývá provést.
+
 ## Původní návrh
 
 Potvrzený rozsah: deploy aplikací přes notebook, notebook jako kotva důvěry,

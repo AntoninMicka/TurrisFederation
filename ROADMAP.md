@@ -51,6 +51,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   Na jednom testovacím routeru je nyní nasazen agent a vytvořen `tf_wg`, zatímco
   druhý router má zatím pouze ZeroTier a v návrhu federace zůstává v draft stavu;
   absence WireGuard peeru na prvním routeru je proto v této fázi očekávaná.
+- [x] Při deployi druhé Omnie automaticky předat novou podepsanou konfiguraci
+  ostatním přijatým routerům přes ZeroTier. Notebook po úspěšném deployi zkusí
+  doručení; agenti opakovaně revize odesílají i stahují, takže první router
+  může přijmout nového člena bez návratu notebooku do jeho LAN.
+  Nedostupnost nebo nepotvrzená předchozí změna vede k pozdějšímu opakování.
 - [ ] Ověřit přechod protistrany `draft → member` a že teprve poté agent vytvoří
   odpovídající WireGuard peery na obou nasazených routerech.
 - [ ] Pro první end-to-end test použít ZeroTier IPv4 jako transport WireGuardu;
