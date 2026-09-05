@@ -39,3 +39,11 @@ Wrapper doplní potřebné balíčky `openssh-client` a `sshpass`.
 ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
 uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
 autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).
+
+V inventáři je automaticky uveden také **Tento notebook**, pouze jako řídicí
+uzel s ruční kontrolou místního ZeroTier členství. Nepřidává se do WireGuardu.
+Kontrola vyžaduje přístup místního uživatele k ZeroTier službě.
+
+**Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;
+oprava je zatím v [TODO](ROADMAP.md). Implementovaný deploy byl zkontrolován
+lokálními testy, nikoli nasazením na skutečné routery.

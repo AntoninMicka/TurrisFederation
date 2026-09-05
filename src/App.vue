@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import { checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
+
+const notebookStatus = ref<ZeroTierStatus | null>(null);
+const notebookChecking = ref(false);
+const notebookError = ref("");
+async function checkNotebook() {
+  notebookChecking.value = true;
+  notebookError.value = "";
+  try { notebookStatus.value = await checkNotebookZeroTier(); }
+  catch (error) { notebookStatus.value = null; notebookError.value = String(error); }
+  finally { notebookChecking.value = false; }
+}
 
 const nodes = ref<FederationNode[]>([]);
 const findings = ref<AuditFinding[]>([]);
@@ -337,7 +348,7 @@ async function submitConnection() {
 <template>
   <main class="shell">
     <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Navrhněte topologii, porovnejte ji se skutečným stavem a teprve potom materializujte změny.</p></header>
-    <section class="summary"><article><strong>{{ nodes.length }}</strong><span>uzlů</span></article><article><strong>{{ findings.filter(f => f.severity === 'error').length }}</strong><span>kritických odchylek</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <section class="summary"><article><strong>{{ nodes.length + 1 }}</strong><span>uzlů</span></article><article><strong>{{ findings.filter(f => f.severity === 'error').length }}</strong><span>kritických odchylek</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
     <section class="panel">
       <div><p class="kicker">Nastavení</p><h2>Import / export federace</h2></div>
       <p>Export obsahuje návrh uzlů a globální nastavení federace. Neobsahuje SSH hesla, uložené host keys, auditní výpisy ani runtime stav routerů.</p>
@@ -404,8 +415,24 @@ async function submitConnection() {
     </section>
     <section class="panel">
       <div><p class="kicker">Inventář</p><h2>Uzly federace</h2></div>
-      <p v-if="!nodes.length" class="muted">Zatím není založen žádný uzel.</p>
+
       <div class="node-grid">
+        <article class="node">
+          <h3>Tento notebook</h3>
+          <p>Řídicí uzel · pouze ZeroTier · bez WireGuard spojů</p>
+          <p v-if="notebookError" class="error">{{ notebookError }}</p>
+          <template v-if="notebookStatus">
+            <p>{{ notebookStatus.summary }}</p>
+            <p v-if="notebookStatus.networkId !== ztSettings.networkId" class="warning">Nastavení sítě se změnilo. Obnovte kontrolu notebooku.</p>
+            <p>Network ID: {{ notebookStatus.networkId ?? 'nevybráno' }}</p>
+            <p>ID zařízení: {{ notebookStatus.deviceId ?? 'nezjištěno' }}</p>
+            <p>Adresy: {{ notebookStatus.assignedAddresses.join(', ') || 'zatím žádné' }}</p>
+            <small>Načteno {{ new Date(notebookStatus.checkedAt).toLocaleString('cs-CZ') }}</small>
+          </template>
+          <p v-else class="muted">ZeroTier zatím nebyl zkontrolován.</p>
+          <button class="secondary" :disabled="notebookChecking || ztSaving" @click="checkNotebook">{{ notebookChecking ? 'Kontroluji…' : 'Zkontrolovat ZeroTier notebooku' }}</button>
+          <p><small>Kontrola čte místní ZeroTier. Pokud chybí oprávnění ke službě, stav nelze ověřit.</small></p>
+        </article>
         <article v-for="node in nodes" :key="node.id" class="node">
           <div class="node-heading">
           <div><span :class="['status', node.status]">{{ statusLabels[node.status] }}</span><h3>{{ node.name }}</h3><p>{{ node.sshUser }}@{{ node.sshHost }}:{{ node.sshPort }}</p><small>{{ node.lanCidrs.join(' · ') }}</small></div>

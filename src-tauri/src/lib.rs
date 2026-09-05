@@ -414,6 +414,20 @@ fn list_zerotier_status(state: State<'_, AppState>) -> Result<Vec<zerotier::Stat
 }
 
 #[tauri::command]
+async fn check_notebook_zerotier(state: State<'_, AppState>) -> Result<zerotier::Status, String> {
+    let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
+    let probe = zerotier::probe(settings.network_id.as_deref(), false)?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20),
+        tokio::process::Command::new("sh").args(["-c", &probe]).kill_on_drop(true).output())
+        .await.map_err(|_| "Kontrola ZeroTier notebooku překročila časový limit.".to_string())?
+        .map_err(|e| format!("Nelze zkontrolovat notebook: {e}"))?;
+    if !output.status.success() { return Err("Kontrola ZeroTier notebooku selhala.".into()); }
+    let mut result = zerotier::parse(&String::from_utf8_lossy(&output.stdout), "local-notebook", settings.network_id.as_deref(), &Utc::now().to_rfc3339());
+    result.summary = result.summary.replace("Router", "Notebook").replace("routeru", "notebooku");
+    Ok(result)
+}
+
+#[tauri::command]
 async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_id: Option<String>, configure: bool, state: State<'_, AppState>) -> Result<zerotier::Status, String> {
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
     if network_id != settings.network_id { return Err("Network ID se změnilo. Znovu otevřete kontrolu ZeroTier.".into()); }
@@ -449,5 +463,5 @@ pub fn run() {
         let db = Connection::open(data_dir.join("federation.db"))?;
         migrate(&db).map_err(std::io::Error::other)?;
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
-    }).invoke_handler(tauri::generate_handler![deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }

@@ -191,6 +191,9 @@ def accept(root, envelope):
             if envelope != old:
                 raise ValueError('Konflikt stejné revize.')
             return doc
+    pending = read(root / 'pending.json')
+    if pending and pending['revision'] != doc['revision']:
+        raise ValueError('Předchozí revize čeká na potvrzení nebo rollback.')
     # Full snapshots permit a site to catch up after missing several revisions.
     atomic(root / 'accepted.json', envelope)
     report = read(root / 'report.json', {})
@@ -419,7 +422,7 @@ def confirm(root, token):
     root = Path(root)
     pending = read(root / 'pending.json')
     doc = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
-    if not pending or pending['token'] != token or expired(pending):
+    if not pending or pending['token'] != token or pending.get('revision') != doc['revision'] or expired(pending):
         raise ValueError('Potvrzení deploye vypršelo nebo neodpovídá operaci.')
     result = health(root, doc)
     if expired(pending):

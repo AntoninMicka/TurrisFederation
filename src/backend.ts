@@ -28,7 +28,7 @@ export async function auditNode(nodeId: string, credentials: SshCredentials): Pr
 }
 
 export async function getZeroTierSettings(): Promise<ZeroTierSettings> {
-  return browserMode ? { networkId: null, central: "new" } : invoke("get_zerotier_settings");
+  return browserMode ? { networkId: null, central: "new", zeroTierSubnet: null, wireguardSubnet: null } : invoke("get_zerotier_settings");
 }
 
 export async function saveZeroTierSettings(settings: ZeroTierSettings): Promise<ZeroTierSettings> {
@@ -63,4 +63,9 @@ export async function openZeroTierCentral(): Promise<string> {
 export async function deploymentAction<T>(action: "overview" | "validate" | "deploy" | "publish", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null): Promise<T> {
   if (browserMode) throw new Error("Deploy a synchronizace jsou dostupné v desktopové aplikaci.");
   return invoke("deployment_action", { action, nodeId, credentials, planId });
+}
+
+export async function checkNotebookZeroTier(): Promise<ZeroTierStatus> {
+  if (browserMode) throw new Error("Kontrola notebooku je dostupná v desktopové aplikaci.");
+  return invoke("check_notebook_zerotier");
 }

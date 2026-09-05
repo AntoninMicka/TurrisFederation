@@ -144,6 +144,24 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('PRIVATE-SECRET', str(args))
         self.assertIn(b'PRIVATE-SECRET', raw)
 
+    def test_new_revision_cannot_replace_pending_apply(self):
+        first = f.sign(self.root / 'root.pem', self.document())
+        f.accept(self.root, first)
+        f.atomic(self.root / 'pending.json', {'revision': 1})
+        self.assertEqual(1, f.accept(self.root, first)['revision'])
+        with self.assertRaisesRegex(ValueError, 'čeká na potvrzení'):
+            f.accept(self.root, f.sign(self.root / 'root.pem', self.document(2)))
+        self.assertEqual(first, f.read(self.root / 'accepted.json'))
+
+    def test_confirmation_must_match_applied_revision(self):
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document(2)))
+        f.atomic(self.root / 'pending.json', {'token': 'ok', 'revision': 1, 'deadline': time.time() + 120})
+        with patch.object(f, 'health') as health:
+            with self.assertRaisesRegex(ValueError, 'Potvrzení'):
+                f.confirm(self.root, 'ok')
+            health.assert_not_called()
+        self.assertTrue((self.root / 'pending.json').exists())
+
     def test_bootstrap_cannot_replace_root_or_node_id(self):
         with self.assertRaisesRegex(ValueError, 'jiné kotvě'):
             f.bootstrap(self.root, node(1)['id'], self.other)
@@ -233,7 +251,7 @@ class FederationTests(unittest.TestCase):
     def test_waiting_peers_is_distinct_from_active_and_applied(self):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
-        f.atomic(self.root / 'pending.json', {'token': 'ok', 'deadline': time.time() + 120})
+        f.atomic(self.root / 'pending.json', {'token': 'ok', 'revision': 1, 'deadline': time.time() + 120})
         with patch.object(f, 'health', return_value={'state': 'waiting_peers', 'pendingPeers': [node(2)['id']]}), patch.object(f, 'configuration_hash', return_value='hash'):
             report = f.confirm(self.root, 'ok')
         self.assertEqual('waiting_peers', report['state'])

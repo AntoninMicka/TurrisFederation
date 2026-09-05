@@ -168,7 +168,7 @@ mod tests {
     fn validates_settings_and_only_opens_official_websites() {
         for id in ["", "short", "$(touch /tmp/a)", "0123456789abcdeg", "0123456789abcdef;id"] { assert!(validate_network_id(id).is_err()); }
         assert!(probe(Some("0123456789abcdef;id"), true).is_err());
-        let settings = Settings { network_id: Some(" ABCDEF0123456789 ".into()), central: "legacy".into() }.normalize().unwrap();
+        let settings = Settings { network_id: Some(" ABCDEF0123456789 ".into()), central: "legacy".into(), ..Settings::default() }.normalize().unwrap();
         assert_eq!(settings.network_id.as_deref(), Some("abcdef0123456789"));
         assert_eq!(settings.url(), "https://my.zerotier.com/");
         assert!(probe(None, true).is_err());

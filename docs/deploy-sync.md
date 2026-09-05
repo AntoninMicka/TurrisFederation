@@ -1,6 +1,38 @@
 # Deploy a synchronizace nastavení
 
-Pracovní návrh, 5. 9. 2026. Popsané chování zatím není implementované.
+Architektonický návrh, aktualizace kontroly 5. 9. 2026. Část chování je již
+implementovaná; níže uvedený návrh zahrnuje i dosud nedokončené funkce.
+
+## Výsledek kontroly implementace
+
+Controller i agent jsou v `router/files/usr/lib/turris-federation/federation.py`,
+Tauri rozhraní v `src-tauri/src/deployment.rs`. Implementace zahrnuje podepsané
+snímky konfigurace, přijetí routeru přes SSH, validovaný plán s desetiminutovou
+platností, kontrolu změny UCI od validace, instalaci, WireGuard přes ZeroTier,
+UCI zálohu a rollback a předávání revizí mezi routery. Import slučuje drafty
+podle ID a zachovává lokální SSH důvěru; audit již nesbírá privátní WG klíče.
+
+Při kontrole byla opravena záměna revizí během nepotvrzeného deploye:
+`accept` odmítne novější revizi, dokud je rozpracovaná předchozí, a `confirm`
+kontroluje shodu přijaté a rozpracované revize. Dva regresní testy pokrývají
+odmítnutí nové revize i odmítnutí nesprávného potvrzení.
+
+Notebook se zobrazuje automaticky jako místní řídicí uzel. Akce kontroly
+čte místní ZeroTier službu a členství v uloženém Network ID. Nevytváří členství,
+neinstaluje software ani nemění síť. Notebook není položkou routerového seznamu
+`members`, proto se nedostane mezi WireGuard peery ani cíle deploye. Stav se
+načítá na vyžádání; nedostupná služba nebo chybějící oprávnění nejsou úspěchem.
+Kontrola členství sama neprokazuje dosažitelnost všech routerů.
+
+Zbývající nálezy: watchdog sdílí zámek s dlouhými operacemi, takže rollback
+může nastat později než za 120 s; synchronizace blokuje jednovláknovou HTTP
+obsluhu a může způsobit vzájemné timeouty. Automatická rotace nakonfigurovaných
+WG klíčů, šifrovaná záloha identity a provozní ověření zůstávají otevřené.
+Nasazení ZeroTier je podle uživatele nefunkční; oprava je odložená do
+[TODO](../ROADMAP.md). Deploy nelze považovat za provozně ověřený.
+
+## Původní návrh
+
 Potvrzený rozsah: deploy aplikací přes notebook, notebook jako kotva důvěry,
 synchronizace nastavení federace včetně WireGuardu a rout a automatická
 rotace komunikačních klíčů mezi routery i bez připojeného notebooku.
@@ -8,9 +40,9 @@ rotace komunikačních klíčů mezi routery i bez připojeného notebooku.
 ## Výchozí stav
 
 Desktop ukládá inventář a ZeroTier nastavení v SQLite a provádí jednotlivé
-SSH příkazy s ověřením host klíče. Routerový agent zatím chybí.
-Export/import není synchronizační protokol: import nahrazuje inventář,
-maže pozorování i SSH důvěru. Export navíc obsahuje stav a čas auditu uzlů.
+SSH příkazy s ověřením host klíče. Routerový agent je nyní implementovaný (viz aktualizace výše).
+Export/import není synchronizační protokol: aktuální import slučuje drafty
+a zachovává SSH důvěru; export obsahuje požadovaná nastavení.
 Pro sync je nutné oddělit požadovanou konfiguraci od lokálních pozorování.
 
 ## Navržené chování

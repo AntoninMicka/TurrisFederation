@@ -19,6 +19,32 @@ Implementace sama o sobě neznamená ověření na skutečném routeru.
 Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 **P2** navazující rozvoj. Etapy určují pořadí, zatím bez termínů.
 
+## Kontrola deploye a aktuální TODO (5. 9. 2026)
+
+- [x] Deploy controller a routerový agent jsou implementované: podepsané revize,
+  validace plánu, SSH instalace, UCI záloha a watchdog, synchronizace přes ZeroTier.
+- [x] Opravit souběh přijetí nové revize a nepotvrzené změny: nová revize musí
+  počkat na potvrzení/rollback; potvrzení musí patřit právě aplikované revizi.
+- [x] Přidat tento notebook do přehledu jako místní řídicí uzel pouze pro kontrolu
+  ZeroTier. Nemá WireGuard peery, tunelovou adresu ani routerový deploy.
+- [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
+  selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
+  autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
+- [ ] **P0: Ověřit deploy na dvou skutečných routerech**, včetně výpadku SSH,
+  firewallu, restartu během změny a obnovení ze zálohy. Lokální testy toto nenahrazují.
+- [ ] **P1: Zkrátit kritické sekce agenta.** `stage` a `confirm` drží zámek také
+  během externích příkazů/kontrol; watchdog na stejný zámek čeká. Limit 120 s
+  proto není tvrdou horní mezí návratu konfigurace.
+- [ ] **P1: Oddělit obsluhu HTTP od synchronizační smyčky.** Jednovláknový agent
+  během odchozích kontrol neobsluhuje příchozí požadavky; souběh sousedů může
+  způsobovat timeouty. Ověřit zotavení a potvrzení změn bez notebooku.
+- [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
+  kořenové identity notebooku zůstávají neimplementované.
+
+Podrobnosti kontroly a rozsah implementace: [deploy](docs/deploy-sync.md).
+Starší seznam etap níže je plán; položky překryté touto aktualizací nejsou
+spolehlivým přehledem aktuálního kódu.
+
 ## Implementovaný základ
 
 - [x] Desktopová aplikace Tauri 2 + Vue + TypeScript.
@@ -43,7 +69,7 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 **Současné omezení:** připojení ověřuje jednotlivý SSH příkaz, neudržuje trvalou
 relaci ani neotevírá terminál. Audit používá převážně hledání textu ve výstupu.
 Seznam odchylek zatím není proveditelný plán změn.
-Routerový agent a aplikování konfigurace nejsou implementované.
+Routerový agent a aplikování konfigurace jsou implementované, ale dosud neověřené na routerech.
 
 ## 1. P0 — dokončit první připojení a spolehlivý audit
 
@@ -124,4 +150,4 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 2. Potvrdit zachování identity a členství po restartu a dostupnost přes požadovanou správcovskou cestu.
 3. Před deployem opravit sběr citlivých dat a zbývající případy neúplného auditu.
 4. Navrhnout konkrétní deploy na dvou uzlech: topologii, routy, firewall a WireGuard, včetně náhledu změn.
-5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Deploy zatím není implementovaný.
+5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Implementovaný deploy zatím není ověřený na routerech.
