@@ -390,10 +390,12 @@ class FederationTests(unittest.TestCase):
         files = self.web_files_fixture()
         old_umask = os.umask(0o077)
         try:
-            with patch.object(f, 'WEB_FILES', files), patch.object(f, 'run') as run:
+            with patch.object(f, 'WEB_FILES', files), \
+                    patch.object(f, 'WEB_PROXY_PATH', self.root / str(f.WEB_PROXY_PATH).lstrip('/')), \
+                    patch.object(f, 'run') as run:
                 f.install_web()
                 f.install_web()
-                self.assertEqual(4, run.call_count)
+                self.assertEqual(2, run.call_count)
         finally:
             os.umask(old_umask)
         for path, content in files.items():
@@ -409,7 +411,9 @@ class FederationTests(unittest.TestCase):
         first = Path(next(iter(files)))
         f.atomic(first, b'previous-tile')
         first.chmod(0o640)
-        with patch.object(f, 'WEB_FILES', files), patch.object(f, 'run', side_effect=[ValueError('invalid lighttpd config'), b'']):
+        with patch.object(f, 'WEB_FILES', files), \
+                patch.object(f, 'WEB_PROXY_PATH', self.root / str(f.WEB_PROXY_PATH).lstrip('/')), \
+                patch.object(f, 'run', side_effect=[ValueError('invalid lighttpd config'), b'']):
             with self.assertRaisesRegex(ValueError, 'invalid lighttpd'):
                 f.install_web()
         self.assertEqual(b'previous-tile', first.read_bytes())
@@ -540,6 +544,46 @@ class FederationTests(unittest.TestCase):
         with patch.object(f, 'rollback') as rollback:
             f.watchdog(self.root, 'wrong')
             rollback.assert_not_called()
+
+    def test_http_serves_bundle_and_status_during_outgoing_sync(self):
+        doc = self.document()
+        envelope = f.sign(self.root / 'root.pem', doc)
+        f.atomic(self.root / 'accepted.json', envelope)
+        f.atomic(self.root / 'node.json', self.member(1))
+        shutil.copy(self.root / 'root.pem', self.root / 'identity.pem')
+        servers = []
+        server_type = f.http.server.HTTPServer
+
+        def local_server(address, handler):
+            server = server_type(('127.0.0.1', 0), handler)
+            servers.append(server)
+            return server
+
+        def blocked_sync(root):
+            # A peer must receive replies before this outgoing sync can finish.
+            for path in ['/bundle', '/status/' + 'a' * 64]:
+                auth = base64.b64encode(f.encode(f.sign(root / 'root.pem', {'path': path}))).decode()
+                conn = f.http.client.HTTPConnection(*servers[0].server_address, timeout=2)
+                try:
+                    conn.request('GET', path, headers={'X-TF-Notebook': auth})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, 200)
+                    result = json.loads(response.read())
+                    if path == '/bundle':
+                        self.assertEqual(result, envelope)
+                    else:
+                        self.assertEqual(f.verify(self.public, result)['nonce'], 'a' * 64)
+                finally:
+                    conn.close()
+            raise RuntimeError('stop sync')
+
+        with patch.object(f.http.server, 'HTTPServer', side_effect=local_server), \
+                patch.object(f, 'local_check'), patch.object(f, 'rollback'), \
+                patch.object(f, 'sync_loop', side_effect=blocked_sync):
+            with self.assertRaisesRegex(RuntimeError, 'stop sync'):
+                f.serve(self.root)
+        self.assertEqual(servers[0].fileno(), -1)
+        self.assertFalse(any(t.name == 'federation-http' for t in threading.enumerate()))
 
 
 if __name__ == '__main__':

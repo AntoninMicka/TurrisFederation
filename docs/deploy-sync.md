@@ -55,8 +55,10 @@ načítá na vyžádání; nedostupná služba nebo chybějící oprávnění ne
 Kontrola členství sama neprokazuje dosažitelnost všech routerů.
 
 Zbývající nálezy: watchdog sdílí zámek s dlouhými operacemi, takže rollback
-může nastat později než za 120 s; synchronizace blokuje jednovláknovou HTTP
-obsluhu a může způsobit vzájemné timeouty. Automatická rotace nakonfigurovaných
+může nastat později než za 120 s. HTTP obsluha nyní běží v samostatném vlákně
+a odpovídá i během odchozí synchronizace; přístup ke stavu stále sdílí zámek
+s `stage`/`confirm`. Lokální regresní test ověřuje příjem požadavků během
+čekající synchronizace, provoz mezi routery zbývá ověřit. Automatická rotace nakonfigurovaných
 WG klíčů, šifrovaná záloha identity a provozní ověření zůstávají otevřené.
 Nasazení ZeroTier je podle uživatele nefunkční; oprava je odložená do
 [TODO](../ROADMAP.md). Deploy nelze považovat za provozně ověřený.

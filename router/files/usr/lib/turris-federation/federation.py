@@ -498,6 +498,10 @@ def serve(root):
     local_check(node, doc['config']['networkId'])
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        def setup(self):
+            self.request.settimeout(5)
+            super().setup()
+
         def log_message(self, *_):
             pass
 
@@ -543,14 +547,25 @@ def serve(root):
             except Exception:
                 self.send_error(403)
 
-    server = http.server.HTTPServer((node['zeroTierAddress'], PORT), Handler)
-    server.timeout = 1
+    # Serve incoming peer requests even while outgoing requests are waiting.
+    # State mutations still use the same file lock as SSH commands/watchdog.
+    with http.server.HTTPServer((node['zeroTierAddress'], PORT), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, name='federation-http', daemon=True)
+        worker.start()
+        try:
+            sync_loop(root)
+        finally:
+            server.shutdown()
+            worker.join()
+
+
+def sync_loop(root):
     next_sync = 0
     while True:
-        server.handle_request()
-        if time.time() < next_sync:
-            continue
-        next_sync = time.time() + 30
+        delay = next_sync - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        next_sync = time.monotonic() + 30
         try:
             with locked(root):
                 current = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
@@ -600,6 +615,7 @@ def serve(root):
                 atomic(root / 'report.json', report)
 
 
+WEB_PROXY_PATH = Path('/etc/lighttpd/conf.d/turris-federation.conf')
 WEB_PORT = 8845
 WEB_PATH = '/turris-federation/'
 WEB_FILES = {
@@ -728,7 +744,7 @@ def serve_web(root):
 def install_web():
     """Install changed web files only; reload lighttpd only when its config changed."""
     previous = {}
-    proxy_path = Path('/etc/lighttpd/conf.d/turris-federation.conf')
+    proxy_path = WEB_PROXY_PATH
     proxy_changed = False
     try:
         for name, content in WEB_FILES.items():
@@ -766,7 +782,7 @@ def install_web():
 def check_web():
     tile_path = Path('/etc/turris-webapps/80-turris-federation.json')
     icon_path = Path('/www/webapps-icons/turris-federation.svg')
-    proxy_path = Path('/etc/lighttpd/conf.d/turris-federation.conf')
+    proxy_path = WEB_PROXY_PATH
 
     try:
         tile = json.loads(tile_path.read_text())

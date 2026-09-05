@@ -66,9 +66,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [ ] **P1: Zkrátit kritické sekce agenta.** `stage` a `confirm` drží zámek také
   během externích příkazů/kontrol; watchdog na stejný zámek čeká. Limit 120 s
   proto není tvrdou horní mezí návratu konfigurace.
-- [ ] **P1: Oddělit obsluhu HTTP od synchronizační smyčky.** Jednovláknový agent
-  během odchozích kontrol neobsluhuje příchozí požadavky; souběh sousedů může
-  způsobovat timeouty. Ověřit zotavení a potvrzení změn bez notebooku.
+- [x] **P1: Oddělit obsluhu HTTP od synchronizační smyčky.** HTTP běží
+  v samostatném vlákně; lokální regresní test ověřuje odpovědi na konfiguraci
+  i podepsaný stav během čekající synchronizace a úklid při jejím ukončení.
+- [ ] Na routerech ověřit souběh sousedů, zotavení a potvrzení změn bez notebooku.
+  Obsluha HTTP stále čeká na zámek během `stage`/`confirm`.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 
