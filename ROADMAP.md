@@ -208,6 +208,45 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## 6. Budoucí rozvoj a optimalizace
 
+- [ ] **P2: Cílová transportní architektura — self-hosted NetBird.**
+  - [ ] Současnou kombinaci `ZeroTier → tf_wg` zachovat jako funkční baseline pro
+    prostředí bez vlastního veřejně dosažitelného uzlu; neinvestovat do ní
+    zbytečně funkce, které může později převzít NetBird.
+  - [ ] Jakmile bude k dispozici alespoň jeden stabilně veřejně dosažitelný uzel
+    (preferovaně přes globální IPv6, případně veřejnou IPv4), ověřit na něm
+    self-hosted NetBird control plane a potřebné signal/relay služby.
+  - [ ] Centrální NetBird uzel chápat jako koordinační bod, nikoli jako povinný
+    datový router: provoz mezi lokalitami má při dostupnosti přímé cesty zůstat
+    peer-to-peer přes WireGuard; relay používat pouze jako fallback.
+  - [ ] Zavést přechodové režimy transportu: `ZeroTier + tf_wg` → paralelní
+    NetBird PoC → `NetBird only`, aby migrace nevyžadovala jednorázový výpadek
+    existující federace.
+  - [ ] Po úspěšném PoC přesunout do NetBirdu správu WireGuard peerů, klíčů,
+    endpoint discovery, NAT traversal, relay fallback a overlay konektivity;
+    odstranit vlastní `tf_wg` orchestrace tam, kde ji NetBird plně nahrazuje.
+  - [ ] **Federation zachovat jako source of truth síťové topologie:** evidovat
+    členství uzlů, jejich LAN prefixy, role, požadovanou dosažitelnost a policy.
+    NetBird má být vykonavatelem transportu a rout, nikoli primární evidencí
+    logické topologie federace.
+  - [ ] Z modelu Federation generovat/aktualizovat NetBird network routes a
+    access policies: LAN prefix lokality musí být publikován přes správný Turris
+    routing peer a pouze požadovaným členům/skupinám.
+  - [ ] Před publikací do NetBirdu nadále validovat duplicity a překryvy LAN
+    prefixů, konfliktní routy a neúplnou topologii; chybný model nesmí být
+    automaticky propagován do transportní vrstvy.
+  - [ ] Preferovat skutečné site-to-site routování bez masquerade tam, kde je
+    možné zajistit korektní obousměrné routy; NAT ponechat jako explicitní
+    volitelnou vlastnost konkrétního propojení, nikoli výchozí model federace.
+  - [ ] Navrhnout abstrakci transportního backendu tak, aby datový model uzlů,
+    LAN sítí, membership, validace, health a UI nebyly svázány se ZeroTier ani
+    s konkrétní implementací WireGuardu.
+  - [ ] Po migraci odstranit z běžného modelu Federation údaje, jejichž jediným
+    účelem byla vlastní orchestrace `tf_wg`; zachovat pouze vazbu uzlu na
+    odpovídající NetBird peer/identitu.
+  - [ ] Health stav Federation skládat z logického stavu požadované topologie a
+    skutečného stavu NetBird peerů/rout, aby bylo rozlišitelné „konfigurace je
+    správně publikována“ od „transport je právě dostupný“.
+
 - [ ] **P2: Pokročilé síťování a výkon.**
   - [ ] Implementovat IPv4 routování přes IPv6 nexthop ve WireGuardu (provoz bez přidělených IPv4 adres na tunelech).
   - [ ] Šetřit úložiště na Turrisu: minimalizovat zápisy na eMMC, snížit periodu ukládání stavu na minimum.
