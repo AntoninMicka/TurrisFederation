@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral } from "./backend";
+import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const nodes = ref<FederationNode[]>([]);
@@ -26,6 +26,7 @@ const trustHostKey = ref(false);
 const connectionError = ref("");
 const inspecting = ref(false);
 const submitting = ref(false);
+const settingsFileInput = ref<HTMLInputElement | null>(null);
 const saving = ref(false);
 const statusLabels: Record<FederationNode["status"], string> = {
   draft: "Draft", observed: "SSH ověřeno", healthy: "V pořádku", drifted: "Odchylky", unreachable: "Připojení selhalo",
@@ -47,6 +48,49 @@ onMounted(async () => {
 
 async function refreshZeroTierStatus() {
   ztStatuses.value = Object.fromEntries((await listZeroTierStatus()).map(status => [status.routerId, status]));
+}
+
+async function reloadSettings() {
+  nodes.value = await listNodes();
+  ztSettings.value = await getZeroTierSettings();
+  Object.assign(ztDraft, {
+    networkId: ztSettings.value.networkId ?? "",
+    central: ztSettings.value.central,
+  });
+  await refreshZeroTierStatus();
+}
+
+async function doExportSettings() {
+  try {
+    const payload = await exportSettings();
+    const blob = new Blob([payload], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `turris-federation-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    message.value = "Nastavení federace bylo exportováno.";
+  } catch (error) {
+    message.value = String(error);
+  }
+}
+
+async function doImportSettings(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    await importSettings(await file.text());
+    await reloadSettings();
+    findings.value = [];
+    message.value = "Nastavení federace bylo importováno. Auditní data a SSH důvěra nebyly importem změněny.";
+  } catch (error) {
+    message.value = String(error);
+  }
 }
 
 async function saveZeroTier() {
@@ -154,6 +198,16 @@ async function submitConnection() {
   <main class="shell">
     <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Navrhněte topologii, porovnejte ji se skutečným stavem a teprve potom materializujte změny.</p></header>
     <section class="summary"><article><strong>{{ nodes.length }}</strong><span>uzlů</span></article><article><strong>{{ findings.filter(f => f.severity === 'error').length }}</strong><span>kritických odchylek</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <section class="panel">
+      <div><p class="kicker">Nastavení</p><h2>Import / export federace</h2></div>
+      <p>Export obsahuje návrh uzlů a globální nastavení federace. Neobsahuje SSH hesla, uložené host keys, auditní výpisy ani runtime stav routerů.</p>
+      <div class="node-actions">
+        <button type="button" @click="doExportSettings">Exportovat nastavení</button>
+        <button type="button" class="secondary" @click="settingsFileInput?.click()">Importovat nastavení</button>
+        <input ref="settingsFileInput" type="file" accept=".json,application/json" hidden @change="doImportSettings" />
+      </div>
+      <small>Import je transakční a nahrazuje přenositelnou konfiguraci federace obsahem souboru.</small>
+    </section>
     <section class="panel">
       <div><p class="kicker">Návrh</p><h2>Nový uzel</h2></div>
       <form class="form" @submit.prevent="addDraft">

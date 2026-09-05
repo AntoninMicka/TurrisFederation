@@ -36,6 +36,16 @@ export async function saveZeroTierSettings(settings: ZeroTierSettings): Promise<
   return invoke("save_zerotier_settings", { settings });
 }
 
+export async function exportSettings(): Promise<string> {
+  if (browserMode) throw new Error("Export nastavení je dostupný v desktopové aplikaci.");
+  return invoke("export_settings");
+}
+
+export async function importSettings(payload: string): Promise<void> {
+  if (browserMode) throw new Error("Import nastavení je dostupný v desktopové aplikaci.");
+  return invoke("import_settings", { payload });
+}
+
 export async function listZeroTierStatus(): Promise<ZeroTierStatus[]> {
   return browserMode ? [] : invoke("list_zerotier_status");
 }

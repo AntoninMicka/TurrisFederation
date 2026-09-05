@@ -19,6 +19,15 @@ struct FederationNode {
     status: String, last_audit_at: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsExport {
+    version: u32,
+    exported_at: String,
+    nodes: Vec<FederationNode>,
+    zerotier: zerotier::Settings,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuditFinding {
@@ -48,6 +57,87 @@ fn list_nodes(state: State<'_, AppState>) -> Result<Vec<FederationNode>, String>
     let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at FROM nodes ORDER BY name").map_err(|error| error.to_string())?;
     let rows = statement.query_map([], row_to_node).map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+}
+
+fn list_nodes_from_db(db: &Connection) -> Result<Vec<FederationNode>, String> {
+    let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at FROM nodes ORDER BY name")
+        .map_err(|error| error.to_string())?;
+    let rows = statement.query_map([], row_to_node).map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+}
+
+fn validate_import_node(node: &FederationNode) -> Result<(), String> {
+    if node.id.trim().is_empty() {
+        return Err("Import obsahuje uzel bez ID.".into());
+    }
+    if node.name.trim().is_empty() {
+        return Err(format!("Uzel {} nemá název.", node.id));
+    }
+    ssh::validate(&node.ssh_host, &node.ssh_user, node.ssh_port)?;
+    for cidr in &node.lan_cidrs {
+        if cidr.trim().is_empty() {
+            return Err(format!("Uzel {} obsahuje prázdnou LAN síť.", node.name));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn export_settings(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
+    let export = SettingsExport {
+        version: 1,
+        exported_at: Utc::now().to_rfc3339(),
+        nodes: list_nodes_from_db(&db)?,
+        zerotier: load_zerotier_settings(&db)?,
+    };
+    serde_json::to_string_pretty(&export).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn import_settings(payload: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut import: SettingsExport = serde_json::from_str(&payload)
+        .map_err(|error| format!("Soubor není platný export Turris Federation: {error}"))?;
+    if import.version != 1 {
+        return Err(format!("Nepodporovaná verze exportu {}.", import.version));
+    }
+    import.zerotier = import.zerotier.normalize()?;
+    for node in &import.nodes {
+        validate_import_node(node)?;
+    }
+
+    let mut db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
+    let tx = db.transaction().map_err(|error| error.to_string())?;
+
+    tx.execute("DELETE FROM zerotier_status", []).map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM observations", []).map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM ssh_host_keys", []).map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM nodes", []).map_err(|error| error.to_string())?;
+
+    for node in import.nodes {
+        tx.execute(
+            "INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'draft',NULL)",
+            params![
+                node.id,
+                node.name,
+                node.ssh_host,
+                node.ssh_port,
+                node.ssh_user,
+                serde_json::to_string(&node.lan_cidrs).map_err(|error| error.to_string())?,
+                node.zero_tier_address,
+                node.public_endpoint
+            ],
+        ).map_err(|error| error.to_string())?;
+    }
+
+    tx.execute(
+        "INSERT INTO app_settings(name,value) VALUES('zerotier',?1)
+         ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+        [serde_json::to_string(&import.zerotier).map_err(|error| error.to_string())?],
+    ).map_err(|error| error.to_string())?;
+
+    tx.commit().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -329,5 +419,5 @@ pub fn run() {
         let db = Connection::open(data_dir.join("federation.db"))?;
         migrate(&db).map_err(std::io::Error::other)?;
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
-    }).invoke_handler(tauri::generate_handler![list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }
