@@ -63,14 +63,18 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také
   rotaci WireGuard klíčů bez přerušení nebo se bezpečně řízeným přerušením federace.
-- [ ] **P1: Zkrátit kritické sekce agenta.** `stage` a `confirm` drží zámek také
-  během externích příkazů/kontrol; watchdog na stejný zámek čeká. Limit 120 s
-  proto není tvrdou horní mezí návratu konfigurace.
+- [x] **P1: Zkrátit kritické sekce agenta.** Předběžné kontroly `stage`, health
+  kontrola `confirm` i periodická health kontrola běží mimo zámek; před zápisem
+  se znovu kontroluje stav. Aplikování zamyká jednotlivé příkazy, ověřuje token
+  a omezuje timeout zbývající dobou operace. Timeout ukončuje i potomky příkazu.
+  Regresní testy pokrývají souběh s rollbackem a odmítnutí zastaralého zápisu.
+- [ ] Na routeru ověřit časování rollbacku při zaseknuté službě. Limit 120 s
+  je lhůta potvrzení, nikoli tvrdá horní mez dokončení obnovy konfigurace/služeb.
 - [x] **P1: Oddělit obsluhu HTTP od synchronizační smyčky.** HTTP běží
   v samostatném vlákně; lokální regresní test ověřuje odpovědi na konfiguraci
   i podepsaný stav během čekající synchronizace a úklid při jejím ukončení.
 - [ ] Na routerech ověřit souběh sousedů, zotavení a potvrzení změn bez notebooku.
-  Obsluha HTTP stále čeká na zámek během `stage`/`confirm`.
+  Obsluha HTTP může čekat na jednotlivý příkaz aplikování nebo obnovu konfigurace.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 

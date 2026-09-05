@@ -545,6 +545,140 @@ class FederationTests(unittest.TestCase):
             f.watchdog(self.root, 'wrong')
             rollback.assert_not_called()
 
+    def prepare_operation(self):
+        config_dir = self.root / 'config'
+        config_dir.mkdir()
+        for package in ['network', 'firewall']:
+            f.atomic(config_dir / package, ('original-' + package).encode())
+            f.atomic(self.root / 'backup' / package, ('original-' + package).encode())
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
+        return config_dir
+
+    def test_confirmation_health_does_not_block_watchdog_or_overwrite_rollback(self):
+        config_dir = self.prepare_operation()
+        pending = {'token': 'ok', 'revision': 1, 'previousApplied': None,
+                   'deadline': time.time() + 120}
+        f.atomic(self.root / 'pending.json', pending)
+        started, release = threading.Event(), threading.Event()
+        errors = []
+
+        def slow_health(*_):
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError('health test timed out')
+            return {'state': 'active'}
+
+        def confirm():
+            try:
+                f.confirm(self.root, 'ok')
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(f, 'CONFIG_DIR', config_dir), patch.object(f, 'health', side_effect=slow_health), \
+                patch.object(f, 'run', return_value=b''), patch.object(f.subprocess, 'run'):
+            worker = threading.Thread(target=confirm)
+            worker.start()
+            try:
+                self.assertTrue(started.wait(2))
+                with f.locked(self.root):
+                    pending['deadline'] = time.time() - 1
+                    f.atomic(self.root / 'pending.json', pending)
+                f.watchdog(self.root, 'ok')
+                self.assertEqual('rollback', f.read(self.root / 'report.json')['state'])
+            finally:
+                release.set()
+                worker.join(4)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(1, len(errors))
+        self.assertIsInstance(errors[0], ValueError)
+        self.assertEqual('rollback', f.read(self.root / 'report.json')['state'])
+
+    def test_stage_rechecks_revision_after_unlocked_preflight(self):
+        config_dir = self.prepare_operation()
+        next_envelope = f.sign(self.root / 'root.pem', self.document(2))
+
+        def newer_revision(*_):
+            with f.locked(self.root):
+                f.accept(self.root, next_envelope)
+
+        with patch.object(f, 'CONFIG_DIR', config_dir), \
+                patch.object(f, 'local_check', side_effect=newer_revision), patch.object(f, 'check_routes'), \
+                patch.object(f, 'render_apply') as apply:
+            with self.assertRaisesRegex(ValueError, 'během kontroly'):
+                f.stage(self.root, self.document())
+            apply.assert_not_called()
+        self.assertFalse((self.root / 'pending.json').exists())
+
+    def test_rollback_between_apply_commands_fences_old_writer(self):
+        config_dir = self.prepare_operation()
+
+        def interrupted_apply(*_):
+            with f.locked(self.root):
+                pending = f.read(self.root / 'pending.json')
+                pending['monotonicDeadline'] = time.monotonic() - 1
+                f.atomic(self.root / 'pending.json', pending)
+            # Watchdog is a separate execution context from the applying thread.
+            with patch.object(f, 'run_command', return_value=b''), patch.object(f.subprocess, 'run'):
+                watchdog = threading.Thread(target=f.watchdog, args=(self.root, pending['token']))
+                watchdog.start()
+                watchdog.join(2)
+                self.assertFalse(watchdog.is_alive())
+            with patch.object(f, 'run_apply_command') as command:
+                with self.assertRaisesRegex(ValueError, 'vráceno'):
+                    f.run(['uci', 'commit', 'network'])
+                command.assert_not_called()
+
+        original_popen = subprocess.Popen
+
+        def start_process(args, **kwargs):
+            if len(args) > 2 and args[2] == 'watchdog':
+                return None
+            return original_popen(args, **kwargs)
+
+        with patch.object(f, 'CONFIG_DIR', config_dir), patch.object(f, 'local_check'), \
+                patch.object(f, 'check_routes'), patch.object(f.subprocess, 'Popen', side_effect=start_process), \
+                patch.object(f, 'render_apply', side_effect=interrupted_apply):
+            with self.assertRaisesRegex(ValueError, 'vráceno'):
+                f.stage(self.root, self.document())
+        self.assertEqual('rollback', f.read(self.root / 'report.json')['state'])
+        self.assertIsNone(f.APPLY_CONTEXT.operation)
+
+    def test_confirm_rejects_changed_config_and_applying_phase(self):
+        config_dir = self.prepare_operation()
+        pending = {'token': 'ok', 'revision': 1, 'deadline': time.time() + 120, 'phase': 'applying'}
+        f.atomic(self.root / 'pending.json', pending)
+        with patch.object(f, 'CONFIG_DIR', config_dir), patch.object(f, 'health') as health:
+            with self.assertRaisesRegex(ValueError, 'Potvrzení'):
+                f.confirm(self.root, 'ok')
+            health.assert_not_called()
+            pending['phase'] = 'confirming'
+            f.atomic(self.root / 'pending.json', pending)
+            health.side_effect = lambda *_: f.atomic(config_dir / 'network', b'changed') or {'state': 'active'}
+            with self.assertRaisesRegex(ValueError, 'během potvrzení'):
+                f.confirm(self.root, 'ok')
+        self.assertTrue((self.root / 'pending.json').exists())
+
+    def test_apply_command_uses_remaining_deadline(self):
+        f.atomic(self.root / 'pending.json', {'token': 'ok', 'monotonicDeadline': time.monotonic() + 0.5})
+        f.APPLY_CONTEXT.operation = (self.root, 'ok')
+        try:
+            with patch.object(f, 'run_apply_command', return_value=b'ok') as command:
+                self.assertEqual(b'ok', f.run(['uci', 'show'], timeout=30))
+                self.assertGreater(command.call_args.args[2], 0)
+                self.assertLessEqual(command.call_args.args[2], 0.5)
+        finally:
+            f.APPLY_CONTEXT.operation = None
+
+    def test_timed_out_apply_kills_child_before_it_can_write(self):
+        marker = self.root / 'late-write'
+        child = "import time,pathlib; time.sleep(0.5); pathlib.Path(%r).write_text('late')" % str(marker)
+        parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',%r]); time.sleep(10)" % child
+        with self.assertRaises(subprocess.TimeoutExpired):
+            f.run_apply_command([f.sys.executable, '-c', parent], None, 0.2)
+        time.sleep(0.6)
+        self.assertFalse(marker.exists())
+
     def test_http_serves_bundle_and_status_during_outgoing_sync(self):
         doc = self.document()
         envelope = f.sign(self.root / 'root.pem', doc)

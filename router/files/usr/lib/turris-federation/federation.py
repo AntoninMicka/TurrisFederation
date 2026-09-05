@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
@@ -71,12 +72,48 @@ def locked(root):
         yield
 
 
+APPLY_CONTEXT = threading.local()
+
+
 def run(args, data=None, timeout=30):
+    operation = getattr(APPLY_CONTEXT, 'operation', None)
+    if operation:
+        root, token = operation
+        # Serialize each command with rollback, never the whole apply sequence.
+        with locked(root):
+            pending = read(Path(root) / 'pending.json')
+            if not pending or pending['token'] != token or expired(pending):
+                raise ValueError('Aplikování vypršelo nebo bylo vráceno.')
+            remaining = pending['monotonicDeadline'] - time.monotonic()
+            return run_apply_command(args, data, min(timeout, max(0.001, remaining)))
+    return run_command(args, data, timeout)
+
+
+def run_command(args, data=None, timeout=30):
     result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if result.returncode:
         # Never expose input or command arguments: they can contain private keys.
         raise ValueError('Příkaz %s selhal (kód %s).' % (Path(args[0]).name, result.returncode))
     return result.stdout
+
+
+def run_apply_command(args, data, timeout):
+    # Service scripts may spawn children. Stop the entire process group before
+    # releasing the lock, so a timed-out command cannot race the restore.
+    with subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, start_new_session=True) as process:
+        try:
+            output, _ = process.communicate(data, timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        if process.returncode:
+            raise ValueError('Příkaz %s selhal (kód %s).' % (Path(args[0]).name, process.returncode))
+        return output
 
 
 def public_key(path):
@@ -302,8 +339,8 @@ def rollback(root):
     for package in ['network', 'firewall']:
         run(['uci', '-q', 'revert', package])
         atomic(CONFIG_DIR / package, (root / 'backup' / package).read_bytes())
-    subprocess.run(['ifdown', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(['ifup', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(['ifdown', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    subprocess.run(['ifup', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     run(['/etc/init.d/firewall', 'reload'])
     atomic(root / 'report.json', {'state': 'rollback', 'receivedRevision': pending['revision'],
            'appliedRevision': pending['previousApplied'], 'error': 'Změna nebyla potvrzena; obnovena záloha.', 'checkedAt': time.time()})
@@ -353,39 +390,61 @@ def configuration_hash():
                    for package in ['network', 'firewall']})
 
 
-def stage(root, doc):
+def stage(root, doc, expected_hash=None):
     root = Path(root)
-    report = read(root / 'report.json', {})
-    pending = read(root / 'pending.json')
-    if pending:
-        if pending['revision'] == doc['revision']:
-            return pending
-        raise ValueError('Předchozí deploy čeká na potvrzení nebo rollback.')
-    if report.get('appliedRevision') == doc['revision'] and report.get('configurationHash') == configuration_hash():
-        return {'token': None, 'revision': doc['revision']}
+    with locked(root):
+        accepted = read(root / 'accepted.json')
+        report_before = read(root / 'report.json', {})
+        pending = read(root / 'pending.json')
+        if pending:
+            if pending['revision'] == doc['revision'] and pending.get('phase') != 'applying':
+                return pending
+            raise ValueError('Předchozí deploy čeká na potvrzení nebo rollback.')
+        if accepted and verify((root / 'root.pub').read_text(), accepted) != doc:
+            raise ValueError('Přijatá revize se změnila.')
+        before_hash = configuration_hash()
+        if report_before.get('appliedRevision') == doc['revision'] and report_before.get('configurationHash') == before_hash:
+            return {'token': None, 'revision': doc['revision']}
     node = self_node(root, doc)
     if node and node['id'] in doc['members']:
         local_check(node, doc['config']['networkId'])
         check_routes(root, doc)
-        expected = doc['members'][node['id']]
-        local = read(root / 'node.json')
-        if expected != local:
+        if doc['members'][node['id']] != read(root / 'node.json'):
             raise ValueError('Identita v konfiguraci neodpovídá lokálnímu routeru.')
-    for package in ['network', 'firewall']:
-        atomic(root / 'backup' / package, (CONFIG_DIR / package).read_bytes())
-    pending = {'token': secrets.token_hex(24), 'revision': doc['revision'], 'deadline': time.time() + 120, 'monotonicDeadline': time.monotonic() + 120,
-               'previousApplied': report.get('appliedRevision')}
-    atomic(root / 'pending.json', pending)
+    with locked(root):
+        if (read(root / 'accepted.json') != accepted or read(root / 'pending.json') or
+                read(root / 'report.json', {}) != report_before or configuration_hash() != before_hash):
+            raise ValueError('Stav se během kontroly změnil; opakujte validaci.')
+        if expected_hash and run(['sha256sum', '/etc/config/network', '/etc/config/firewall']).decode() != expected_hash:
+            raise ValueError('Konfigurace routeru se od validace změnila. Spusťte novou validaci.')
+        for package in ['network', 'firewall']:
+            atomic(root / 'backup' / package, (CONFIG_DIR / package).read_bytes())
+        pending = {'token': secrets.token_hex(24), 'revision': doc['revision'], 'phase': 'applying',
+                   'deadline': time.time() + 120, 'monotonicDeadline': time.monotonic() + 120,
+                   'previousApplied': report_before.get('appliedRevision')}
+        atomic(root / 'pending.json', pending)
     try:
         subprocess.Popen([sys.executable, PROGRAM, 'watchdog', str(root), pending['token']],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        render_apply(root, doc)
+        APPLY_CONTEXT.operation = (root, pending['token'])
+        try:
+            render_apply(root, doc)
+        finally:
+            APPLY_CONTEXT.operation = None
+        with locked(root):
+            if read(root / 'pending.json') != pending or expired(pending):
+                raise ValueError('Aplikování vypršelo nebo bylo vráceno.')
+            pending['phase'] = 'confirming'
+            atomic(root / 'pending.json', pending)
+            atomic(root / 'report.json', {'state': 'confirming', 'receivedRevision': doc['revision'],
+                   'appliedRevision': pending['previousApplied'], 'checkedAt': time.time()})
+        return pending
     except Exception:
-        rollback(root)
+        with locked(root):
+            current = read(root / 'pending.json')
+            if current and current['token'] == pending['token']:
+                rollback(root)
         raise
-    atomic(root / 'report.json', {'state': 'confirming', 'receivedRevision': doc['revision'],
-           'appliedRevision': pending['previousApplied'], 'checkedAt': time.time()})
-    return pending
 
 
 def health(root, doc):
@@ -425,17 +484,24 @@ def health(root, doc):
 
 def confirm(root, token):
     root = Path(root)
-    pending = read(root / 'pending.json')
-    doc = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
-    if not pending or pending['token'] != token or pending.get('revision') != doc['revision'] or expired(pending):
-        raise ValueError('Potvrzení deploye vypršelo nebo neodpovídá operaci.')
+    with locked(root):
+        pending = read(root / 'pending.json')
+        envelope = read(root / 'accepted.json')
+        doc = verify((root / 'root.pub').read_text(), envelope)
+        if (not pending or pending['token'] != token or pending.get('revision') != doc['revision']
+                or pending.get('phase') == 'applying' or expired(pending)):
+            raise ValueError('Potvrzení deploye vypršelo nebo neodpovídá operaci.')
+        before_hash = configuration_hash()
     result = health(root, doc)
-    if expired(pending):
-        raise ValueError('Kontrola překročila čas potvrzení; změnu vrátí watchdog.')
-    result.update({'receivedRevision': doc['revision'], 'appliedRevision': doc['revision'], 'configurationHash': configuration_hash(), 'checkedAt': time.time()})
-    atomic(root / 'report.json', result)
-    (root / 'pending.json').unlink()
-    return result
+    with locked(root):
+        if (read(root / 'pending.json') != pending or read(root / 'accepted.json') != envelope
+                or expired(pending) or configuration_hash() != before_hash):
+            raise ValueError('Stav se během potvrzení změnil nebo potvrzení vypršelo.')
+        result.update({'receivedRevision': doc['revision'], 'appliedRevision': doc['revision'],
+                       'configurationHash': before_hash, 'checkedAt': time.time()})
+        atomic(root / 'report.json', result)
+        (root / 'pending.json').unlink()
+        return result
 
 
 def bootstrap(root, node_id, root_public):
@@ -584,13 +650,19 @@ def sync_loop(root):
                 report = read(root / 'report.json', {})
                 if report.get('state') == 'rollback' and report.get('receivedRevision') == current['revision']:
                     continue
-                if report.get('appliedRevision') != current['revision']:
-                    pending = stage(root, current)
-                else:
-                    pending = None
-                    if report.get('configurationHash') != configuration_hash():
-                        raise ValueError('UCI konfigurace se po deployi změnila; ověřte a znovu validujte stanoviště.')
-                    result = health(root, current)
+            if report.get('appliedRevision') != current['revision']:
+                pending = stage(root, current)
+            else:
+                pending = None
+                before_hash = configuration_hash()
+                if report.get('configurationHash') != before_hash:
+                    raise ValueError('UCI konfigurace se po deployi změnila; ověřte a znovu validujte stanoviště.')
+                result = health(root, current)
+                with locked(root):
+                    if (read(root / 'report.json', {}) != report or read(root / 'pending.json') or
+                            verify((root / 'root.pub').read_text(), read(root / 'accepted.json')) != current or
+                            configuration_hash() != before_hash):
+                        continue
                     report.update(result, checkedAt=time.time())
                     report.pop('error', None)
                     atomic(root / 'report.json', report)
@@ -606,11 +678,12 @@ def sync_loop(root):
                         except Exception:
                             pass
                 if reachable:
-                    with locked(root):
-                        confirm(root, pending['token'])
+                    confirm(root, pending['token'])
         except Exception as error:
             with locked(root):
                 report = read(root / 'report.json', {})
+                if report.get('state') == 'rollback':
+                    continue
                 report.update(error=str(error), state='error', checkedAt=time.time())
                 atomic(root / 'report.json', report)
 
@@ -1072,12 +1145,15 @@ def controller(root, req):
 def rpc(root, req):
     action = req['action']
     if action == 'bootstrap':
-        return bootstrap(root, req['nodeId'], req['rootPublic'])
+        with locked(root):
+            return bootstrap(root, req['nodeId'], req['rootPublic'])
     if action == 'apply':
-        expected = req.get('expectedRouterHash')
-        if expected and run(['sha256sum', '/etc/config/network', '/etc/config/firewall']).decode() != expected:
-            raise ValueError('Konfigurace routeru se od validace změnila. Spusťte novou validaci.')
-        return stage(root, accept(root, req['envelope']))
+        with locked(root):
+            expected = req.get('expectedRouterHash')
+            if expected and run(['sha256sum', '/etc/config/network', '/etc/config/firewall']).decode() != expected:
+                raise ValueError('Konfigurace routeru se od validace změnila. Spusťte novou validaci.')
+            doc = accept(root, req['envelope'])
+        return stage(root, doc, req.get('expectedRouterHash'))
     if action == 'confirm':
         return confirm(root, req['token'])
     if action == 'status':
@@ -1100,8 +1176,11 @@ def main():
         watchdog(root, sys.argv[3])
     else:
         request = json.loads(base64.b64decode(sys.argv[3], validate=True)) if mode == 'rpc' else json.loads(sys.stdin.buffer.read(LIMIT + 1))
-        with locked(root):
-            result = rpc(root, request) if mode == 'rpc' else controller(root, request)
+        if mode == 'rpc':
+            result = rpc(root, request)
+        else:
+            with locked(root):
+                result = controller(root, request)
         print(json.dumps(result))
 
 

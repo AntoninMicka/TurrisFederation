@@ -54,11 +54,26 @@ neinstaluje software ani nemění síť. Notebook není položkou routerového s
 načítá na vyžádání; nedostupná služba nebo chybějící oprávnění nejsou úspěchem.
 Kontrola členství sama neprokazuje dosažitelnost všech routerů.
 
-Zbývající nálezy: watchdog sdílí zámek s dlouhými operacemi, takže rollback
-může nastat později než za 120 s. HTTP obsluha nyní běží v samostatném vlákně
-a odpovídá i během odchozí synchronizace; přístup ke stavu stále sdílí zámek
-s `stage`/`confirm`. Lokální regresní test ověřuje příjem požadavků během
-čekající synchronizace, provoz mezi routery zbývá ověřit. Automatická rotace nakonfigurovaných
+HTTP obsluha běží v samostatném vlákně a odpovídá i během odchozí
+synchronizace. Předběžné kontroly `stage` a kontroly zdraví při potvrzení
+či periodické synchronizaci běží mimo zámek. Před uložením výsledku se znovu
+ověřuje příslušná revize, rozpracovaná operace a otisk konfigurace; opožděné
+potvrzení nesmí přepsat rollback. Fáze `applying` nepřipouští potvrzení.
+
+Zápisové příkazy aplikování se zamykají jednotlivě. Před každým příkazem
+se kontroluje token a platnost operace, takže po rollbacku starý proces
+nemůže pokračovat v zápisu. Timeout příkazu je nejvýše 30 s a současně
+nejvýše zbývající doba do deadline; při timeoutu se ukončí jeho procesní
+skupina před uvolněním zámku. Watchdog může provést obnovu mezi příkazy.
+Samotná obnova zůstává zamčená, včetně restartu služeb; `ifup`/`ifdown` mají
+nově timeout 30 s. Selhání obnovy ponechá rozpracovanou operaci pro další
+pokus při restartu. Lhůta 120 s proto není pevnou mezí dokončení obnovy:
+přičítá se interval watchdogu, obnova souborů a běh služeb.
+
+Lokální testy ověřují HTTP během synchronizace, rollback během health
+kontroly, změnu revize během předběžné kontroly, odmítnutí starého zápisu
+po obnově a ukončení potomka zaseknutého příkazu. Časování a zotavení na
+skutečných routerech zbývá ověřit. Automatická rotace nakonfigurovaných
 WG klíčů, šifrovaná záloha identity a provozní ověření zůstávají otevřené.
 Nasazení ZeroTier je podle uživatele nefunkční; oprava je odložená do
 [TODO](../ROADMAP.md). Deploy nelze považovat za provozně ověřený.
