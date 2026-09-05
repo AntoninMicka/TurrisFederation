@@ -756,12 +756,54 @@ def install_web():
 
 
 def check_web():
+    tile_path = Path('/etc/turris-webapps/80-turris-federation.json')
+    icon_path = Path('/www/webapps-icons/turris-federation.svg')
+    proxy_path = Path('/etc/lighttpd/conf.d/turris-federation.conf')
+
+    try:
+        tile = json.loads(tile_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError('Dlaždice Turris Federation chybí nebo není platný JSON.') from error
+    expected_tile = {
+        'id': 'turris-federation',
+        'title': 'Turris Federation',
+        'url': WEB_PATH,
+        'icon': '/icons/turris-federation.svg',
+    }
+    if any(tile.get(key) != value for key, value in expected_tile.items()):
+        raise ValueError('Registrace dlaždice Turris Federation neodpovídá instalované aplikaci.')
+
+    try:
+        icon = icon_path.read_bytes()
+        proxy = proxy_path.read_bytes()
+    except OSError as error:
+        raise ValueError('Chybí ikona nebo konfigurace lighttpd pro Turris Federation.') from error
+    if not icon.lstrip().startswith(b'<svg') or b'turris-federation' not in proxy or b'8845' not in proxy:
+        raise ValueError('Ikona nebo konfigurace lighttpd pro Turris Federation je poškozená.')
+
+    # First verify the private status backend independently of lighttpd/auth.
     connection = http.client.HTTPConnection('127.0.0.1', WEB_PORT, timeout=5)
     try:
         connection.request('GET', WEB_PATH)
         response = connection.getresponse()
-        if response.status != 200 or b'Turris Federation' not in response.read(LIMIT):
-            raise ValueError('Webový přehled nepotvrdil funkční spuštění.')
+        body = response.read(LIMIT)
+        if response.status != 200 or b'Turris Federation' not in body:
+            raise ValueError('Interní webový přehled nepotvrdil funkční spuštění.')
+    finally:
+        connection.close()
+
+    # Then verify that lighttpd loaded the public route and protects it with auth.
+    # Without credentials this route must be challenged, not return 404 or bypass auth.
+    connection = http.client.HTTPConnection('127.0.0.1', 80, timeout=5)
+    try:
+        connection.request('GET', WEB_PATH, headers={'Host': 'localhost'})
+        response = connection.getresponse()
+        response.read(LIMIT)
+        challenge = response.getheader('WWW-Authenticate', '')
+        if response.status != 401 or 'Basic' not in challenge:
+            raise ValueError(
+                'Veřejná cesta Turris Federation není aktivní přes lighttpd nebo není chráněná přihlášením.'
+            )
     finally:
         connection.close()
 
