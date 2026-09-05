@@ -3,6 +3,38 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
+# Terminál editoru instalovaného přes Snap dědí cesty k jeho knihovnám.
+# Nativní WebKit musí načítat systémové GTK/GIO a stejnou glibc jako aplikace.
+snap_environment=false
+if [[ -n ${SNAP:-} || -n ${SNAP_NAME:-} ]]; then
+    snap_environment=true
+fi
+for variable in LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GTK_PATH GTK_EXE_PREFIX \
+    GTK_DATA_PREFIX GTK_IM_MODULE_FILE GIO_MODULE_DIR GIO_EXTRA_MODULES \
+    GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR GSETTINGS_SCHEMA_DIR; do
+    if [[ ${!variable:-} == *'/snap/'* ]]; then
+        snap_environment=true
+    fi
+done
+if [[ $snap_environment == true ]]; then
+    unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+    unset GTK_PATH GTK_EXE_PREFIX GTK_DATA_PREFIX GTK_MODULES
+    unset GTK_IM_MODULE_FILE GIO_MODULE_DIR GIO_EXTRA_MODULES
+    unset GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR
+    unset GSETTINGS_SCHEMA_DIR
+    if [[ -n ${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-} ]]; then
+        export XDG_DATA_DIRS="$XDG_DATA_DIRS_VSCODE_SNAP_ORIG"
+    else
+        export XDG_DATA_DIRS=/usr/local/share:/usr/share
+    fi
+    # Systémové knihovny nesmí proces považovat za aplikaci Snapu.
+    for variable in ${!SNAP@}; do
+        unset "$variable"
+    done
+    printf 'Odstraňuji zděděné cesty ke knihovnám a modulům Snapu.\n'
+fi
+unset snap_environment variable
+
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 if [[ ${1:-} == --help ]]; then
@@ -91,6 +123,14 @@ pkg-config --exists 'webkit2gtk-4.1 >= 2.40' gtk+-3.0 openssl librsvg-2.0 ||
 if [[ ! -x node_modules/.bin/tauri || ! -x node_modules/.bin/vite ]] || ! npm ls --depth=0 >/dev/null 2>&1; then
     printf 'Instaluji npm závislosti…\n'
     npm install
+fi
+
+# WebKitGTK může na NVIDIA selhat při předávání DMA-BUF bufferů.
+# https://v2.tauri.app/develop/debug/linux-graphics/
+# Explicitní nastavení uživatele má přednost (0 workaround vypne).
+if [[ -r /proc/driver/nvidia/version && ! -v WEBKIT_DISABLE_DMABUF_RENDERER ]]; then
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1
+    printf 'NVIDIA: zapínám workaround WebKitGTK (WEBKIT_DISABLE_DMABUF_RENDERER=1).\n'
 fi
 
 exec npm run tauri -- dev "$@"
