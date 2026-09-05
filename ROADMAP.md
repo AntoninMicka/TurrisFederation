@@ -47,6 +47,22 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
 - [ ] **P0: Ověřit deploy na dvou skutečných routerech**, včetně výpadku SSH,
   firewallu, restartu během změny a obnovení ze zálohy. Lokální testy toto nenahrazují.
+- [ ] **P0: Ověřit první skutečné WireGuard propojení dvou přijatých routerů.**
+  Na jednom testovacím routeru je nyní nasazen agent a vytvořen `tf_wg`, zatímco
+  druhý router má zatím pouze ZeroTier a v návrhu federace zůstává v draft stavu;
+  absence WireGuard peeru na prvním routeru je proto v této fázi očekávaná.
+- [ ] Ověřit přechod protistrany `draft → member` a že teprve poté agent vytvoří
+  odpovídající WireGuard peery na obou nasazených routerech.
+- [ ] Pro první end-to-end test použít ZeroTier IPv4 jako transport WireGuardu;
+  RFC4193 IPv6 adresy jsou přidělené, ale end-to-end IPv6 konektivita zatím nebyla
+  úspěšně ověřena a její použití jako WG transportu je odloženo.
+- [ ] Ověřit firewall ZeroTier underlaye: zóna `vpn_zerotier` má zůstat restriktivní
+  (`input REJECT`, `forward REJECT`) a Federation má explicitně povolit jen vlastní
+  služby, zejména řídicí TCP/8844, diagnostický ICMP a WireGuard UDP/51830.
+- [ ] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
+  obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
+- [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také
+  rotaci WireGuard klíčů bez přerušení nebo se bezpečně řízeným přerušením federace.
 - [ ] **P1: Zkrátit kritické sekce agenta.** `stage` a `confirm` drží zámek také
   během externích příkazů/kontrol; watchdog na stejný zámek čeká. Limit 120 s
   proto není tvrdou horní mezí návratu konfigurace.
@@ -122,6 +138,13 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 - [x] Implementovat ZeroTier členství ve společné uložené síti a ruční autorizaci routerů na webu Central.
 - [ ] Ověřit instalaci, autorizaci a zachování ZeroTier identity/členství po restartu na skutečném Turris OS.
 - [ ] Navrhnout WireGuard peery, endpointy, `AllowedIPs`, směrování a pravidla firewallu.
+- [ ] **Ověřit životní cyklus WireGuard peeru podle členství:** draft uzel nesmí
+  být nasazen jako peer; po přijetí člena musí vzniknout peer na relevantních
+  routerech a po odvolání musí být bezpečně odstraněn.
+- [ ] **První ověřený transport:** použít ZeroTier IPv4 adresu peeru jako WG endpoint
+  a ověřit handshake přes UDP/51830 ještě před zapnutím routování LAN sítí.
+- [ ] **Firewall underlaye:** nepovyšovat ZeroTier zónu na důvěryhodnou LAN; místo
+  toho generovat minimální explicitní pravidla potřebná pro Federation a WireGuard.
 - [ ] **Budoucí adresní plán WireGuardu:** současný overlay ponechat IPv4; následně
   doplnit volitelný dual-stack s interními IPv6 adresami WireGuard peerů, bez
   nutnosti měnit IPv4 LAN routing.
@@ -132,6 +155,9 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
   → ZeroTier a bezpečnou změnu aktuálního endpointu peeru bez změny `AllowedIPs`.
 - [ ] **IPv6 LAN routing:** až po zavedení dual-stack overlaye doplnit podporu
   routování IPv6 prefixů mezi lokalitami a odpovídající firewall/health kontroly.
+- [ ] **ZeroTier RFC4193 IPv6 transport:** adresy jsou na testovacích uzlech
+  automaticky přidělené a routované na ZT rozhraní, ale end-to-end ICMPv6 zatím
+  nebylo úspěšně ověřeno; před použitím pro WG endpoint provést samostatný test.
 - [ ] Vyhodnocovat konflikty adres, překryvy sítí a dosažitelnost endpointů před návrhem změn.
 - [ ] Vytvářet konkrétní plán z rozdílu draftu a auditu: balíčky, konfigurace, routy a firewall.
 - [ ] U každé operace ukázat cílový router, současnou a požadovanou hodnotu, závislosti a dopad na připojení.
