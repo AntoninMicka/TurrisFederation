@@ -92,40 +92,65 @@ onMounted(async () => {
   catch (error) { message.value = String(error); }
 });
 
+async function proposeAllAddresses() {
+  if (!ztDraft.wireguardSubnet) ztDraft.wireguardSubnet = "10.203.0.0/24";
+  if (!ztDraft.zeroTierSubnet) ztDraft.zeroTierSubnet = "10.147.17.0/24";
+  
+  const wgPrefix = ztDraft.wireguardSubnet.split(".").slice(0, 3).join(".");
+  const usedOctets = new Set(nodes.value.map(n => n.wireguardAddress?.split(".").pop()).filter(Boolean).map(Number));
+  let nextOctet = 1;
+
+  for (const node of nodes.value) {
+    // Try to get ZT address from status if missing
+    if (!node.zeroTierAddress && ztStatuses.value[node.id]?.assignedAddresses.length) {
+      node.zeroTierAddress = ztStatuses.value[node.id].assignedAddresses[0].split("/")[0];
+    }
+
+    if (!node.wireguardAddress) {
+      if (node.zeroTierAddress) {
+        const lastOctet = parseInt(node.zeroTierAddress.split(".").pop() || "0");
+        if (lastOctet > 0 && lastOctet < 255) {
+          node.wireguardAddress = `${wgPrefix}.${lastOctet}`;
+        }
+          }
+      
+      if (!node.wireguardAddress) {
+        while (usedOctets.has(nextOctet)) nextOctet++;
+        if (nextOctet < 255) {
+          node.wireguardAddress = `${wgPrefix}.${nextOctet}`;
+          usedOctets.add(nextOctet);
+        }
+      }
+    }
+    await saveNode(node);
+  }
+  nodes.value = await listNodes();
+  message.value = "Adresy tunelů byly doplněny podle dostupných dat a zvoleného subnetu.";
+}
+
+function suggestDraftWireguard() {
+  const subnet = ztDraft.wireguardSubnet || "10.203.0.0/24";
+  const wgPrefix = subnet.split(".").slice(0, 3).join(".");
+  
+  if (draft.zeroTierAddress) {
+    const lastOctet = draft.zeroTierAddress.split(".").pop();
+    if (lastOctet) {
+      draft.wireguardAddress = `${wgPrefix}.${lastOctet}`;
+      return;
+    }
+  }
+
+  const usedOctets = new Set(nodes.value.map(n => n.wireguardAddress?.split(".").pop()).filter(Boolean).map(Number));
+  let nextOctet = 1;
+  while (usedOctets.has(nextOctet)) nextOctet++;
+  if (nextOctet < 255) {
+    draft.wireguardAddress = `${wgPrefix}.${nextOctet}`;
+  }
+}
+
 async function refreshZeroTierStatus() {
   const statuses = await listZeroTierStatus();
   ztStatuses.value = Object.fromEntries(statuses.map(status => [status.routerId, status]));
-
-  // Auto-fill ZT and WG addresses if subnets are configured
-  if (ztSettings.value.zeroTierSubnet || ztSettings.value.wireguardSubnet) {
-    let changed = false;
-    for (const node of nodes.value) {
-      const status = ztStatuses.value[node.id];
-      if (status && status.assignedAddresses.length > 0) {
-        const ztIp = status.assignedAddresses[0].split("/")[0];
-
-        if (ztSettings.value.zeroTierSubnet && !node.zeroTierAddress) {
-          node.zeroTierAddress = ztIp;
-          changed = true;
-        }
-
-        if (ztSettings.value.wireguardSubnet && !node.wireguardAddress) {
-          const wgSubnet = ztSettings.value.wireguardSubnet.split("/")[0];
-          const parts = wgSubnet.split(".");
-          const ztParts = ztIp.split(".");
-          if (parts.length === 4 && ztParts.length === 4) {
-            node.wireguardAddress = `${parts[0]}.${parts[1]}.${parts[2]}.${ztParts[3]}`;
-            changed = true;
-          }
-        }
-      }
-    }
-    if (changed) {
-      for (const node of nodes.value) {
-        await saveNode(node);
-      }
-    }
-  }
 }
 
 async function reloadSettings() {
@@ -172,6 +197,20 @@ async function doImportSettings(event: Event) {
     message.value = "Drafty byly sloučeny podle ID. Uložená SSH důvěra a historie zůstávají zachované; změny vyžadují novou validaci.";
   } catch (error) {
     message.value = String(error);
+  }
+}
+
+function suggestSubnets() {
+  const used = new Set<string>();
+  nodes.value.forEach(n => n.lanCidrs.forEach(cidr => used.add(cidr.split(".")[0] + "." + cidr.split(".")[1])));
+  
+  if (!ztDraft.wireguardSubnet) {
+    const candidates = ["10.203.0.0/24", "10.204.0.0/24", "172.16.203.0/24", "192.168.203.0/24"];
+    ztDraft.wireguardSubnet = candidates.find(c => !used.has(c.split(".").slice(0, 2).join("."))) || candidates[0];
+  }
+  if (!ztDraft.zeroTierSubnet) {
+    const candidates = ["10.147.17.0/24", "10.147.18.0/24", "172.27.17.0/24"];
+    ztDraft.zeroTierSubnet = candidates.find(c => !used.has(c.split(".").slice(0, 2).join("."))) || candidates[0];
   }
 }
 
@@ -318,7 +357,12 @@ async function submitConnection() {
         <label>SSH uživatel<input v-model="draft.sshUser" required /></label>
         <label>LAN sítě<input v-model="lanCidrsText" placeholder="192.168.10.0/24, 10.10.0.0/16" /></label>
         <label>IPv4 adresa v ZeroTier<input v-model="draft.zeroTierAddress" placeholder="10.147.17.1" /></label>
-        <label>IPv4 adresa WireGuard tunelu<input v-model="draft.wireguardAddress" placeholder="10.203.0.1" /></label>
+        <label>IPv4 adresa WireGuard tunelu
+          <div class="input-with-action">
+            <input v-model="draft.wireguardAddress" placeholder="10.203.0.1" />
+            <button type="button" class="secondary small" @click="suggestDraftWireguard">Navrhnout</button>
+          </div>
+        </label>
         <label>Veřejný endpoint (rezerva pro přímé spojení)<input v-model="draft.publicEndpoint" placeholder="vpn.example.cz:51820" /></label>
         <small>Draft může být neúplný. Pro deploy doplňte unikátní adresy bez prefixu; WireGuard se v této verzi spojuje přes ZeroTier.</small>
         <button type="button" v-if="editing" class="secondary" @click="resetDraft">Zrušit úpravy</button>
@@ -331,10 +375,16 @@ async function submitConnection() {
       <form class="form" @submit.prevent="saveZeroTier">
         <label>Network ID<input v-model="ztDraft.networkId" pattern="[0-9a-fA-F]{16}" maxlength="16" placeholder="16 hexadecimálních znaků" :disabled="!!connectionNode || ztSaving" /></label>
         <label>Web pro autorizaci<select v-model="ztDraft.central" :disabled="!!connectionNode || ztSaving"><option value="new">ZeroTier Central (central.zerotier.com)</option><option value="legacy">Legacy Central (my.zerotier.com)</option></select></label>
-        <label>ZeroTier subnet (pro kontrolu)<input v-model="ztDraft.zeroTierSubnet" placeholder="10.147.17.0/24" :disabled="!!connectionNode || ztSaving" /></label>
+        <label>ZeroTier subnet (pro kontrolu)
+          <div class="input-with-action">
+            <input v-model="ztDraft.zeroTierSubnet" placeholder="10.147.17.0/24" :disabled="!!connectionNode || ztSaving" />
+            <button type="button" class="secondary small" @click="suggestSubnets" :disabled="!!connectionNode || ztSaving">Navrhnout subnety</button>
+          </div>
+        </label>
         <label>WireGuard subnet (pro automatické doplnění)<input v-model="ztDraft.wireguardSubnet" placeholder="10.203.0.0/24" :disabled="!!connectionNode || ztSaving" /></label>
         <small>Pokud vyplníte subnety, aplikace automaticky doplní ZeroTier adresu zjištěnou z routeru a odvodí z ní WireGuard adresu (použije poslední oktet).</small>
         <button :disabled="ztSaving || !!connectionNode">{{ ztSaving ? 'Ukládám…' : 'Uložit nastavení ZeroTier' }}</button>
+        <button type="button" class="secondary" @click="proposeAllAddresses" :disabled="ztSaving || !!connectionNode">Doplnit adresy všem uzlům</button>
         <button type="button" class="secondary" :disabled="browserOpening" @click="openCentral">Otevřít ZeroTier Central</button>
       </form>
       <small>Uložená síť: {{ ztSettings.networkId ?? 'zatím nevybraná' }}. Uložení mění pouze místní návrh; router změní až akce „Provést nastavení ZeroTier“.</small>

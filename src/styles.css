@@ -33,5 +33,7 @@ ul { display: grid; gap: 10px; padding: 0; list-style: none; }li { display: grid
 .setup-preview { display: grid; gap: 12px; padding: 16px; background: #edf4f2; border-radius: 12px; }
 .setup-preview ol { margin: 0; padding-left: 22px; }
 .setup-preview li { display: list-item; padding: 4px 0; border: 0; background: transparent; }
-select { font: inherit; padding: 11px 12px; border: 1px solid #b9cbc7; border-radius: 12px; background: white; min-width: 0; }
+.input-with-action { display: flex; gap: 8px; }
+.input-with-action input { flex: 1; min-width: 0; }
+.small { padding: 6px 12px; font-size: 0.85rem; }
 @media (max-width: 720px) { .node-heading { flex-direction: column; align-items: stretch; } .zt-facts { grid-template-columns: 1fr; } }
