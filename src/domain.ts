@@ -41,6 +41,8 @@ export interface SshCredentials {
 export interface ZeroTierSettings {
   networkId: string | null;
   central: "new" | "legacy";
+  zeroTierSubnet: string | null;
+  wireguardSubnet: string | null;
 }
 
 export interface ZeroTierStatus {

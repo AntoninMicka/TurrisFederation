@@ -9,15 +9,19 @@ const SETUP_SCRIPT: &str = include_str!("../../scripts/zerotier-setup.sh");
 pub struct Settings {
     pub network_id: Option<String>,
     pub central: String,
+    pub zero_tier_subnet: Option<String>,
+    pub wireguard_subnet: Option<String>,
 }
 impl Default for Settings {
-    fn default() -> Self { Self { network_id: None, central: "new".into() } }
+    fn default() -> Self { Self { network_id: None, central: "new".into(), zero_tier_subnet: None, wireguard_subnet: None } }
 }
 impl Settings {
     pub fn normalize(mut self) -> Result<Self, String> {
         self.network_id = self.network_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_lowercase);
         if let Some(id) = &self.network_id { validate_network_id(id)?; }
         if !["new", "legacy"].contains(&self.central.as_str()) { return Err("Neznámá verze ZeroTier Central.".into()); }
+        self.zero_tier_subnet = self.zero_tier_subnet.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+        self.wireguard_subnet = self.wireguard_subnet.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
         Ok(self)
     }
     pub fn url(&self) -> &'static str {

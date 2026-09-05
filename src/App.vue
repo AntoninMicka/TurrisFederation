@@ -14,8 +14,8 @@ const actionLabels: Record<ConnectionAction, string> = {
   validate: "Validovat stanoviště", deploy: "Potvrdit a nasadit",
   connect: "Ověřit připojení", audit: "Připojit a auditovat", "zerotier-check": "Zkontrolovat ZeroTier", "zerotier-setup": "Provést nastavení ZeroTier",
 };
-const ztSettings = ref<ZeroTierSettings>({ networkId: null, central: "new" });
-const ztDraft = reactive({ networkId: "", central: "new" as ZeroTierSettings["central"] });
+const ztSettings = ref<ZeroTierSettings>({ networkId: null, central: "new", zeroTierSubnet: null, wireguardSubnet: null });
+const ztDraft = reactive({ networkId: "", central: "new" as ZeroTierSettings["central"], zeroTierSubnet: "", wireguardSubnet: "" });
 const ztStatuses = ref<Record<string, ZeroTierStatus>>({});
 const ztSaving = ref(false);
 const ztNetworkForOperation = ref<string | null>(null);
@@ -80,7 +80,12 @@ onMounted(async () => {
   try {
     nodes.value = await listNodes();
     ztSettings.value = await getZeroTierSettings();
-    Object.assign(ztDraft, { networkId: ztSettings.value.networkId ?? "", central: ztSettings.value.central });
+    Object.assign(ztDraft, {
+      networkId: ztSettings.value.networkId ?? "",
+      central: ztSettings.value.central,
+      zeroTierSubnet: ztSettings.value.zeroTierSubnet ?? "",
+      wireguardSubnet: ztSettings.value.wireguardSubnet ?? "",
+    });
     await refreshZeroTierStatus();
     await refreshDeployment();
   }
@@ -88,7 +93,39 @@ onMounted(async () => {
 });
 
 async function refreshZeroTierStatus() {
-  ztStatuses.value = Object.fromEntries((await listZeroTierStatus()).map(status => [status.routerId, status]));
+  const statuses = await listZeroTierStatus();
+  ztStatuses.value = Object.fromEntries(statuses.map(status => [status.routerId, status]));
+
+  // Auto-fill ZT and WG addresses if subnets are configured
+  if (ztSettings.value.zeroTierSubnet || ztSettings.value.wireguardSubnet) {
+    let changed = false;
+    for (const node of nodes.value) {
+      const status = ztStatuses.value[node.id];
+      if (status && status.assignedAddresses.length > 0) {
+        const ztIp = status.assignedAddresses[0].split("/")[0];
+
+        if (ztSettings.value.zeroTierSubnet && !node.zeroTierAddress) {
+          node.zeroTierAddress = ztIp;
+          changed = true;
+        }
+
+        if (ztSettings.value.wireguardSubnet && !node.wireguardAddress) {
+          const wgSubnet = ztSettings.value.wireguardSubnet.split("/")[0];
+          const parts = wgSubnet.split(".");
+          const ztParts = ztIp.split(".");
+          if (parts.length === 4 && ztParts.length === 4) {
+            node.wireguardAddress = `${parts[0]}.${parts[1]}.${parts[2]}.${ztParts[3]}`;
+            changed = true;
+          }
+        }
+      }
+    }
+    if (changed) {
+      for (const node of nodes.value) {
+        await saveNode(node);
+      }
+    }
+  }
 }
 
 async function reloadSettings() {
@@ -97,6 +134,8 @@ async function reloadSettings() {
   Object.assign(ztDraft, {
     networkId: ztSettings.value.networkId ?? "",
     central: ztSettings.value.central,
+    zeroTierSubnet: ztSettings.value.zeroTierSubnet ?? "",
+    wireguardSubnet: ztSettings.value.wireguardSubnet ?? "",
   });
   await refreshZeroTierStatus();
   await refreshDeployment();
@@ -139,11 +178,18 @@ async function doImportSettings(event: Event) {
 async function saveZeroTier() {
   ztSaving.value = true;
   try {
-    ztSettings.value = await saveZeroTierSettings({ networkId: ztDraft.networkId.trim() || null, central: ztDraft.central });
+    ztSettings.value = await saveZeroTierSettings({
+      networkId: ztDraft.networkId.trim() || null,
+      central: ztDraft.central,
+      zeroTierSubnet: ztDraft.zeroTierSubnet.trim() || null,
+      wireguardSubnet: ztDraft.wireguardSubnet.trim() || null,
+    });
     ztDraft.networkId = ztSettings.value.networkId ?? "";
+    ztDraft.zeroTierSubnet = ztSettings.value.zeroTierSubnet ?? "";
+    ztDraft.wireguardSubnet = ztSettings.value.wireguardSubnet ?? "";
     plans.value = {};
     await refreshDeployment();
-    message.value = "ZeroTier Network ID je uložené pro federaci. U routeru nyní spusťte kontrolu ZeroTier.";
+    message.value = "Nastavení ZeroTier federace je uložené. U routeru nyní spusťte kontrolu ZeroTier.";
   } catch (error) { message.value = String(error); }
   finally { ztSaving.value = false; }
 }
@@ -285,6 +331,9 @@ async function submitConnection() {
       <form class="form" @submit.prevent="saveZeroTier">
         <label>Network ID<input v-model="ztDraft.networkId" pattern="[0-9a-fA-F]{16}" maxlength="16" placeholder="16 hexadecimálních znaků" :disabled="!!connectionNode || ztSaving" /></label>
         <label>Web pro autorizaci<select v-model="ztDraft.central" :disabled="!!connectionNode || ztSaving"><option value="new">ZeroTier Central (central.zerotier.com)</option><option value="legacy">Legacy Central (my.zerotier.com)</option></select></label>
+        <label>ZeroTier subnet (pro kontrolu)<input v-model="ztDraft.zeroTierSubnet" placeholder="10.147.17.0/24" :disabled="!!connectionNode || ztSaving" /></label>
+        <label>WireGuard subnet (pro automatické doplnění)<input v-model="ztDraft.wireguardSubnet" placeholder="10.203.0.0/24" :disabled="!!connectionNode || ztSaving" /></label>
+        <small>Pokud vyplníte subnety, aplikace automaticky doplní ZeroTier adresu zjištěnou z routeru a odvodí z ní WireGuard adresu (použije poslední oktet).</small>
         <button :disabled="ztSaving || !!connectionNode">{{ ztSaving ? 'Ukládám…' : 'Uložit nastavení ZeroTier' }}</button>
         <button type="button" class="secondary" :disabled="browserOpening" @click="openCentral">Otevřít ZeroTier Central</button>
       </form>
