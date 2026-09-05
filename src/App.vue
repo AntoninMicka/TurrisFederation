@@ -402,7 +402,7 @@ async function submitConnection() {
     </section>
     <section class="panel">
       <div><p class="kicker">Deploy a synchronizace</p><h2>Postupné zprovoznění stanovišť</h2></div>
-      <p>Každé nové stanoviště nejprve připojte a validujte z tohoto notebooku. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
+      <p>Instalaci i aktualizaci agenta proveďte z notebooku připojeného přímo do LAN routeru přes Ethernet nebo Wi-Fi. Zadejte číselnou LAN IPv4 jako SSH adresu a validujte plán. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
       <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
       <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
       <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
@@ -411,7 +411,7 @@ async function submitConnection() {
         <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
         <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
       </div>
-      <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Nové stanoviště vyžaduje deploy z notebooku. WireGuard automaticky obnovuje relační klíče.</small>
+      <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Přes ZeroTier se přenáší jen síťové nastavení a stav, nikoli aktualizace softwaru. WireGuard automaticky obnovuje relační klíče.</small>
     </section>
     <section class="panel">
       <div><p class="kicker">Inventář</p><h2>Uzly federace</h2></div>
@@ -451,12 +451,13 @@ async function submitConnection() {
             <small v-if="deployment?.nodes[node.id]?.checkedAt">Poslední výsledek: {{ new Date(deployment.nodes[node.id].checkedAt! * 1000).toLocaleString('cs-CZ') }}</small>
             <details v-if="plans[node.id]">
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
+              <p>LAN: {{ plans[node.id].lan.source }} → {{ plans[node.id].lan.host }} ({{ plans[node.id].lan.device }})</p>
               <ol><li v-for="step in plans[node.id].steps" :key="step">{{ step }}</li></ol>
               <pre>{{ JSON.stringify(plans[node.id].config, null, 2) }}</pre>
             </details>
             <div class="node-actions">
               <button class="secondary" :disabled="!!connectionNode || publishing || !ztSettings.networkId" @click="openConnection(node, 'validate')">Validovat z notebooku</button>
-              <button v-if="plans[node.id]" :disabled="!!connectionNode || publishing" @click="openConnection(node, 'deploy')">Deploy na stanoviště</button>
+              <button v-if="plans[node.id]" :disabled="!!connectionNode || publishing" @click="openConnection(node, 'deploy')">{{ plans[node.id].operation === 'update' ? 'Aktualizovat agenta přes LAN' : 'Deploy přes LAN' }}</button>
             </div>
           </div>
           <div class="zerotier-node">
@@ -518,7 +519,7 @@ async function submitConnection() {
           <strong>Plán nasazení na {{ connectionNode.name }}</strong>
           <ol><li v-for="step in plans[connectionNode.id].steps" :key="step">{{ step }}</li></ol>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
-          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci a aplikování tohoto plánu.</label>
+          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci / aktualizaci přes přímou LAN a aplikování tohoto plánu.</label>
         </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>

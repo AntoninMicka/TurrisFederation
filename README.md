@@ -47,3 +47,8 @@ Kontrola vyžaduje přístup místního uživatele k ZeroTier službě.
 **Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;
 oprava je zatím v [TODO](ROADMAP.md). Implementovaný deploy byl zkontrolován
 lokálními testy, nikoli nasazením na skutečné routery.
+
+Instalace a aktualizace agenta jsou povolené pouze přes **přímou LAN**
+(Ethernet/Wi-Fi notebooku, číselná IPv4 routeru). Změna připojení nebo artefaktu
+vyžaduje novou validaci plánu. Přes ZeroTier se synchronizuje síťové nastavení
+a stav, nikoli software. Podrobnosti a omezení: [deploy](docs/deploy-sync.md).

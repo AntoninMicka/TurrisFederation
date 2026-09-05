@@ -21,6 +21,14 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 
 ## Kontrola deploye a aktuální TODO (5. 9. 2026)
 
+- [x] Omezit instalaci a aktualizaci agenta na přímou fyzickou LAN cestu;
+  kontrolovat trasu před každým SSH krokem a vázat plán na LAN a artefakt.
+- [x] ZeroTier synchronizaci omezit na síťový dokument a provozní stav;
+  odmítat dodatečná pole pro software/příkazy. Publikování neinstaluje agenta.
+- [ ] Ověřit LAN instalaci i aktualizaci na routeru, ztrátu LAN během aktualizace
+  a odmítnutí přechodu na ZeroTier. Doplnit automatickou obnovu softwaru při
+  neúspěšné aktualizaci (dosud se uchovává předchozí soubor agenta).
+
 - [x] Deploy controller a routerový agent jsou implementované: podepsané revize,
   validace plánu, SSH instalace, UCI záloha a watchdog, synchronizace přes ZeroTier.
 - [x] Opravit souběh přijetí nové revize a nepotvrzené změny: nová revize musí

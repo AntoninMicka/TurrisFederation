@@ -199,6 +199,131 @@ class FederationTests(unittest.TestCase):
                 f.controller(self.root, request)
             ssh.assert_not_called()
 
+    def lan_fixture(self):
+        device = self.root / 'net' / 'eth0'
+        (device / 'device').mkdir(parents=True)
+        (device / 'type').write_text('1\n')
+        target = dict(node(1), sshHost='192.168.1.1')
+        route = [{'dev': 'eth0', 'prefsrc': '192.168.1.10'}]
+        links = [{'addr_info': [{'family': 'inet', 'local': '192.168.1.10', 'prefixlen': 24}]}]
+        return target, route, links
+
+    def test_direct_lan_accepts_physical_on_link_address(self):
+        target, route, links = self.lan_fixture()
+        with patch.object(f, 'SYS_NET', self.root / 'net'), patch.object(f, 'run', side_effect=[f.encode(route), f.encode(links)]):
+            self.assertEqual({'host': '192.168.1.1', 'device': 'eth0', 'source': '192.168.1.10'}, f.direct_lan(target))
+
+    def test_direct_lan_rejects_gateway_vpn_and_unproven_route(self):
+        target, route, links = self.lan_fixture()
+        bad_routes = [[], [{'dev': 'eth0', 'prefsrc': '192.168.1.10', 'gateway': '192.168.1.254'}],
+                      [{'dev': 'zt1234', 'prefsrc': '192.168.1.10'}],
+                      [{'dev': 'wg0', 'prefsrc': '192.168.1.10'}],
+                      [{'dev': 'eth0', 'type': 'local', 'prefsrc': '192.168.1.10'}]]
+        for routes in bad_routes:
+            with self.subTest(routes=routes), patch.object(f, 'SYS_NET', self.root / 'net'), patch.object(f, 'run', return_value=f.encode(routes)):
+                with self.assertRaisesRegex(ValueError, 'přímé LAN'):
+                    f.direct_lan(target)
+        # Even an innocently named Ethernet interface is rejected if virtual.
+        (self.root / 'net' / 'eth0' / 'device').rmdir()
+        with patch.object(f, 'SYS_NET', self.root / 'net'), patch.object(f, 'run', return_value=f.encode(route)):
+            with self.assertRaisesRegex(ValueError, 'přímé LAN'):
+                f.direct_lan(target)
+
+    def test_direct_lan_rejects_dns_non_lan_and_different_subnet(self):
+        target, route, links = self.lan_fixture()
+        for host in ['router.local', '10.147.0.1', '127.0.0.1']:
+            with self.subTest(host=host), patch.object(f, 'run') as run:
+                with self.assertRaises(ValueError):
+                    f.direct_lan(dict(target, sshHost=host))
+                run.assert_not_called()
+        links[0]['addr_info'][0]['prefixlen'] = 32
+        with patch.object(f, 'SYS_NET', self.root / 'net'), patch.object(f, 'run', side_effect=[f.encode(route), f.encode(links)]):
+            with self.assertRaisesRegex(ValueError, 'přímé LAN'):
+                f.direct_lan(target)
+
+    def test_every_deploy_ssh_session_checks_lan_before_launch(self):
+        for command in ['validate', 'installer', 'update', 'confirm', 'restart']:
+            with self.subTest(command=command), patch.object(f, 'direct_lan', side_effect=ValueError('LAN required')), patch.object(f.subprocess, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'LAN required'):
+                    f.ssh(node(1), {'password': 'test', 'hostKey': 'key'}, command)
+                run.assert_not_called()
+
+    def test_ssh_pins_validated_lan_and_rejects_a_changed_connection(self):
+        target, _, _ = self.lan_fixture()
+        lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
+        credentials = {'password': 'test', 'hostKey': 'key'}
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'ok', b'')) as run:
+            self.assertEqual(b'ok', f.ssh(dict(target, _deployLan=lan), credentials, 'true'))
+            args = run.call_args.args[0]
+            self.assertEqual('eth0', args[args.index('-B') + 1])
+            self.assertEqual('192.168.1.10', args[args.index('-b') + 1])
+        with patch.object(f, 'direct_lan', return_value=dict(lan, source='192.168.1.11')), patch.object(f.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'změnilo'):
+                f.ssh(dict(target, _deployLan=lan), credentials, 'update')
+            run.assert_not_called()
+
+    def test_update_requires_current_artifact_and_same_lan(self):
+        target, _, _ = self.lan_fixture()
+        nodes = [target, node(2)]
+        config = f.normalize(nodes, 'abcdef0123456789')
+        members = {target['id']: self.member(1)}
+        f.atomic(self.root / 'members.json', members)
+        lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
+        plan = {'id': 'update', 'expiresAt': time.time() + 600, 'configHash': f.digest(config),
+                'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
+                'sshHash': f.digest({k: target[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
+                'lan': lan, 'artifactHash': 'old-agent'}
+        req = {'action': 'deploy', 'nodes': nodes, 'networkId': config['networkId'], 'nodeId': target['id'],
+               'planId': 'update', 'credentials': {'hostKey': 'key', 'password': 'test'}}
+        path = self.root / ('plan-' + target['id'] + '.json')
+        f.atomic(path, plan)
+        with patch.object(f, 'ssh') as ssh:
+            with self.assertRaisesRegex(ValueError, 'verzi agenta'):
+                f.controller(self.root, req)
+            ssh.assert_not_called()
+        plan['artifactHash'] = f.artifact_hash()
+        f.atomic(path, plan)
+        with patch.object(f, 'direct_lan', return_value=dict(lan, device='wlan0')), patch.object(f, 'ssh') as ssh:
+            with self.assertRaisesRegex(ValueError, 'změnilo'):
+                f.controller(self.root, req)
+            ssh.assert_not_called()
+
+    def test_validation_marks_existing_member_as_lan_update(self):
+        target, _, _ = self.lan_fixture()
+        f.atomic(self.root / 'members.json', {target['id']: self.member(1)})
+        lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
+        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': 'abcdef0123456789', 'status': 'OK',
+                 'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
+        req = {'action': 'validate', 'nodes': [target], 'networkId': 'abcdef0123456789',
+               'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, b'hash']) as ssh:
+            plan = f.controller(self.root, req)
+        self.assertEqual('update', plan['operation'])
+        self.assertEqual(lan, plan['lan'])
+        self.assertEqual(f.artifact_hash(), plan['artifactHash'])
+        self.assertTrue(all('opkg install' not in call.args[2] for call in ssh.call_args_list))
+
+    def test_publish_only_sends_network_document_and_never_installs(self):
+        f.atomic(self.root / 'members.json', {node(1)['id']: self.member(1)})
+        with patch.object(f, 'request_http', return_value={}) as http, \
+             patch.object(f, 'peer_status', return_value={'state': 'pending'}), patch.object(f, 'ssh') as ssh:
+            f.controller(self.root, {'action': 'publish', 'nodes': self.nodes, 'networkId': 'abcdef0123456789'})
+        ssh.assert_not_called()
+        call = http.call_args.args
+        self.assertEqual(('POST', '/bundle'), call[1:3])
+        doc = f.verify(self.public, call[3])
+        self.assertEqual(self.config, doc['config'])
+        f.validate_document(doc)
+        self.assertNotIn('artifactHash', doc)
+
+    def test_network_sync_refuses_software_and_commands(self):
+        for key in ['software', 'command', 'artifact', 'update']:
+            doc = self.document()
+            doc[key] = 'unwanted'
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'pouze síťové'):
+                f.accept(self.root, f.sign(self.root / 'root.pem', doc))
+        self.assertFalse((self.root / 'accepted.json').exists())
+
     def test_atomic_failure_retains_previous_revision(self):
         path = self.root / 'atomic.json'
         f.atomic(path, {'value': 1})

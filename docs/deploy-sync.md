@@ -3,6 +3,31 @@
 Architektonický návrh, aktualizace kontroly 5. 9. 2026. Část chování je již
 implementovaná; níže uvedený návrh zahrnuje i dosud nedokončené funkce.
 
+## Instalace a aktualizace pouze v přímé LAN
+
+Instalace i opakovaný deploy (aktualizace agenta) vyžadují notebook připojený
+přímo přes fyzický Ethernet nebo Wi-Fi do LAN cílového routeru. SSH adresa
+musí být číselná IPv4 z LAN uvedené v draftu. Controller kontroluje skutečnou
+trasu bez brány a lokální adresu ve stejném subnetu; odmítá virtuální rozhraní,
+ZeroTier, WireGuard i cestu přes jiný router. V této verzi nejsou pro deploy
+podporované hostname, IPv6 ani virtuální bridge/VLAN rozhraní notebooku.
+Neprokazatelná cesta znamená zastavení, nikoli náhradní cestu přes ZeroTier.
+
+Kontrola se opakuje před každým SSH krokem včetně instalátoru, aktualizace,
+potvrzení a restartu služby. SSH je vázané na ověřené rozhraní a zdrojovou
+adresu. Plán obsahuje LAN adresy/rozhraní a otisk konkrétního agenta i jeho
+služby; změna připojení nebo artefaktu plán zneplatní. Starší plány bez těchto
+údajů je nutné znovu validovat. U přijatého uzlu UI nabízí aktualizaci agenta
+přes LAN. Aktualizace používá stejné kontroly identity a zachovává klíče;
+předchozí soubor agenta je uložen jako `.previous`. Nejde o automatický
+rollback softwaru ani o aktualizaci celého Turris OS.
+
+ZeroTier synchronizační kanál přenáší jen podepsané síťové nastavení
+(topologii, adresy, členství a veřejné klíče) a provozní potvrzení/stav.
+Nemá operaci instalace ani aktualizace softwaru. Dokument s dodatečnými poli
+pro software nebo příkazy agent odmítne. Publikování síťových změn nevolá SSH
+instalátor. Běžné kontroly routerů přes SSH tímto omezením deploye nejsou změněné.
+
 ## Výsledek kontroly implementace
 
 Controller i agent jsou v `router/files/usr/lib/turris-federation/federation.py`,
@@ -60,7 +85,7 @@ Notebook autorizuje členství, aplikace a požadovanou síťovou konfiguraci.
 Router může publikovat vlastní provozní stav a rotaci svých komunikačních
 klíčů v mezích oprávnění uděleného notebookem. Nemůže tím měnit členství,
 cizí klíče ani přidělené LAN sítě. Instalace a aktualizace aplikací probíhá
-přes notebook; automatický sync mezi routery přenáší nastavení a oznámení
+přes notebook přímo v LAN cílového routeru; automatický sync mezi routery přenáší nastavení a oznámení
 klíčů. Provoz již nasazené federace není závislý na dostupnosti notebooku.
 
 ## Notebook jako kotva důvěry
@@ -149,7 +174,7 @@ na přenosu a odebrat jeho oprávnění, včetně oprávnění v transportní vr
 
 ## Deploy
 
-1. Přes ověřené SSH zjistit OS, architekturu, nástroje, místo a oprávnění.
+1. Ověřit přímou fyzickou LAN cestu a přes ověřené SSH zjistit OS, architekturu, nástroje, místo a oprávnění.
 2. Zobrazit konkrétní plán instalace agenta a změn pro cílový router.
 3. Nainstalovat ověřený artefakt agenta a jeho službu; uchovat předchozí verzi.
 4. Spárovat identitu routeru s federací a ověřit stav agenta.

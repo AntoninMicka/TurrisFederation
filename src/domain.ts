@@ -81,6 +81,9 @@ export interface DeploymentOverview {
   nodes: Record<string, DeploymentReport>;
 }
 export interface DeploymentPlan {
+  operation: "install" | "update";
+  lan: { host: string; device: string; source: string };
+  artifactHash: string;
   id: string;
   nodeId: string;
   expiresAt: number;

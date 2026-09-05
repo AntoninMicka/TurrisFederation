@@ -26,6 +26,7 @@ PORT = 8844
 WG_PORT = 51830
 REMOTE = '/etc/turris-federation'
 CONFIG_DIR = Path('/etc/config')
+SYS_NET = Path('/sys/class/net')
 PROGRAM = '/usr/lib/turris-federation/federation.py'
 
 
@@ -156,6 +157,8 @@ def normalize(nodes, network_id):
 
 
 def validate_document(doc):
+    if set(doc) != {'schema', 'federationId', 'revision', 'previous', 'config', 'members'}:
+        raise ValueError('Synchronizace přijímá pouze síťové nastavení, nikoli software nebo příkazy.')
     if doc.get('schema') != VERSION or type(doc.get('revision')) is not int or doc['revision'] < 1:
         raise ValueError('Nepodporované schéma nebo revize.')
     str(uuid.UUID(doc['federationId']))
@@ -164,6 +167,8 @@ def validate_document(doc):
         raise ValueError('Konfigurace není normalizovaná.')
     keys = set()
     for node_id, member in doc['members'].items():
+        if set(member) != {'nodeId', 'identity', 'wireguardKey'}:
+            raise ValueError('Nepodporovaná pole člena síťové konfigurace.')
         node = next((node for node in normalized['nodes'] if node['id'] == node_id), None)
         if not node or not node['lanCidrs'] or not node['zeroTierAddress'] or not node['wireguardAddress']:
             raise ValueError('Přijatý uzel nemá kompletní konfiguraci.')
@@ -612,11 +617,51 @@ def shell_quote(text):
     return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
+def direct_lan(node):
+    """Fail closed: deploy/update uses a literal IPv4 on a physical local LAN."""
+    error = 'Instalace i aktualizace vyžaduje přímé LAN spojení přes Ethernet/Wi-Fi a číselnou LAN IPv4 routeru.'
+    try:
+        host = address(node['sshHost'])
+        ip = ipaddress.ip_address(host)
+        if not any(ip in ipaddress.ip_network(cidr) for cidr in node['lanCidrs']
+                   if ipaddress.ip_network(cidr).version == ip.version):
+            raise ValueError(error)
+        routes = json.loads(run(['ip', '-j', '-4', 'route', 'get', host]))
+        if len(routes) != 1:
+            raise ValueError(error)
+        route = routes[0]
+        dev, source = route.get('dev', ''), route.get('prefsrc', '')
+        if (route.get('gateway') or route.get('via') or route.get('nexthops')
+                or route.get('type', 'unicast') != 'unicast'
+                or not re.fullmatch(r'[a-zA-Z0-9_.-]+', dev)):
+            raise ValueError(error)
+        # Do not trust interface names: a renamed VPN/TUN is still virtual.
+        device = SYS_NET / dev
+        if not (device / 'device').exists() or (device / 'type').read_text().strip() != '1':
+            raise ValueError(error)
+        links = json.loads(run(['ip', '-j', '-4', 'address', 'show', 'dev', dev]))
+        addresses = [entry for link in links for entry in link.get('addr_info', [])
+                     if entry.get('family') == 'inet' and entry.get('local') == source]
+        if not any(ip in ipaddress.ip_interface('%s/%s' % (source, entry['prefixlen'])).network
+                   and ip != ipaddress.ip_address(source) for entry in addresses):
+            raise ValueError(error)
+        return {'host': host, 'device': dev, 'source': source}
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise ValueError(error) from exc
+
+
+def artifact_hash():
+    return hashlib.sha256(Path(__file__).read_bytes() + INIT.encode()).hexdigest()
+
+
 def ssh(node, credentials, command):
     # Credentials are passed through stdin to this controller and an inherited pipe to sshpass.
     host, user, port = node['sshHost'], node['sshUser'], node['sshPort']
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.:%_-]*', host) or not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]*', user) or not 0 < port < 65536:
         raise ValueError('Neplatná SSH adresa.')
+    lan = direct_lan(node)  # Recheck before EVERY SSH session, including update and confirmation.
+    if node.get('_deployLan') is not None and node['_deployLan'] != lan:
+        raise ValueError('LAN připojení se od validace změnilo. Validujte znovu.')
     password = credentials['password']
     if not password or len(password.encode()) > 4096 or any(c in password for c in '\n\r\0'):
         raise ValueError('Neplatné SSH heslo.')
@@ -633,7 +678,8 @@ def ssh(node, credentials, command):
                     '-o', 'UserKnownHostsFile=' + str(key), '-o', 'ConnectTimeout=10',
                     '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
                     '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1',
-                    '-p', str(port), '-l', user, '--', host, command]
+                    '-B', lan['device'], '-b', lan['source'],
+                    '-p', str(port), '-l', user, '--', lan['host'], command]
             result = subprocess.run(args, pass_fds=(read_fd,), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
             if result.returncode:
                 # Remote errors only contain our sanitised exception, never shell command or input.
@@ -714,6 +760,8 @@ def controller(root, req):
         raise ValueError('Pro deploy doplňte LAN, IPv4 adresu ZeroTier a unikátní IPv4 adresu WireGuard.')
     credentials = req['credentials']
     if action == 'validate':
+        lan = direct_lan(node)
+        node = dict(node, _deployLan=lan)
         probe = ssh(node, credentials, "set -eu; test \"$(id -u)\" = 0; test -f /etc/config/network; command -v uci >/dev/null; command -v opkg >/dev/null; echo __BOARD__; ubus call system board; echo __ZT__; zerotier-cli -j listnetworks; echo __ADDR__; ip -o addr show; echo __END__")
         text = probe.decode()
         zt = json.loads(text.split('__ZT__\n', 1)[1].split('__ADDR__\n', 1)[0])
@@ -723,11 +771,13 @@ def controller(root, req):
         actual = {str(ipaddress.ip_interface(v).network) for v in re.findall(r'inet6?\s+(\S+/\d+)', text.split('__ADDR__\n')[1])}
         if not set(target['lanCidrs']).issubset(actual):
             raise ValueError('LAN sítě draftu neodpovídají routeru. Opravte draft a validujte znovu.')
-        plan = {'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
+        updating = node['id'] in read(root / 'members.json', {})
+        plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': artifact_hash(),
+                'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
                 'steps': ['Nainstalovat Python 3, OpenSSL a WireGuard z repozitáře routeru.',
-                          'Nainstalovat agenta, přijmout stanoviště pod kotvu důvěry notebooku.',
+                          ('Aktualizovat agenta přes přímou LAN; zachovat identitu a předchozí soubor agenta.' if updating else 'Nainstalovat agenta přes přímou LAN a přijmout stanoviště pod kotvu důvěry notebooku.'),
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.'],
@@ -739,6 +789,12 @@ def controller(root, req):
     plan = read(root / ('plan-' + node['id'] + '.json'))
     if not plan or plan['id'] != req.get('planId') or plan['expiresAt'] < time.time() or plan['configHash'] != digest(config) or plan['hostKeyHash'] != digest(credentials['hostKey']) or plan.get('membersHash') != digest(read(root / 'members.json', {})) or plan['sshHash'] != digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}):
         raise ValueError('Plán chybí, vypršel nebo se návrh změnil. Spusťte znovu validaci.')
+    if plan.get('artifactHash') != artifact_hash() or not plan.get('lan'):
+        raise ValueError('Plán neodpovídá verzi agenta nebo chybí LAN kontrola. Validujte znovu.')
+    lan = direct_lan(node)
+    if plan['lan'] != lan:
+        raise ValueError('LAN připojení se od validace změnilo. Validujte znovu.')
+    node = dict(node, _deployLan=lan)
     if ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode() != plan['routerHash']:
         raise ValueError('Konfigurace routeru se od validace změnila. Validujte znovu.')
     root_public = identity(root / 'root.pem')
