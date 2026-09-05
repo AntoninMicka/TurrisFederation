@@ -600,13 +600,183 @@ def serve(root):
                 atomic(root / 'report.json', report)
 
 
+WEB_PORT = 8845
+WEB_PATH = '/turris-federation/'
+WEB_FILES = {
+    '/etc/turris-webapps/80-turris-federation.json': json.dumps({
+        'id': 'turris-federation', 'title': 'Turris Federation', 'url': WEB_PATH,
+        'icon': '/icons/turris-federation.svg',
+        'description': {'en': 'Federation nodes and network status', 'cz': 'Uzly federace a stav sítě', 'cs': 'Uzly federace a stav sítě'}
+    }, ensure_ascii=False).encode(),
+    '/www/webapps-icons/turris-federation.svg': b'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="20" fill="#123047"/><path d="M24 66 48 26 72 66Z" fill="none" stroke="#58d5c9" stroke-width="5"/><g fill="#fff"><circle cx="48" cy="26" r="10"/><circle cx="24" cy="66" r="10"/><circle cx="72" cy="66" r="10"/></g></svg>''',
+    '/etc/lighttpd/conf.d/turris-federation.conf': b'''# Managed by Turris Federation LAN deployment.
+server.modules += ( "mod_proxy", "mod_auth", "mod_authn_pam" )
+$HTTP["url"] =~ "^/turris-federation($|/)" {
+  auth.backend = "pam"
+  auth.require = ( "" => ( "method" => "basic", "realm" => "Turris Federation", "require" => "valid-user" ) )
+  proxy.server = ( "" => ( ( "host" => "127.0.0.1", "port" => 8845 ) ) )
+}
+''',
+}
+WEB_STYLE = '''
+:root{color-scheme:light dark;font-family:system-ui,sans-serif;background:#0c1925;color:#e6eff6}
+*{box-sizing:border-box}body{margin:0}main{max-width:1120px;margin:auto;padding:36px 22px}
+a{color:#80e1d7}nav{display:flex;justify-content:space-between;gap:20px;margin-bottom:38px}
+h1{font-size:clamp(28px,5vw,44px);margin:8px 0 14px}h2{font-size:21px;margin:0 0 20px}
+p{line-height:1.6}.muted,dt{color:#a8bdcc}.kicker{color:#80e1d7;letter-spacing:.13em;font-size:12px;text-transform:uppercase}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin:28px 0}
+.card,section{background:#13283a;border:1px solid #2a4355;border-radius:14px;padding:22px}
+.card strong{display:block;font-size:28px;margin:12px 0}.card span{color:#a8bdcc}
+section{margin:20px 0}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left}
+th,td{padding:14px 12px;border-bottom:1px solid #2a4355;vertical-align:top}th{color:#a8bdcc;font-weight:500}
+td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb76d;padding:10px 18px;background:#26303a}
+.badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
+.button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none}
+@media(max-width:600px){main{padding:24px 14px}section{padding:16px}.cards{grid-template-columns:1fr}}
+'''
+WEB_LABELS = {'pending': 'Čeká na aplikování', 'error': 'Chyba agenta', 'confirming': 'Čeká na potvrzení',
+              'waiting_peers': 'Čeká na protějšky', 'active': 'Spojení ověřeno', 'rollback': 'Obnovena záloha', 'revoked': 'Členství odvoláno'}
+
+
+def web_page(root):
+    """Render only selected public configuration/status fields, never raw files or keys."""
+    import html
+    def esc(value):
+        return html.escape(str(value), quote=True)
+    root = Path(root)
+    report = read(root / 'report.json', {})
+    envelope = read(root / 'accepted.json')
+    doc = validate_document(verify((root / 'root.pub').read_text(), envelope)) if envelope else None
+    own_id = read(root / 'node.json', {}).get('nodeId')
+    own = next((node for node in doc['config']['nodes'] if node['id'] == own_id), None) if doc else None
+    state = WEB_LABELS.get(report.get('state'), 'Zatím nenasazeno')
+    checked = report.get('checkedAt')
+    checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
+    rows = []
+    if doc:
+        for node in doc['config']['nodes']:
+            member = node['id'] in doc['members']
+            label = state if node['id'] == own_id else ('Přijatý uzel' if member else 'Draft')
+            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><span class="badge">%s</span></td></tr>' % (
+                esc(node['name']), '<br><small>Tento router</small>' if node['id'] == own_id else '',
+                esc(node['zeroTierAddress'] or '—'), esc(node['wireguardAddress'] or '—'),
+                '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', esc(label)))
+    notices = '<p class="notice">Router ještě nepřijal konfiguraci federace. Dokončete deploy z notebooku přes LAN.</p>' if not doc else ''
+    if report.get('error'):
+        notices += '<p class="notice">%s</p>' % esc(report['error'])
+    if report.get('pendingPeers'):
+        names = {node['id']: node['name'] for node in doc['config']['nodes']} if doc else {}
+        notices += '<p class="notice">Čekající protějšky: %s</p>' % esc(', '.join(names.get(peer, peer) for peer in report['pendingPeers']))
+    return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turris Federation</title><style>''' + WEB_STYLE + '''</style></head><body><main>
+<nav><a href="/">← Úvodní stránka Turrisu</a><a class="button" href="/turris-federation/">Obnovit stav</a></nav>
+<div class="kicker">Turris Federation · přehled sítě</div><h1>''' + esc(own['name'] if own else 'Federace routerů') + '''</h1>
+<p class="muted">Poslední zaznamenaný stav místního agenta. Načtení stránky neprovádí nový audit sítě.</p>''' + notices + '''
+<div class="cards"><article class="card"><span>Stav tohoto routeru</span><strong>''' + esc(state) + '''</strong></article>
+<article class="card"><span>Přijatá revize</span><strong>''' + esc(doc['revision'] if doc else '—') + '''</strong></article>
+<article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
+<p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
+<section><h2>Uzly federace</h2><div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<p class="muted">U ostatních uzlů je uvedeno členství z přijaté konfigurace, nikoli aktuální dostupnost.</p></section>
+<section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
+<p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
+<p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
+</main></body></html>''').encode()
+
+
+def web_handler(root):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if self.path not in [WEB_PATH, WEB_PATH.rstrip('/')]:
+                self.send_error(404)
+                return
+            try:
+                body = web_page(root)
+                status = 200
+            except Exception:
+                body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
+                status = 503
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            self.send_error(405)
+
+        do_PUT = do_DELETE = do_PATCH = do_POST
+    return Handler
+
+
+def serve_web(root):
+    # Separate listener: the authenticated lighttpd proxy never exposes the sync API.
+    class Server(http.server.ThreadingHTTPServer):
+        def get_request(self):
+            connection, client = super().get_request()
+            connection.settimeout(5)
+            return connection, client
+    Server(('127.0.0.1', WEB_PORT), web_handler(root)).serve_forever()
+
+
+def install_web():
+    """Called only by the LAN installer; restore web files if lighttpd rejects them."""
+    previous = {}
+    try:
+        for name, content in WEB_FILES.items():
+            path = Path(name)
+            previous[path] = (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
+            # These shared directories must be traversable by lighttpd/WebApps.
+            if not path.parent.exists():
+                path.parent.mkdir(parents=True, mode=0o755)
+                path.parent.chmod(0o755)
+            atomic(path, content)
+            path.chmod(0o644)
+        run(['lighttpd', '-tt', '-f', '/etc/lighttpd/lighttpd.conf'])
+        run(['/etc/init.d/lighttpd', 'reload'])
+    except Exception:
+        for path, old in previous.items():
+            if old is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic(path, old[0])
+                path.chmod(old[1])
+        # A failed reload may already have affected the running web server.
+        try:
+            run(['/etc/init.d/lighttpd', 'reload'])
+        except Exception:
+            pass
+        raise
+
+
+def check_web():
+    connection = http.client.HTTPConnection('127.0.0.1', WEB_PORT, timeout=5)
+    try:
+        connection.request('GET', WEB_PATH)
+        response = connection.getresponse()
+        if response.status != 200 or b'Turris Federation' not in response.read(LIMIT):
+            raise ValueError('Webový přehled nepotvrdil funkční spuštění.')
+    finally:
+        connection.close()
+
+
 INIT = '''#!/bin/sh /etc/rc.common
 START=95
 STOP=10
 USE_PROCD=1
 start_service() {
-    procd_open_instance
+    procd_open_instance sync
     procd_set_param command /usr/bin/python3 /usr/lib/turris-federation/federation.py serve /etc/turris-federation
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+    procd_open_instance web
+    procd_set_param command /usr/bin/python3 /usr/lib/turris-federation/federation.py web /etc/turris-federation
     procd_set_param respawn 3600 5 5
     procd_close_instance
 }
@@ -762,7 +932,7 @@ def controller(root, req):
     if action == 'validate':
         lan = direct_lan(node)
         node = dict(node, _deployLan=lan)
-        probe = ssh(node, credentials, "set -eu; test \"$(id -u)\" = 0; test -f /etc/config/network; command -v uci >/dev/null; command -v opkg >/dev/null; echo __BOARD__; ubus call system board; echo __ZT__; zerotier-cli -j listnetworks; echo __ADDR__; ip -o addr show; echo __END__")
+        probe = ssh(node, credentials, "set -eu; test \"$(id -u)\" = 0; test -f /etc/config/network; test -d /www; test -d /etc/lighttpd/conf.d; command -v lighttpd >/dev/null; command -v uci >/dev/null; command -v opkg >/dev/null; echo __BOARD__; ubus call system board; echo __ZT__; zerotier-cli -j listnetworks; echo __ADDR__; ip -o addr show; echo __END__")
         text = probe.decode()
         zt = json.loads(text.split('__ZT__\n', 1)[1].split('__ADDR__\n', 1)[0])
         net = next((n for n in zt if n.get('nwid', n.get('id')) == config['networkId']), None)
@@ -778,6 +948,7 @@ def controller(root, req):
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
                 'steps': ['Nainstalovat Python 3, OpenSSL a WireGuard z repozitáře routeru.',
                           ('Aktualizovat agenta přes přímou LAN; zachovat identitu a předchozí soubor agenta.' if updating else 'Nainstalovat agenta přes přímou LAN a přijmout stanoviště pod kotvu důvěry notebooku.'),
+                          'Nainstalovat webový přehled s přihlášením routeru a dlaždici na úvodní stránce Turrisu.',
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.'],
@@ -804,11 +975,12 @@ def controller(root, req):
     installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
     check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
     installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
-    installer += "opkg update >&2; opkg install python3 openssl-util wireguard-tools kmod-wireguard >&2; "
+    installer += "opkg update >&2; opkg install python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file >&2; "
     installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
     installer += 'printf %s ' + shell_quote(base64.b64encode(source).decode()) + ' | base64 -d > ' + PROGRAM + '.new; '
     installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
     installer += 'printf %s ' + shell_quote(base64.b64encode(INIT.encode()).decode()) + ' | base64 -d > /etc/init.d/turris-federation; chmod 755 /etc/init.d/turris-federation'
+    installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
     ssh(node, credentials, installer)
     member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
     members = read(root / 'members.json', {})
@@ -824,6 +996,7 @@ def controller(root, req):
     reports[node['id']] = result
     atomic(root / 'reports.json', reports)
     ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
+    ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
     (root / ('plan-' + node['id'] + '.json')).unlink()
     return overview(root, config)
 
@@ -847,7 +1020,13 @@ def rpc(root, req):
 def main():
     os.umask(0o077)
     mode, root = sys.argv[1:3]
-    if mode == 'serve':
+    if mode == 'web':
+        serve_web(root)
+    elif mode == 'install-web':
+        install_web()
+    elif mode == 'web-check':
+        check_web()
+    elif mode == 'serve':
         serve(root)
     elif mode == 'watchdog':
         watchdog(root, sys.argv[3])

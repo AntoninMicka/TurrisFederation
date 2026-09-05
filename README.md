@@ -52,3 +52,8 @@ Instalace a aktualizace agenta jsou povolené pouze přes **přímou LAN**
 (Ethernet/Wi-Fi notebooku, číselná IPv4 routeru). Změna připojení nebo artefaktu
 vyžaduje novou validaci plánu. Přes ZeroTier se synchronizuje síťové nastavení
 a stav, nikoli software. Podrobnosti a omezení: [deploy](docs/deploy-sync.md).
+
+LAN deploy a aktualizace instalují také **webový přehled na routeru** a dlaždici
+**Turris Federation** na jeho úvodní obrazovku. Adresa je
+`https://<router>/turris-federation/`, s přihlášením přes systémové heslo routeru.
+Podrobnosti: [webový přehled](docs/router-web.md).

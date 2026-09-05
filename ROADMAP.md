@@ -21,6 +21,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 
 ## Kontrola deploye a aktuální TODO (5. 9. 2026)
 
+- [x] Doplnit webový přehled na routeru a dlaždici Turris Federation do WebApps;
+  instalovat i aktualizovat přes LAN, chránit přístup PAM přihlášením.
+- [x] Ověřit návrat původních webových souborů při chybné konfiguraci lighttpd.
+- [ ] Na skutečném Turrisu ověřit dlaždici, HTTPS/PAM přihlášení, restart webové
+  instance a aktualizaci vedle existujících webových aplikací.
+  Podrobnosti: [webový přehled](docs/router-web.md).
+
 - [x] Omezit instalaci a aktualizaci agenta na přímou fyzickou LAN cestu;
   kontrolovat trasu před každým SSH krokem a vázat plán na LAN a artefakt.
 - [x] ZeroTier synchronizaci omezit na síťový dokument a provozní stav;

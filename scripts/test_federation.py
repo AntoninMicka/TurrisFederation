@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
+import threading
 import shutil
 import subprocess
 import tempfile
@@ -323,6 +325,96 @@ class FederationTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'pouze síťové'):
                 f.accept(self.root, f.sign(self.root / 'root.pem', doc))
         self.assertFalse((self.root / 'accepted.json').exists())
+
+    def test_web_renders_selected_status_and_escapes_router_names(self):
+        doc = self.document()
+        doc['config']['nodes'][0]['name'] = '<script>alert(1)</script>'
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'report.json', {'state': 'waiting_peers', 'appliedRevision': 1,
+                 'checkedAt': 100, 'pendingPeers': [node(2)['id']], 'error': '<b>failure</b>', 'secret': 'REPORT-SECRET'})
+        f.atomic(self.root / 'wireguard.key', b'PRIVATE-WG-SECRET')
+        page = f.web_page(self.root).decode()
+        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24']:
+            self.assertIn(wanted, page)
+        for unwanted in ['<script>', '<b>failure</b>', 'PRIVATE-WG-SECRET', 'REPORT-SECRET', 'BEGIN PUBLIC KEY', 'BEGIN PRIVATE KEY']:
+            self.assertNotIn(unwanted, page)
+        self.assertIn('nikoli aktuální dostupnost', page)
+
+    def web_request(self, method, path):
+        client, server = socket.socketpair()
+        client.settimeout(5)
+        server.settimeout(5)
+        def handle():
+            try:
+                f.web_handler(self.root)(server, ('127.0.0.1', 1234), None)
+            finally:
+                server.close()
+        thread = threading.Thread(target=handle)
+        thread.start()
+        try:
+            client.sendall(('%s %s HTTP/1.0\r\nHost: localhost\r\n\r\n' % (method, path)).encode())
+            parts = []
+            while True:
+                part = client.recv(65536)
+                if not part:
+                    break
+                parts.append(part)
+            return b''.join(parts)
+        finally:
+            client.close()
+            thread.join(timeout=5)
+
+    def test_web_http_is_read_only_and_does_not_expose_sync_or_files(self):
+        response = self.web_request('GET', '/turris-federation/')
+        self.assertIn(b'200 OK', response)
+        self.assertIn(b'Cache-Control: no-store', response)
+        self.assertIn(b'frame-ancestors', response)
+        self.assertIn('Dokončete deploy'.encode(), response)
+        for path in ['/bundle', '/etc/turris-federation/root.pub', '/turris-federation/../root.pem']:
+            self.assertIn(b'404', self.web_request('GET', path))
+        for method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+            self.assertIn(b'405', self.web_request(method, '/turris-federation/'))
+        self.assertFalse((self.root / 'report.json').exists())
+
+    def test_web_corrupt_config_returns_error_without_raw_exception(self):
+        f.atomic(self.root / 'accepted.json', b'PRIVATE-BROKEN-DATA')
+        response = self.web_request('GET', '/turris-federation/')
+        self.assertIn(b'503', response)
+        self.assertNotIn(b'PRIVATE-BROKEN-DATA', response)
+
+    def web_files_fixture(self):
+        return {str(self.root / name.lstrip('/')): value for name, value in f.WEB_FILES.items()}
+
+    def test_web_install_is_idempotent_and_publishes_readable_tile(self):
+        files = self.web_files_fixture()
+        old_umask = os.umask(0o077)
+        try:
+            with patch.object(f, 'WEB_FILES', files), patch.object(f, 'run') as run:
+                f.install_web()
+                f.install_web()
+                self.assertEqual(4, run.call_count)
+        finally:
+            os.umask(old_umask)
+        for path, content in files.items():
+            self.assertEqual(content, Path(path).read_bytes())
+            self.assertEqual(0o644, Path(path).stat().st_mode & 0o777)
+            self.assertEqual(0o755, Path(path).parent.stat().st_mode & 0o777)
+        tile = json.loads(next(value for name, value in files.items() if name.endswith('.json')))
+        self.assertEqual('/turris-federation/', tile['url'])
+        self.assertEqual('/icons/turris-federation.svg', tile['icon'])
+
+    def test_failed_web_update_restores_previous_files_and_permissions(self):
+        files = self.web_files_fixture()
+        first = Path(next(iter(files)))
+        f.atomic(first, b'previous-tile')
+        first.chmod(0o640)
+        with patch.object(f, 'WEB_FILES', files), patch.object(f, 'run', side_effect=[ValueError('invalid lighttpd config'), b'']):
+            with self.assertRaisesRegex(ValueError, 'invalid lighttpd'):
+                f.install_web()
+        self.assertEqual(b'previous-tile', first.read_bytes())
+        self.assertEqual(0o640, first.stat().st_mode & 0o777)
+        self.assertTrue(all(not Path(name).exists() for name in files if Path(name) != first))
 
     def test_atomic_failure_retains_previous_revision(self):
         path = self.root / 'atomic.json'

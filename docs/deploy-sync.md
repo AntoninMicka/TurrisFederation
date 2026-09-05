@@ -28,6 +28,11 @@ Nemá operaci instalace ani aktualizace softwaru. Dokument s dodatečnými poli
 pro software nebo příkazy agent odmítne. Publikování síťových změn nevolá SSH
 instalátor. Běžné kontroly routerů přes SSH tímto omezením deploye nejsou změněné.
 
+Webový přehled, ikona a dlaždice na úvodní stránce Turrisu jsou součástí
+stejného LAN instalačního/aktualizačního artefaktu. Konfigurace lighttpd se
+kontroluje před reloadem; při selhání se obnoví předchozí webové soubory.
+Viz [webový přehled](router-web.md).
+
 ## Výsledek kontroly implementace
 
 Controller i agent jsou v `router/files/usr/lib/turris-federation/federation.py`,
