@@ -1,17 +1,33 @@
 # Invoked remotely with TF_ZT_NETWORK set to a validated network ID (or empty).
 set +e
-echo __TF_ZT_INSTALLED__
+
+# Desktop sessions commonly omit sbin directories from PATH. Prefer PATH when
+# available, then check standard system locations explicitly. The same probe is
+# also used on Turris/OpenWrt, where zerotier-cli may live in /usr/bin.
+tf_zt_cli=
 if command -v zerotier-cli >/dev/null 2>&1; then
+    tf_zt_cli=$(command -v zerotier-cli)
+else
+    for tf_candidate in /usr/sbin/zerotier-cli /usr/local/sbin/zerotier-cli /usr/bin/zerotier-cli /usr/local/bin/zerotier-cli; do
+        if [ -x "$tf_candidate" ]; then
+            tf_zt_cli=$tf_candidate
+            break
+        fi
+    done
+fi
+
+echo __TF_ZT_INSTALLED__
+if [ -n "$tf_zt_cli" ]; then
     echo 1
     echo __TF_ZT_INFO__
-    if tf_info=$(zerotier-cli -j info 2>/dev/null); then tf_rc=0
-    else tf_info=$(zerotier-cli info 2>&1); tf_rc=$?; fi
+    if tf_info=$("$tf_zt_cli" -j info 2>/dev/null); then tf_rc=0
+    else tf_info=$("$tf_zt_cli" info 2>&1); tf_rc=$?; fi
     printf '%s\n' "$tf_info"
     echo __TF_ZT_INFO_RC__
     echo "$tf_rc"
     echo __TF_ZT_NETWORKS__
-    if tf_networks=$(zerotier-cli -j listnetworks 2>/dev/null); then tf_rc=0
-    else tf_networks=$(zerotier-cli listnetworks 2>&1); tf_rc=$?; fi
+    if tf_networks=$("$tf_zt_cli" -j listnetworks 2>/dev/null); then tf_rc=0
+    else tf_networks=$("$tf_zt_cli" listnetworks 2>&1); tf_rc=$?; fi
     printf '%s\n' "$tf_networks"
     echo __TF_ZT_NETWORKS_RC__
     echo "$tf_rc"

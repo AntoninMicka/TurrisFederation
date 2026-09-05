@@ -172,6 +172,8 @@ mod tests {
         assert_eq!(settings.network_id.as_deref(), Some("abcdef0123456789"));
         assert_eq!(settings.url(), "https://my.zerotier.com/");
         assert!(probe(None, true).is_err());
+        let local_probe = probe(Some("0123456789abcdef"), false).unwrap();
+        assert!(local_probe.contains("/usr/sbin/zerotier-cli"));
     }
     #[test]
     fn parses_legacy_text_and_rejects_malformed_network_list() {

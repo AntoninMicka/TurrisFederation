@@ -122,6 +122,16 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 - [x] Implementovat ZeroTier členství ve společné uložené síti a ruční autorizaci routerů na webu Central.
 - [ ] Ověřit instalaci, autorizaci a zachování ZeroTier identity/členství po restartu na skutečném Turris OS.
 - [ ] Navrhnout WireGuard peery, endpointy, `AllowedIPs`, směrování a pravidla firewallu.
+- [ ] **Budoucí adresní plán WireGuardu:** současný overlay ponechat IPv4; následně
+  doplnit volitelný dual-stack s interními IPv6 adresami WireGuard peerů, bez
+  nutnosti měnit IPv4 LAN routing.
+- [ ] **Oddělit transport a overlay WireGuardu:** umožnit, aby WG endpoint běžel
+  přes ZeroTier IPv4/IPv6 nebo přímé IPv4/IPv6 spojení, zatímco routované sítě
+  a interní WG adresace zůstanou na transportní vrstvě nezávislé.
+- [ ] **Transportní preference/failover:** navrhnout pořadí přímé IPv6 → přímé IPv4
+  → ZeroTier a bezpečnou změnu aktuálního endpointu peeru bez změny `AllowedIPs`.
+- [ ] **IPv6 LAN routing:** až po zavedení dual-stack overlaye doplnit podporu
+  routování IPv6 prefixů mezi lokalitami a odpovídající firewall/health kontroly.
 - [ ] Vyhodnocovat konflikty adres, překryvy sítí a dosažitelnost endpointů před návrhem změn.
 - [ ] Vytvářet konkrétní plán z rozdílu draftu a auditu: balíčky, konfigurace, routy a firewall.
 - [ ] U každé operace ukázat cílový router, současnou a požadovanou hodnotu, závislosti a dopad na připojení.
