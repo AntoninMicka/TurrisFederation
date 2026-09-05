@@ -159,6 +159,15 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 - [ ] CI pro build frontendu, Rust testy a testy auditních dat.
 - [ ] Balíček desktopové aplikace a ověřená matice podporovaných OS/architektur; začít používaným Ubuntu ARM64.
 
+## 6. Budoucí rozvoj a optimalizace
+
+- [ ] **P2: Pokročilé síťování a výkon.**
+  - [ ] Implementovat IPv4 routování přes IPv6 nexthop ve WireGuardu (provoz bez přidělených IPv4 adres na tunelech).
+  - [ ] Šetřit úložiště na Turrisu: minimalizovat zápisy na eMMC, snížit periodu ukládání stavu na minimum.
+- [ ] **P2: Discovery a mobilita.**
+  - [ ] Implementovat discovery mechanismus: odesílání beaconů (30 min pro routery, 30 s pro notebooky pro rychlou re-konektivitu).
+  - [ ] Obousměrná synchronizace nastavení a secrets (sdílených klíčů) přímo mezi notebooky bez závislosti na centrálním uzlu.
+
 ## Nejbližší postup
 
 1. Na routeru ověřit ZeroTier kontrolu → případnou instalaci/nastavení → autorizaci na webu → členství OK a adresu.
