@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus } from "./domain";
+import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
 
 const nodes = ref<FederationNode[]>([]);
 const findings = ref<AuditFinding[]>([]);
 const busyNodeId = ref("");
 const message = ref("");
 const connectionNode = ref<FederationNode | null>(null);
-type ConnectionAction = "connect" | "audit" | "zerotier-check" | "zerotier-setup";
+type ConnectionAction = "connect" | "audit" | "zerotier-check" | "zerotier-setup" | "validate" | "deploy";
 const connectionAction = ref<ConnectionAction>("connect");
 const actionLabels: Record<ConnectionAction, string> = {
+  validate: "Validovat stanoviště", deploy: "Potvrdit a nasadit",
   connect: "Ověřit připojení", audit: "Připojit a auditovat", "zerotier-check": "Zkontrolovat ZeroTier", "zerotier-setup": "Provést nastavení ZeroTier",
 };
 const ztSettings = ref<ZeroTierSettings>({ networkId: null, central: "new" });
@@ -28,6 +29,45 @@ const inspecting = ref(false);
 const submitting = ref(false);
 const settingsFileInput = ref<HTMLInputElement | null>(null);
 const saving = ref(false);
+const editing = ref(false);
+const deployment = ref<DeploymentOverview | null>(null);
+const plans = ref<Record<string, DeploymentPlan>>({});
+const deployConfirmed = ref(false);
+const publishing = ref(false);
+const deploymentError = ref("");
+const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
+
+async function refreshDeployment() {
+  if (!ztSettings.value.networkId) { deployment.value = null; return; }
+  try {
+    deployment.value = await deploymentAction<DeploymentOverview>("overview");
+    deploymentError.value = "";
+  } catch (error) { deploymentError.value = String(error); }
+}
+
+async function publishChanges() {
+  publishing.value = true;
+  try {
+    deployment.value = await deploymentAction<DeploymentOverview>("publish");
+    message.value = "Revize je podepsaná a uložená v notebooku. U nedostupných uzlů zůstává čekající; výsledek aplikování sledujte u stanoviště.";
+    deploymentError.value = "";
+  } catch (error) { deploymentError.value = String(error); }
+  finally { publishing.value = false; }
+}
+
+function editNode(node: FederationNode) {
+  Object.assign(draft, { ...node, lanCidrs: [...node.lanCidrs] });
+  lanCidrsText.value = node.lanCidrs.join(", ");
+  editing.value = true;
+  document.getElementById("draft-form")?.scrollIntoView({ behavior: "smooth" });
+}
+
+function resetDraft() {
+  Object.assign(draft, { id: crypto.randomUUID(), name: "", sshHost: "", sshPort: 22, sshUser: "root", lanCidrs: [], status: "draft", zeroTierAddress: "", wireguardAddress: "", publicEndpoint: "", lastAuditAt: undefined });
+  lanCidrsText.value = "";
+  editing.value = false;
+}
+
 const statusLabels: Record<FederationNode["status"], string> = {
   draft: "Draft", observed: "SSH ověřeno", healthy: "V pořádku", drifted: "Odchylky", unreachable: "Připojení selhalo",
 };
@@ -42,6 +82,7 @@ onMounted(async () => {
     ztSettings.value = await getZeroTierSettings();
     Object.assign(ztDraft, { networkId: ztSettings.value.networkId ?? "", central: ztSettings.value.central });
     await refreshZeroTierStatus();
+    await refreshDeployment();
   }
   catch (error) { message.value = String(error); }
 });
@@ -58,6 +99,7 @@ async function reloadSettings() {
     central: ztSettings.value.central,
   });
   await refreshZeroTierStatus();
+  await refreshDeployment();
 }
 
 async function doExportSettings() {
@@ -85,9 +127,10 @@ async function doImportSettings(event: Event) {
   if (!file) return;
   try {
     await importSettings(await file.text());
+    plans.value = {};
     await reloadSettings();
     findings.value = [];
-    message.value = "Nastavení federace bylo importováno. Auditní data a SSH důvěra nebyly importem změněny.";
+    message.value = "Drafty byly sloučeny podle ID. Uložená SSH důvěra a historie zůstávají zachované; změny vyžadují novou validaci.";
   } catch (error) {
     message.value = String(error);
   }
@@ -98,6 +141,8 @@ async function saveZeroTier() {
   try {
     ztSettings.value = await saveZeroTierSettings({ networkId: ztDraft.networkId.trim() || null, central: ztDraft.central });
     ztDraft.networkId = ztSettings.value.networkId ?? "";
+    plans.value = {};
+    await refreshDeployment();
     message.value = "ZeroTier Network ID je uložené pro federaci. U routeru nyní spusťte kontrolu ZeroTier.";
   } catch (error) { message.value = String(error); }
   finally { ztSaving.value = false; }
@@ -119,8 +164,9 @@ async function addDraft() {
   draft.lanCidrs = lanCidrsText.value.split(",").map((item) => item.trim()).filter(Boolean);
   const saved = await saveNode({ ...draft, lanCidrs: [...draft.lanCidrs] });
   nodes.value = [...nodes.value.filter((node) => node.id !== saved.id), saved];
-  Object.assign(draft, { id: crypto.randomUUID(), name: "", sshHost: "", sshPort: 22, sshUser: "root", lanCidrs: [], status: "draft" });
-  lanCidrsText.value = "";
+  plans.value = {};
+  resetDraft();
+  await refreshDeployment();
   message.value = "Draft uzlu byl uložen. Nyní se můžete připojit přes SSH.";
   } catch (error) { message.value = String(error); }
   finally { saving.value = false; }
@@ -129,6 +175,7 @@ async function addDraft() {
 async function openConnection(node: FederationNode, action: ConnectionAction) {
   connectionNode.value = node;
   connectionAction.value = action;
+  deployConfirmed.value = false;
   ztNetworkForOperation.value = ztSettings.value.networkId;
   openCentralAfterSetup.value = true;
   password.value = "";
@@ -159,13 +206,21 @@ async function submitConnection() {
   const node = connectionNode.value;
   const host = identity.value;
   if (!node || !host || !password.value || (host.trust !== "trusted" && !trustHostKey.value)) return;
+  if (connectionAction.value === "deploy" && (!deployConfirmed.value || !plans.value[node.id])) return;
   submitting.value = true;
   busyNodeId.value = node.id;
   connectionError.value = "";
   const credentials = { password: password.value, hostKey: host.hostKey, trustHostKey: trustHostKey.value };
   password.value = "";
   try {
-    if (connectionAction.value === "audit") {
+    if (connectionAction.value === "validate") {
+      plans.value[node.id] = await deploymentAction<DeploymentPlan>("validate", node.id, credentials);
+      message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut.`;
+    } else if (connectionAction.value === "deploy") {
+      deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id);
+      plans.value = {};
+      message.value = `Deploy ${node.name} dokončen. Stav spojení s protějšky je uveden u stanoviště.`;
+    } else if (connectionAction.value === "audit") {
       findings.value = [];
       findings.value = await auditNode(node.id, credentials);
       message.value = findings.value.length ? `Audit ${node.name}: ${findings.value.length} položek.` : `Audit ${node.name} nezjistil odchylky.`;
@@ -188,7 +243,7 @@ async function submitConnection() {
     credentials.password = "";
     submitting.value = false;
     busyNodeId.value = "";
-    try { nodes.value = await listNodes(); await refreshZeroTierStatus(); }
+    try { nodes.value = await listNodes(); await refreshZeroTierStatus(); await refreshDeployment(); }
     catch (error) { message.value = `Nelze obnovit seznam uzlů: ${String(error)}`; }
   }
 }
@@ -206,18 +261,22 @@ async function submitConnection() {
         <button type="button" class="secondary" @click="settingsFileInput?.click()">Importovat nastavení</button>
         <input ref="settingsFileInput" type="file" accept=".json,application/json" hidden @change="doImportSettings" />
       </div>
-      <small>Import je transakční a nahrazuje přenositelnou konfiguraci federace obsahem souboru.</small>
+      <small>Import sloučí drafty podle ID. Ostatní uzly, jejich přijetí do federace a lokální SSH důvěru zachová. Podpisový klíč notebooku není součástí exportu.</small>
     </section>
     <section class="panel">
-      <div><p class="kicker">Návrh</p><h2>Nový uzel</h2></div>
+      <div id="draft-form"><p class="kicker">Návrh</p><h2>{{ editing ? "Upravit stanoviště" : "Nový draft stanoviště" }}</h2></div>
       <form class="form" @submit.prevent="addDraft">
         <label>Název<input v-model="draft.name" required placeholder="Praha" /></label>
-        <label>SSH adresa<input v-model="draft.sshHost" required placeholder="192.168.1.1" /></label>
+        <label>SSH adresa<input v-model="draft.sshHost" placeholder="192.168.1.1" /></label>
         <label>SSH port<input v-model.number="draft.sshPort" type="number" min="1" max="65535" required /></label>
         <label>SSH uživatel<input v-model="draft.sshUser" required /></label>
-        <label>LAN sítě<input v-model="lanCidrsText" required placeholder="192.168.10.0/24, 10.10.0.0/16" /></label>
-        <label>Veřejný WireGuard endpoint<input v-model="draft.publicEndpoint" placeholder="vpn.example.cz:51820" /></label>
-        <button :disabled="saving">{{ saving ? "Ukládám…" : "Uložit draft" }}</button>
+        <label>LAN sítě<input v-model="lanCidrsText" placeholder="192.168.10.0/24, 10.10.0.0/16" /></label>
+        <label>IPv4 adresa v ZeroTier<input v-model="draft.zeroTierAddress" placeholder="10.147.17.1" /></label>
+        <label>IPv4 adresa WireGuard tunelu<input v-model="draft.wireguardAddress" placeholder="10.203.0.1" /></label>
+        <label>Veřejný endpoint (rezerva pro přímé spojení)<input v-model="draft.publicEndpoint" placeholder="vpn.example.cz:51820" /></label>
+        <small>Draft může být neúplný. Pro deploy doplňte unikátní adresy bez prefixu; WireGuard se v této verzi spojuje přes ZeroTier.</small>
+        <button type="button" v-if="editing" class="secondary" @click="resetDraft">Zrušit úpravy</button>
+        <button :disabled="saving || !!connectionNode || publishing">{{ saving ? "Ukládám…" : (editing ? "Uložit opravy" : "Uložit draft") }}</button>
       </form>
     </section>
     <section class="panel">
@@ -232,6 +291,19 @@ async function submitConnection() {
       <small>Uložená síť: {{ ztSettings.networkId ?? 'zatím nevybraná' }}. Uložení mění pouze místní návrh; router změní až akce „Provést nastavení ZeroTier“.</small>
     </section>
     <section class="panel">
+      <div><p class="kicker">Deploy a synchronizace</p><h2>Postupné zprovoznění stanovišť</h2></div>
+      <p>Každé nové stanoviště nejprve připojte a validujte z tohoto notebooku. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
+      <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
+      <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
+      <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
+      <p>Po opravách u druhého routeru aktualizujte první při návratu. Jakmile funguje zabezpečené spojení, publikované opravy si routery předávají automaticky. Nedostupný uzel může zůstat na starší revizi.</p>
+      <div class="node-actions">
+        <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
+        <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
+      </div>
+      <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Nové stanoviště vyžaduje deploy z notebooku. WireGuard automaticky obnovuje relační klíče.</small>
+    </section>
+    <section class="panel">
       <div><p class="kicker">Inventář</p><h2>Uzly federace</h2></div>
       <p v-if="!nodes.length" class="muted">Zatím není založen žádný uzel.</p>
       <div class="node-grid">
@@ -239,9 +311,27 @@ async function submitConnection() {
           <div class="node-heading">
           <div><span :class="['status', node.status]">{{ statusLabels[node.status] }}</span><h3>{{ node.name }}</h3><p>{{ node.sshUser }}@{{ node.sshHost }}:{{ node.sshPort }}</p><small>{{ node.lanCidrs.join(' · ') }}</small></div>
           <div class="node-actions">
+            <button class="secondary" :disabled="!!connectionNode || publishing" @click="editNode(node)">Upravit draft</button>
             <button :disabled="!!busyNodeId || !!connectionNode" @click="openConnection(node, 'connect')">Připojit</button>
             <button class="secondary" :disabled="!!busyNodeId || !!connectionNode" @click="openConnection(node, 'audit')">Auditovat skutečný stav</button>
           </div>
+          </div>
+          <div class="zerotier-node">
+            <strong>Nasazení stanoviště</strong>
+            <p>{{ deployment?.nodes[node.id]?.enrolled ? 'Přijato notebookem' : 'Draft · vyžaduje přijetí z notebooku' }} · {{ deployment?.nodes[node.id]?.reachable === false ? 'Nedostupné · zobrazen poslední známý stav' : deploymentLabels[deployment?.nodes[node.id]?.state ?? ''] ?? 'Zatím nenasazeno' }}</p>
+            <p>Požadovaná revize {{ deployment?.revision ?? 0 }} · přijatá {{ deployment?.nodes[node.id]?.receivedRevision ?? '—' }} · aplikovaná {{ deployment?.nodes[node.id]?.appliedRevision ?? '—' }}</p>
+            <p v-if="deployment?.nodes[node.id]?.appliedRevision && deployment.nodes[node.id].appliedRevision !== deployment.revision" class="warning">Čeká na opravy z novější revize.</p>
+            <p v-if="deployment?.nodes[node.id]?.error" class="error">{{ deployment.nodes[node.id].error }}</p>
+            <small v-if="deployment?.nodes[node.id]?.checkedAt">Poslední výsledek: {{ new Date(deployment.nodes[node.id].checkedAt! * 1000).toLocaleString('cs-CZ') }}</small>
+            <details v-if="plans[node.id]">
+              <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
+              <ol><li v-for="step in plans[node.id].steps" :key="step">{{ step }}</li></ol>
+              <pre>{{ JSON.stringify(plans[node.id].config, null, 2) }}</pre>
+            </details>
+            <div class="node-actions">
+              <button class="secondary" :disabled="!!connectionNode || publishing || !ztSettings.networkId" @click="openConnection(node, 'validate')">Validovat z notebooku</button>
+              <button v-if="plans[node.id]" :disabled="!!connectionNode || publishing" @click="openConnection(node, 'deploy')">Deploy na stanoviště</button>
+            </div>
           </div>
           <div class="zerotier-node">
             <strong>ZeroTier</strong>
@@ -298,6 +388,12 @@ async function submitConnection() {
           <p>Povolí spravované adresy a trasy této sítě. Převzetí výchozí trasy, veřejných rozsahů a DNS zůstane vypnuté. Existující členství v dalších sítích zachová.</p>
           <label class="trust-check"><input v-model="openCentralAfterSetup" type="checkbox" :disabled="submitting" />Po nastavení otevřít ZeroTier Central pro autorizaci.</label>
         </div>
+        <div v-if="connectionAction === 'deploy' && plans[connectionNode.id]" class="setup-preview">
+          <strong>Plán nasazení na {{ connectionNode.name }}</strong>
+          <ol><li v-for="step in plans[connectionNode.id].steps" :key="step">{{ step }}</li></ol>
+          <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
+          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci a aplikování tohoto plánu.</label>
+        </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>
         <button v-if="!identity && !inspecting" @click="inspectHost">Zkusit načíst znovu</button>
@@ -308,8 +404,8 @@ async function submitConnection() {
           <pre class="fingerprints">{{ identity.fingerprints }}</pre>
           <label v-if="identity.trust !== 'trusted'" class="trust-check"><input v-model="trustHostKey" type="checkbox" :disabled="submitting" />Ověřil(a) jsem otisky a důvěřuji tomuto routeru.</label>
           <label>SSH heslo<input v-model="password" type="password" autocomplete="off" required :disabled="submitting" /></label>
-          <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ connectionAction === 'zerotier-setup' ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
-          <button :disabled="submitting || !password || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
+          <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ (connectionAction === 'zerotier-setup' || connectionAction === 'deploy') ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
+          <button :disabled="submitting || !password || (connectionAction === 'deploy' && !deployConfirmed) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
         </form>
         <button class="secondary" :disabled="submitting || inspecting" @click="closeConnection">Zavřít</button>
       </section>

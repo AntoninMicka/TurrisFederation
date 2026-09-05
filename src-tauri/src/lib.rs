@@ -6,6 +6,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 mod ssh;
 mod network;
 mod zerotier;
+mod deployment;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -16,15 +17,18 @@ struct AppState { db: Mutex<Connection>, ssh_dir: PathBuf }
 struct FederationNode {
     id: String, name: String, ssh_host: String, ssh_port: u16, ssh_user: String,
     lan_cidrs: Vec<String>, zero_tier_address: Option<String>, public_endpoint: Option<String>,
-    status: String, last_audit_at: Option<String>,
+    #[serde(default = "draft_status")] status: String, last_audit_at: Option<String>,
+    #[serde(default)] wireguard_address: Option<String>,
 }
+
+fn draft_status() -> String { "draft".into() }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsExport {
     version: u32,
     exported_at: String,
-    nodes: Vec<FederationNode>,
+    nodes: Vec<serde_json::Value>,
     zerotier: zerotier::Settings,
 }
 
@@ -43,40 +47,59 @@ fn migrate(db: &Connection) -> Result<(), String> {
       CREATE TABLE IF NOT EXISTS ssh_host_keys (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,host TEXT NOT NULL,port INTEGER NOT NULL,keys TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS zerotier_status (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,payload TEXT NOT NULL);")
-      .map_err(|error| error.to_string())
+      .map_err(|error| error.to_string())?;
+    let has_column = {
+        let mut statement = db.prepare("PRAGMA table_info(nodes)").map_err(|e| e.to_string())?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1)).map_err(|e| e.to_string())?;
+        columns.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.iter().any(|name| name == "wireguard_address")
+    };
+    if !has_column { db.execute_batch("ALTER TABLE nodes ADD COLUMN wireguard_address TEXT;").map_err(|e| e.to_string())?; }
+    // Retain audit metadata, remove historical raw sections which could contain private keys.
+    let mut statement = db.prepare("SELECT id,payload FROM observations WHERE payload LIKE '%__TF_UCI_%' OR payload LIKE '%__TF_WIREGUARD__%'").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    for (id, payload) in rows {
+        let mut omit = false;
+        let safe = payload.lines().filter(|line| {
+            if line.starts_with("__TF_") { omit = line.starts_with("__TF_UCI_") || *line == "__TF_WIREGUARD__"; }
+            !omit
+        }).collect::<Vec<_>>().join("\n");
+        db.execute("UPDATE observations SET payload=?1 WHERE id=?2", params![safe,id]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<FederationNode> {
     let lan_cidrs: String = row.get(5)?;
-    Ok(FederationNode { id: row.get(0)?, name: row.get(1)?, ssh_host: row.get(2)?, ssh_port: row.get(3)?, ssh_user: row.get(4)?, lan_cidrs: serde_json::from_str(&lan_cidrs).unwrap_or_default(), zero_tier_address: row.get(6)?, public_endpoint: row.get(7)?, status: row.get(8)?, last_audit_at: row.get(9)? })
+    Ok(FederationNode { id: row.get(0)?, name: row.get(1)?, ssh_host: row.get(2)?, ssh_port: row.get(3)?, ssh_user: row.get(4)?, lan_cidrs: serde_json::from_str(&lan_cidrs).unwrap_or_default(), zero_tier_address: row.get(6)?, public_endpoint: row.get(7)?, status: row.get(8)?, last_audit_at: row.get(9)?, wireguard_address: row.get(10)? })
 }
 
 #[tauri::command]
 fn list_nodes(state: State<'_, AppState>) -> Result<Vec<FederationNode>, String> {
     let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
-    let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at FROM nodes ORDER BY name").map_err(|error| error.to_string())?;
+    let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address FROM nodes ORDER BY name").map_err(|error| error.to_string())?;
     let rows = statement.query_map([], row_to_node).map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
 }
 
 fn list_nodes_from_db(db: &Connection) -> Result<Vec<FederationNode>, String> {
-    let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at FROM nodes ORDER BY name")
+    let mut statement = db.prepare("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address FROM nodes ORDER BY name")
         .map_err(|error| error.to_string())?;
     let rows = statement.query_map([], row_to_node).map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
 }
 
 fn validate_import_node(node: &FederationNode) -> Result<(), String> {
-    if node.id.trim().is_empty() {
-        return Err("Import obsahuje uzel bez ID.".into());
+    if Uuid::parse_str(&node.id).is_err() {
+        return Err("Uzel musí mít platné UUID.".into());
     }
     if node.name.trim().is_empty() {
         return Err(format!("Uzel {} nemá název.", node.id));
     }
-    ssh::validate(&node.ssh_host, &node.ssh_user, node.ssh_port)?;
+    if !node.ssh_host.is_empty() { ssh::validate(&node.ssh_host, &node.ssh_user, node.ssh_port)?; }
     for cidr in &node.lan_cidrs {
-        if cidr.trim().is_empty() {
-            return Err(format!("Uzel {} obsahuje prázdnou LAN síť.", node.name));
+        if network::cidr(cidr).is_none() {
+            return Err(format!("Uzel {} obsahuje neplatnou LAN síť.", node.name));
         }
     }
     Ok(())
@@ -86,9 +109,14 @@ fn validate_import_node(node: &FederationNode) -> Result<(), String> {
 fn export_settings(state: State<'_, AppState>) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
     let export = SettingsExport {
-        version: 1,
+        version: 2,
         exported_at: Utc::now().to_rfc3339(),
-        nodes: list_nodes_from_db(&db)?,
+        nodes: list_nodes_from_db(&db)?.into_iter().map(|node| {
+            let mut value = serde_json::to_value(node).map_err(|e| e.to_string())?;
+            value.as_object_mut().unwrap().remove("status");
+            value.as_object_mut().unwrap().remove("lastAuditAt");
+            Ok(value)
+        }).collect::<Result<Vec<_>, String>>()?,
         zerotier: load_zerotier_settings(&db)?,
     };
     serde_json::to_string_pretty(&export).map_err(|error| error.to_string())
@@ -96,28 +124,31 @@ fn export_settings(state: State<'_, AppState>) -> Result<String, String> {
 
 #[tauri::command]
 fn import_settings(payload: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    import_settings_to_db(&payload, &mut db)
+}
+
+fn import_settings_to_db(payload: &str, db: &mut Connection) -> Result<(), String> {
     let mut import: SettingsExport = serde_json::from_str(&payload)
         .map_err(|error| format!("Soubor není platný export Turris Federation: {error}"))?;
-    if import.version != 1 {
+    if ![1, 2].contains(&import.version) {
         return Err(format!("Nepodporovaná verze exportu {}.", import.version));
     }
     import.zerotier = import.zerotier.normalize()?;
-    for node in &import.nodes {
+    let imported_nodes = import.nodes.into_iter().map(|value| serde_json::from_value::<FederationNode>(value).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    let mut ids = std::collections::HashSet::new();
+    for node in &imported_nodes {
         validate_import_node(node)?;
+        if !ids.insert(&node.id) { return Err("Import obsahuje duplicitní ID uzlu.".into()); }
     }
 
-    let mut db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
     let tx = db.transaction().map_err(|error| error.to_string())?;
 
-    tx.execute("DELETE FROM zerotier_status", []).map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM observations", []).map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM ssh_host_keys", []).map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM nodes", []).map_err(|error| error.to_string())?;
 
-    for node in import.nodes {
+    for node in imported_nodes {
         tx.execute(
-            "INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'draft',NULL)",
+            "INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'draft',NULL,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,ssh_host=excluded.ssh_host,ssh_port=excluded.ssh_port,ssh_user=excluded.ssh_user,lan_cidrs=excluded.lan_cidrs,zero_tier_address=excluded.zero_tier_address,public_endpoint=excluded.public_endpoint,wireguard_address=excluded.wireguard_address,status='draft',last_audit_at=NULL",
             params![
                 node.id,
                 node.name,
@@ -126,7 +157,7 @@ fn import_settings(payload: String, state: State<'_, AppState>) -> Result<(), St
                 node.ssh_user,
                 serde_json::to_string(&node.lan_cidrs).map_err(|error| error.to_string())?,
                 node.zero_tier_address,
-                node.public_endpoint
+                node.public_endpoint, node.wireguard_address
             ],
         ).map_err(|error| error.to_string())?;
     }
@@ -142,16 +173,15 @@ fn import_settings(payload: String, state: State<'_, AppState>) -> Result<(), St
 
 #[tauri::command]
 fn save_node(node: FederationNode, state: State<'_, AppState>) -> Result<FederationNode, String> {
-    if node.name.trim().is_empty() { return Err("Název uzlu je povinný.".into()); }
-    ssh::validate(&node.ssh_host, &node.ssh_user, node.ssh_port)?;
+    validate_import_node(&node)?;
     let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
-    db.execute("INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,ssh_host=excluded.ssh_host,ssh_port=excluded.ssh_port,ssh_user=excluded.ssh_user,lan_cidrs=excluded.lan_cidrs,zero_tier_address=excluded.zero_tier_address,public_endpoint=excluded.public_endpoint,status=excluded.status,last_audit_at=excluded.last_audit_at",
-      params![node.id,node.name,node.ssh_host,node.ssh_port,node.ssh_user,serde_json::to_string(&node.lan_cidrs).map_err(|error| error.to_string())?,node.zero_tier_address,node.public_endpoint,node.status,node.last_audit_at]).map_err(|error| error.to_string())?;
-    Ok(node)
+    db.execute("INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'draft',NULL,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,ssh_host=excluded.ssh_host,ssh_port=excluded.ssh_port,ssh_user=excluded.ssh_user,lan_cidrs=excluded.lan_cidrs,zero_tier_address=excluded.zero_tier_address,public_endpoint=excluded.public_endpoint,wireguard_address=excluded.wireguard_address,status='draft',last_audit_at=NULL",
+      params![node.id,node.name,node.ssh_host,node.ssh_port,node.ssh_user,serde_json::to_string(&node.lan_cidrs).map_err(|error| error.to_string())?,node.zero_tier_address,node.public_endpoint,node.wireguard_address]).map_err(|error| error.to_string())?;
+    load_node(&db, &node.id)
 }
 
 fn load_node(db: &Connection, node_id: &str) -> Result<FederationNode, String> {
-    db.query_row("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at FROM nodes WHERE id=?1", [node_id], row_to_node).map_err(|_| "Uzel nebyl nalezen.".to_string())
+    db.query_row("SELECT id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address FROM nodes WHERE id=?1", [node_id], row_to_node).map_err(|_| "Uzel nebyl nalezen.".to_string())
 }
 
 fn saved_host_key(db: &Connection, node: &FederationNode) -> Result<Option<String>, String> {
@@ -221,7 +251,7 @@ async fn connect_node(node_id: String, credentials: SshCredentials, state: State
 async fn audit_node(node_id: String, credentials: SshCredentials, state: State<'_, AppState>) -> Result<Vec<AuditFinding>, String> {
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
     let zt_probe = zerotier::probe(settings.network_id.as_deref(), false)?;
-    let probe = format!("set +e; echo __TF_SYSTEM__; ubus call system board 2>&1; {} echo __TF_WIREGUARD__; wg show all dump 2>&1; echo __TF_PACKAGES__; opkg status zerotier wireguard-tools 2>&1; echo __TF_UCI_NETWORK__; uci export network 2>&1; echo __TF_UCI_FIREWALL__; uci export firewall 2>&1; {}", network::PROBE, zt_probe);
+    let probe = format!("set +e; echo __TF_SYSTEM__; ubus call system board 2>&1; {} echo __TF_WIREGUARD__; wg show all public-key 2>&1; echo __TF_PACKAGES__; opkg status zerotier wireguard-tools 2>&1; {}", network::PROBE, zt_probe);
     let (node, payload) = authenticated_probe(&node_id, credentials, &state, &probe).await?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let observed_at = Utc::now().to_rfc3339();
@@ -233,7 +263,7 @@ async fn audit_node(node_id: String, credentials: SshCredentials, state: State<'
     Ok(findings)
 }
 
-// Pouze výstup příslušné kontroly; celý audit obsahuje i citlivou konfiguraci.
+// Pouze výstup příslušné kontroly.
 fn audit_section<'a>(payload: &'a str, marker: &str) -> Option<String> {
     let mut lines = payload.lines().skip_while(|line| line.trim() != marker);
     lines.next()?;
@@ -304,7 +334,7 @@ mod audit_tests {
     use super::*;
     fn node() -> FederationNode {
         FederationNode { id: "test".into(), name: "Router".into(), ssh_host: "router".into(), ssh_port: 22, ssh_user: "root".into(),
-            lan_cidrs: vec!["192.168.10.0/24".into()], zero_tier_address: None, public_endpoint: None, status: "draft".into(), last_audit_at: None }
+            lan_cidrs: vec!["192.168.10.0/24".into()], zero_tier_address: None, public_endpoint: None, status: "draft".into(), last_audit_at: None, wireguard_address: None }
     }
     #[test]
     fn findings_include_relevant_state_without_configuration_secrets() {
@@ -419,5 +449,5 @@ pub fn run() {
         let db = Connection::open(data_dir.join("federation.db"))?;
         migrate(&db).map_err(std::io::Error::other)?;
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
-    }).invoke_handler(tauri::generate_handler![list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }

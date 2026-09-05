@@ -59,3 +59,8 @@ export async function openZeroTierCentral(): Promise<string> {
   if (browserMode) throw new Error("Otevření ZeroTier Central použijte v desktopové aplikaci.");
   return invoke("open_zerotier_central");
 }
+
+export async function deploymentAction<T>(action: "overview" | "validate" | "deploy" | "publish", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null): Promise<T> {
+  if (browserMode) throw new Error("Deploy a synchronizace jsou dostupné v desktopové aplikaci.");
+  return invoke("deployment_action", { action, nodeId, credentials, planId });
+}

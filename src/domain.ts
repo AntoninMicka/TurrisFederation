@@ -9,6 +9,7 @@ export interface FederationNode {
   lanCidrs: string[];
   zeroTierAddress?: string;
   publicEndpoint?: string;
+  wireguardAddress?: string;
   status: NodeStatus;
   lastAuditAt?: string;
 }
@@ -59,4 +60,28 @@ export interface ZeroTierStatus {
   summary: string;
   details: string;
   checkedAt: string;
+}
+
+export interface DeploymentReport {
+  enrolled: boolean;
+  state?: "pending" | "error" | "confirming" | "waiting_peers" | "active" | "rollback" | "revoked";
+  receivedRevision?: number;
+  appliedRevision?: number;
+  pendingPeers?: string[];
+  error?: string;
+  reachable?: boolean;
+  checkedAt?: number;
+}
+export interface DeploymentOverview {
+  revision: number;
+  unpublishedChanges: boolean;
+  fingerprint: string | null;
+  nodes: Record<string, DeploymentReport>;
+}
+export interface DeploymentPlan {
+  id: string;
+  nodeId: string;
+  expiresAt: number;
+  steps: string[];
+  config: { networkId: string; nodes: { id: string; name: string; lanCidrs: string[]; zeroTierAddress: string | null; wireguardAddress: string | null }[] };
 }
