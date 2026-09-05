@@ -2,6 +2,8 @@
 
 Desktopový orchestrátor a routerový agent pro bezpečnou správu federace Turris Omnia.
 
+Stav implementace a další kroky: [roadmapa a TODO seznam](ROADMAP.md).
+
 Spuštění na Ubuntu/Debianu:
 
 ```bash
@@ -24,3 +26,12 @@ Při spuštění z terminálu editoru instalovaného přes Snap wrapper odstran�
 zděděné cesty dynamických knihoven a GTK/GIO modulů a obnoví systémové datové
 cesty. Tím zabrání míchání knihoven Snapu se systémovým WebKitem; změna platí
 jen pro proces skriptu a jeho potomky.
+
+U uloženého draftu zvolte **Připojit**, porovnejte zobrazené SHA256 otisky
+SSH klíčů s routerem a při prvním připojení potvrďte důvěru. Zadejte SSH heslo.
+Úspěšné ověření změní stav draftu na **SSH ověřeno**; nejde o trvalou relaci.
+**Auditovat skutečný stav** si vyžádá heslo pro načtení stavu routeru.
+Hesla se neukládají do databáze ani do argumentů příkazové řádky. SSH používá
+potvrzené klíče; změna klíče vyžaduje nové ověření a potvrzení. Připojení
+používá přímo adresu, port a uživatele z draftu, bez aliasů v `~/.ssh/config`.
+Wrapper doplní potřebné balíčky `openssh-client` a `sshpass`.

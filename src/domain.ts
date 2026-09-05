@@ -20,5 +20,19 @@ export interface AuditFinding {
   component: "system" | "zerotier" | "wireguard" | "routes" | "firewall";
   summary: string;
   remediation?: string;
+  expectedState: string;
+  observedState: string;
+  observedAt: string;
 }
 
+export interface HostIdentity {
+  hostKey: string;
+  fingerprints: string;
+  trust: "new" | "trusted" | "changed";
+}
+
+export interface SshCredentials {
+  password: string;
+  hostKey: string;
+  trustHostKey: boolean;
+}
