@@ -34,6 +34,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] Základní seznam odchylek a stavy draft / ověřeno / odchylky / v pořádku / připojení selhalo.
 - [x] U odchylek zobrazit očekávaný i načtený stav příslušné kontroly, uzel a čas auditu.
 - [x] Při nepodporovaném `ip -j` použít textový výstup BusyBoxu; sledovat návratové kódy načítání adres a tras.
+- [x] Uložené ZeroTier Network ID pro federaci a volba nového/Legacy Central.
+- [x] Kontrola služby ZeroTier, konkrétního členství, autorizace, adres a UCI persistence; uchování posledního výsledku.
+- [x] Instalace přes opkg, záloha UCI, nastavení členství pro staré/nové schéma a start služby po potvrzení kroků.
+- [x] Otevření ZeroTier Central v systémovém prohlížeči a obnovení stavu po ruční autorizaci.
 - [x] Ověřen build frontendu a šest Rust testů včetně předání hesla přes skutečný `sshpass` s testovacím SSH procesem.
 
 **Současné omezení:** připojení ověřuje jednotlivý SSH příkaz, neudržuje trvalou
@@ -74,7 +78,8 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 
 - [ ] Potvrdit role ZeroTier a WireGuard: discovery/správa, datový provoz a požadovaná topologie.
 - [ ] Doplnit model federace: členství, síťové identifikátory, adresní plán a vztahy mezi uzly.
-- [ ] Navrhnout ZeroTier členství a postup autorizace jednotlivých routerů.
+- [x] Implementovat ZeroTier členství ve společné uložené síti a ruční autorizaci routerů na webu Central.
+- [ ] Ověřit instalaci, autorizaci a zachování ZeroTier identity/členství po restartu na skutečném Turris OS.
 - [ ] Navrhnout WireGuard peery, endpointy, `AllowedIPs`, směrování a pravidla firewallu.
 - [ ] Vyhodnocovat konflikty adres, překryvy sítí a dosažitelnost endpointů před návrhem změn.
 - [ ] Vytvářet konkrétní plán z rozdílu draftu a auditu: balíčky, konfigurace, routy a firewall.
@@ -115,8 +120,8 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## Nejbližší postup
 
-1. Dokončit reálné připojení heslem a získat případnou konkrétní chybu.
-2. Opravit sběr citlivých dat a rozpoznávání neúplného auditu.
-3. Ověřit audit jednoho routeru, doplnit editaci a detail uzlu.
-4. Na dvou uzlech upřesnit topologii a vytvořit první plán bez zápisu.
-5. Teprve potom zavést aplikování změn a rollback.
+1. Na routeru ověřit ZeroTier kontrolu → případnou instalaci/nastavení → autorizaci na webu → členství OK a adresu.
+2. Potvrdit zachování identity a členství po restartu a dostupnost přes požadovanou správcovskou cestu.
+3. Před deployem opravit sběr citlivých dat a zbývající případy neúplného auditu.
+4. Navrhnout konkrétní deploy na dvou uzlech: topologii, routy, firewall a WireGuard, včetně náhledu změn.
+5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Deploy zatím není implementovaný.

@@ -1,14 +1,25 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { auditNode, connectNode, inspectConnection, listNodes, saveNode } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity } from "./domain";
+import { auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral } from "./backend";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const nodes = ref<FederationNode[]>([]);
 const findings = ref<AuditFinding[]>([]);
 const busyNodeId = ref("");
 const message = ref("");
 const connectionNode = ref<FederationNode | null>(null);
-const connectionAction = ref<"connect" | "audit">("connect");
+type ConnectionAction = "connect" | "audit" | "zerotier-check" | "zerotier-setup";
+const connectionAction = ref<ConnectionAction>("connect");
+const actionLabels: Record<ConnectionAction, string> = {
+  connect: "Ověřit připojení", audit: "Připojit a auditovat", "zerotier-check": "Zkontrolovat ZeroTier", "zerotier-setup": "Provést nastavení ZeroTier",
+};
+const ztSettings = ref<ZeroTierSettings>({ networkId: null, central: "new" });
+const ztDraft = reactive({ networkId: "", central: "new" as ZeroTierSettings["central"] });
+const ztStatuses = ref<Record<string, ZeroTierStatus>>({});
+const ztSaving = ref(false);
+const ztNetworkForOperation = ref<string | null>(null);
+const openCentralAfterSetup = ref(true);
+const browserOpening = ref(false);
 const identity = ref<HostIdentity | null>(null);
 const password = ref("");
 const trustHostKey = ref(false);
@@ -25,9 +36,37 @@ const draft = reactive<FederationNode>({
 const lanCidrsText = ref("");
 
 onMounted(async () => {
-  try { nodes.value = await listNodes(); }
+  try {
+    nodes.value = await listNodes();
+    ztSettings.value = await getZeroTierSettings();
+    Object.assign(ztDraft, { networkId: ztSettings.value.networkId ?? "", central: ztSettings.value.central });
+    await refreshZeroTierStatus();
+  }
   catch (error) { message.value = String(error); }
 });
+
+async function refreshZeroTierStatus() {
+  ztStatuses.value = Object.fromEntries((await listZeroTierStatus()).map(status => [status.routerId, status]));
+}
+
+async function saveZeroTier() {
+  ztSaving.value = true;
+  try {
+    ztSettings.value = await saveZeroTierSettings({ networkId: ztDraft.networkId.trim() || null, central: ztDraft.central });
+    ztDraft.networkId = ztSettings.value.networkId ?? "";
+    message.value = "ZeroTier Network ID je uložené pro federaci. U routeru nyní spusťte kontrolu ZeroTier.";
+  } catch (error) { message.value = String(error); }
+  finally { ztSaving.value = false; }
+}
+
+async function openCentral() {
+  browserOpening.value = true;
+  try {
+    await openZeroTierCentral();
+    message.value = "V ZeroTier Central vyberte uloženou síť a autorizujte zařízení podle jeho ZeroTier ID. Potom obnovte stav routeru.";
+  } catch (error) { message.value = String(error); }
+  finally { browserOpening.value = false; }
+}
 
 async function addDraft() {
   message.value = "";
@@ -43,9 +82,11 @@ async function addDraft() {
   finally { saving.value = false; }
 }
 
-async function openConnection(node: FederationNode, action: "connect" | "audit") {
+async function openConnection(node: FederationNode, action: ConnectionAction) {
   connectionNode.value = node;
   connectionAction.value = action;
+  ztNetworkForOperation.value = ztSettings.value.networkId;
+  openCentralAfterSetup.value = true;
   password.value = "";
   identity.value = null;
   trustHostKey.value = false;
@@ -84,6 +125,12 @@ async function submitConnection() {
       findings.value = [];
       findings.value = await auditNode(node.id, credentials);
       message.value = findings.value.length ? `Audit ${node.name}: ${findings.value.length} položek.` : `Audit ${node.name} nezjistil odchylky.`;
+    } else if (connectionAction.value === "zerotier-check" || connectionAction.value === "zerotier-setup") {
+      const configure = connectionAction.value === "zerotier-setup";
+      const status = await manageZeroTier(node.id, credentials, ztNetworkForOperation.value, configure);
+      ztStatuses.value[node.id] = status;
+      message.value = `${node.name}: ${status.summary}`;
+      if (configure && openCentralAfterSetup.value && status.deviceId) await openCentral();
     } else {
       const connected = await connectNode(node.id, credentials);
       nodes.value = nodes.value.map(item => item.id === connected.id ? connected : item);
@@ -97,7 +144,7 @@ async function submitConnection() {
     credentials.password = "";
     submitting.value = false;
     busyNodeId.value = "";
-    try { nodes.value = await listNodes(); }
+    try { nodes.value = await listNodes(); await refreshZeroTierStatus(); }
     catch (error) { message.value = `Nelze obnovit seznam uzlů: ${String(error)}`; }
   }
 }
@@ -120,14 +167,50 @@ async function submitConnection() {
       </form>
     </section>
     <section class="panel">
+      <div><p class="kicker">ZeroTier</p><h2>Síť federace</h2></div>
+      <p>Uložte Network ID ze ZeroTier Central. U každého routeru potom zkontrolujte stav a podle potřeby proveďte instalaci a připojení do sítě.</p>
+      <form class="form" @submit.prevent="saveZeroTier">
+        <label>Network ID<input v-model="ztDraft.networkId" pattern="[0-9a-fA-F]{16}" maxlength="16" placeholder="16 hexadecimálních znaků" :disabled="!!connectionNode || ztSaving" /></label>
+        <label>Web pro autorizaci<select v-model="ztDraft.central" :disabled="!!connectionNode || ztSaving"><option value="new">ZeroTier Central (central.zerotier.com)</option><option value="legacy">Legacy Central (my.zerotier.com)</option></select></label>
+        <button :disabled="ztSaving || !!connectionNode">{{ ztSaving ? 'Ukládám…' : 'Uložit nastavení ZeroTier' }}</button>
+        <button type="button" class="secondary" :disabled="browserOpening" @click="openCentral">Otevřít ZeroTier Central</button>
+      </form>
+      <small>Uložená síť: {{ ztSettings.networkId ?? 'zatím nevybraná' }}. Uložení mění pouze místní návrh; router změní až akce „Provést nastavení ZeroTier“.</small>
+    </section>
+    <section class="panel">
       <div><p class="kicker">Inventář</p><h2>Uzly federace</h2></div>
       <p v-if="!nodes.length" class="muted">Zatím není založen žádný uzel.</p>
       <div class="node-grid">
         <article v-for="node in nodes" :key="node.id" class="node">
+          <div class="node-heading">
           <div><span :class="['status', node.status]">{{ statusLabels[node.status] }}</span><h3>{{ node.name }}</h3><p>{{ node.sshUser }}@{{ node.sshHost }}:{{ node.sshPort }}</p><small>{{ node.lanCidrs.join(' · ') }}</small></div>
           <div class="node-actions">
             <button :disabled="!!busyNodeId || !!connectionNode" @click="openConnection(node, 'connect')">Připojit</button>
             <button class="secondary" :disabled="!!busyNodeId || !!connectionNode" @click="openConnection(node, 'audit')">Auditovat skutečný stav</button>
+          </div>
+          </div>
+          <div class="zerotier-node">
+            <strong>ZeroTier</strong>
+            <template v-if="ztStatuses[node.id]">
+              <p :class="{ error: ztStatuses[node.id].state === 'error' || ztStatuses[node.id].state === 'unknown' }">{{ ztStatuses[node.id].summary }}</p>
+              <p v-if="ztStatuses[node.id].networkId !== ztSettings.networkId" class="warning">Tento výsledek patří jiné síti. Pro uložené Network ID spusťte novou kontrolu.</p>
+              <dl class="zt-facts">
+                <div><dt>ZeroTier ID zařízení</dt><dd><code>{{ ztStatuses[node.id].deviceId ?? 'nezjištěno' }}</code></dd></div>
+                <div><dt>Network ID při kontrole</dt><dd><code>{{ ztStatuses[node.id].networkId ?? 'nevybráno' }}</code></dd></div>
+                <div><dt>Služba / verze</dt><dd>{{ ztStatuses[node.id].online === null ? 'nezjištěno' : ztStatuses[node.id].online ? 'ONLINE' : 'OFFLINE' }} / {{ ztStatuses[node.id].version ?? '—' }}</dd></div>
+                <div><dt>Členství v síti</dt><dd>{{ ztStatuses[node.id].networkStatus ?? 'nezjištěno nebo nepřipojeno' }}</dd></div>
+                <div><dt>Přidělené adresy</dt><dd>{{ ztStatuses[node.id].assignedAddresses.join(', ') || 'zatím žádné' }}</dd></div>
+                <div><dt>Po restartu routeru</dt><dd>{{ ztStatuses[node.id].persistent && ztStatuses[node.id].serviceEnabled ? 'Členství uložené, automatický start zapnutý' : 'Trvalé nastavení nepotvrzeno' }}</dd></div>
+              </dl>
+              <small>Načteno {{ new Date(ztStatuses[node.id].checkedAt).toLocaleString('cs-CZ') }}</small>
+              <details><summary>Načtený výstup ZeroTier</summary><pre>{{ ztStatuses[node.id].details }}</pre></details>
+            </template>
+            <p v-else class="muted">ZeroTier zatím nebyl zkontrolován.</p>
+            <div class="node-actions">
+              <button class="secondary" :disabled="!!busyNodeId || !!connectionNode || ztSaving" @click="openConnection(node, 'zerotier-check')">{{ ztStatuses[node.id] ? 'Obnovit stav ZeroTier' : 'Zkontrolovat ZeroTier' }}</button>
+              <button v-if="ztStatuses[node.id] && ztStatuses[node.id].networkId === ztSettings.networkId" :disabled="!ztSettings.networkId || !!busyNodeId || !!connectionNode || ztSaving" @click="openConnection(node, 'zerotier-setup')">{{ ztStatuses[node.id].installed ? 'Nastavit a připojit ZeroTier' : 'Nainstalovat a nastavit ZeroTier' }}</button>
+              <button v-if="ztStatuses[node.id]?.deviceId" class="secondary" :disabled="browserOpening" @click="openCentral">Autorizovat na webu</button>
+            </div>
           </div>
         </article>
       </div>
@@ -148,8 +231,19 @@ async function submitConnection() {
     </section>
     <div v-if="connectionNode" class="modal-backdrop">
       <section class="connection-dialog panel" role="dialog" aria-modal="true" aria-labelledby="connection-title">
-        <h2 id="connection-title">{{ connectionAction === 'audit' ? 'SSH audit' : 'Připojení přes SSH' }} · {{ connectionNode.name }}</h2>
+        <h2 id="connection-title">{{ actionLabels[connectionAction] }} · {{ connectionNode.name }}</h2>
         <p>{{ connectionNode.sshUser }}@{{ connectionNode.sshHost }}:{{ connectionNode.sshPort }}</p>
+        <div v-if="connectionAction === 'zerotier-setup'" class="setup-preview">
+          <strong>Změny na routeru {{ connectionNode.name }}</strong>
+          <ol>
+            <li v-if="!ztStatuses[connectionNode.id]?.installed">Nainstalovat ZeroTier z repozitářů routeru.</li>
+            <li>Zálohovat konfiguraci a uložit členství v síti <code>{{ ztNetworkForOperation }}</code>.</li>
+            <li>Zapnout službu při startu routeru a spustit ji, pokud neběží.</li>
+            <li>Připojit síť a načíst stav autorizace a adresy.</li>
+          </ol>
+          <p>Povolí spravované adresy a trasy této sítě. Převzetí výchozí trasy, veřejných rozsahů a DNS zůstane vypnuté. Existující členství v dalších sítích zachová.</p>
+          <label class="trust-check"><input v-model="openCentralAfterSetup" type="checkbox" :disabled="submitting" />Po nastavení otevřít ZeroTier Central pro autorizaci.</label>
+        </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>
         <button v-if="!identity && !inspecting" @click="inspectHost">Zkusit načíst znovu</button>
@@ -160,8 +254,8 @@ async function submitConnection() {
           <pre class="fingerprints">{{ identity.fingerprints }}</pre>
           <label v-if="identity.trust !== 'trusted'" class="trust-check"><input v-model="trustHostKey" type="checkbox" :disabled="submitting" />Ověřil(a) jsem otisky a důvěřuji tomuto routeru.</label>
           <label>SSH heslo<input v-model="password" type="password" autocomplete="off" required :disabled="submitting" /></label>
-          <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ connectionAction === 'audit' ? 'Audit načte stav routeru.' : 'Připojení ověří přihlášení, neotevírá trvalý terminál.' }}</small>
-          <button :disabled="submitting || !password || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? 'Připojuji…' : connectionAction === 'audit' ? 'Připojit a auditovat' : 'Ověřit připojení' }}</button>
+          <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ connectionAction === 'zerotier-setup' ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
+          <button :disabled="submitting || !password || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
         </form>
         <button class="secondary" :disabled="submitting || inspecting" @click="closeConnection">Zavřít</button>
       </section>

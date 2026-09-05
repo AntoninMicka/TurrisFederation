@@ -35,3 +35,7 @@ Hesla se neukládají do databáze ani do argumentů příkazové řádky. SSH p
 potvrzené klíče; změna klíče vyžaduje nové ověření a potvrzení. Připojení
 používá přímo adresu, port a uživatele z draftu, bez aliasů v `~/.ssh/config`.
 Wrapper doplní potřebné balíčky `openssh-client` a `sshpass`.
+
+ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
+uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
+autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).

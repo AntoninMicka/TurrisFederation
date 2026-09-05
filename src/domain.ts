@@ -36,3 +36,27 @@ export interface SshCredentials {
   hostKey: string;
   trustHostKey: boolean;
 }
+
+export interface ZeroTierSettings {
+  networkId: string | null;
+  central: "new" | "legacy";
+}
+
+export interface ZeroTierStatus {
+  routerId: string;
+  networkId: string | null;
+  installed: boolean;
+  deviceId: string | null;
+  version: string | null;
+  online: boolean | null;
+  networkStatus: string | null;
+  networkName: string | null;
+  assignedAddresses: string[];
+  device: string | null;
+  serviceEnabled: boolean | null;
+  persistent: boolean;
+  state: string;
+  summary: string;
+  details: string;
+  checkedAt: string;
+}

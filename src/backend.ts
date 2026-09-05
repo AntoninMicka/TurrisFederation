@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuditFinding, FederationNode, HostIdentity, SshCredentials } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const browserMode = !("__TAURI_INTERNALS__" in window);
 
@@ -25,4 +25,27 @@ export async function connectNode(nodeId: string, credentials: SshCredentials): 
 export async function auditNode(nodeId: string, credentials: SshCredentials): Promise<AuditFinding[]> {
   if (browserMode) throw new Error("Audit skutečného routeru je dostupný v desktopové aplikaci.");
   return invoke("audit_node", { nodeId, credentials });
+}
+
+export async function getZeroTierSettings(): Promise<ZeroTierSettings> {
+  return browserMode ? { networkId: null, central: "new" } : invoke("get_zerotier_settings");
+}
+
+export async function saveZeroTierSettings(settings: ZeroTierSettings): Promise<ZeroTierSettings> {
+  if (browserMode) throw new Error("Ukládání ZeroTier nastavení je dostupné v desktopové aplikaci.");
+  return invoke("save_zerotier_settings", { settings });
+}
+
+export async function listZeroTierStatus(): Promise<ZeroTierStatus[]> {
+  return browserMode ? [] : invoke("list_zerotier_status");
+}
+
+export async function manageZeroTier(nodeId: string, credentials: SshCredentials, networkId: string | null, configure: boolean): Promise<ZeroTierStatus> {
+  if (browserMode) throw new Error("ZeroTier lze spravovat v desktopové aplikaci.");
+  return invoke("manage_zerotier", { nodeId, credentials, networkId, configure });
+}
+
+export async function openZeroTierCentral(): Promise<string> {
+  if (browserMode) throw new Error("Otevření ZeroTier Central použijte v desktopové aplikaci.");
+  return invoke("open_zerotier_central");
 }

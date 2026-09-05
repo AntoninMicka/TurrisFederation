@@ -5,6 +5,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 
 mod ssh;
 mod network;
+mod zerotier;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -30,7 +31,9 @@ fn migrate(db: &Connection) -> Result<(), String> {
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY,name TEXT NOT NULL,ssh_host TEXT NOT NULL,ssh_port INTEGER NOT NULL,ssh_user TEXT NOT NULL,lan_cidrs TEXT NOT NULL,zero_tier_address TEXT,public_endpoint TEXT,status TEXT NOT NULL,last_audit_at TEXT);
       CREATE TABLE IF NOT EXISTS observations (id TEXT PRIMARY KEY,node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,observed_at TEXT NOT NULL,payload TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS ssh_host_keys (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,host TEXT NOT NULL,port INTEGER NOT NULL,keys TEXT NOT NULL);")
+      CREATE TABLE IF NOT EXISTS ssh_host_keys (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,host TEXT NOT NULL,port INTEGER NOT NULL,keys TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS zerotier_status (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,payload TEXT NOT NULL);")
       .map_err(|error| error.to_string())
 }
 
@@ -85,6 +88,10 @@ async fn inspect_connection(node_id: String, state: State<'_, AppState>) -> Resu
 struct SshCredentials { password: String, host_key: String, trust_host_key: bool }
 
 async fn authenticated_probe(node_id: &str, credentials: SshCredentials, state: &AppState, probe: &str) -> Result<(FederationNode, String), String> {
+    authenticated_probe_with_timeout(node_id, credentials, state, probe, 45).await
+}
+
+async fn authenticated_probe_with_timeout(node_id: &str, credentials: SshCredentials, state: &AppState, probe: &str, seconds: u64) -> Result<(FederationNode, String), String> {
     let (node, saved) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let node = load_node(&db, node_id)?;
@@ -94,7 +101,7 @@ async fn authenticated_probe(node_id: &str, credentials: SshCredentials, state: 
     ssh::validate(&node.ssh_host, &node.ssh_user, node.ssh_port)?;
     let keys = ssh::canonical_keys(&credentials.host_key, &node.ssh_host, node.ssh_port)?;
     ssh::check_trust(saved.as_deref(), &keys, credentials.trust_host_key)?;
-    let result = ssh::execute(&state.ssh_dir, &node.ssh_host, &node.ssh_user, node.ssh_port, &credentials.password, &keys, probe).await;
+    let result = ssh::execute(&state.ssh_dir, &node.ssh_host, &node.ssh_user, node.ssh_port, &credentials.password, &keys, probe, seconds).await;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     match result {
         Ok(payload) => {
@@ -122,12 +129,15 @@ async fn connect_node(node_id: String, credentials: SshCredentials, state: State
 
 #[tauri::command]
 async fn audit_node(node_id: String, credentials: SshCredentials, state: State<'_, AppState>) -> Result<Vec<AuditFinding>, String> {
-    let probe = format!("set +e; echo __TF_SYSTEM__; ubus call system board 2>&1; {} echo __TF_ZEROTIER__; zerotier-cli info 2>&1; zerotier-cli listnetworks -j 2>&1; echo __TF_WIREGUARD__; wg show all dump 2>&1; echo __TF_PACKAGES__; opkg status zerotier wireguard-tools 2>&1; echo __TF_UCI_NETWORK__; uci export network 2>&1; echo __TF_UCI_FIREWALL__; uci export firewall 2>&1", network::PROBE);
+    let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
+    let zt_probe = zerotier::probe(settings.network_id.as_deref(), false)?;
+    let probe = format!("set +e; echo __TF_SYSTEM__; ubus call system board 2>&1; {} echo __TF_WIREGUARD__; wg show all dump 2>&1; echo __TF_PACKAGES__; opkg status zerotier wireguard-tools 2>&1; echo __TF_UCI_NETWORK__; uci export network 2>&1; echo __TF_UCI_FIREWALL__; uci export firewall 2>&1; {}", network::PROBE, zt_probe);
     let (node, payload) = authenticated_probe(&node_id, credentials, &state, &probe).await?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let observed_at = Utc::now().to_rfc3339();
     db.execute("INSERT INTO observations(id,node_id,observed_at,payload) VALUES(?1,?2,?3,?4)", params![Uuid::new_v4().to_string(),node.id,observed_at,payload]).map_err(|error| error.to_string())?;
-    let findings = build_findings(&node, &payload, &observed_at);
+    let findings = build_findings(&node, &payload, &observed_at, settings.network_id.as_deref());
+    persist_zerotier_status(&db, &zerotier::parse(&payload, &node.id, settings.network_id.as_deref(), &observed_at))?;
     let status = if findings.is_empty() { "healthy" } else { "drifted" };
     db.execute("UPDATE nodes SET status=?1,last_audit_at=?2 WHERE id=?3", params![status,observed_at,node.id]).map_err(|error| error.to_string())?;
     Ok(findings)
@@ -150,8 +160,7 @@ fn display_observation(section: Option<&str>) -> String {
     }
 }
 
-fn build_findings(node: &FederationNode, payload: &str, observed_at: &str) -> Vec<AuditFinding> {
-    let zerotier = audit_section(payload, "__TF_ZEROTIER__");
+fn build_findings(node: &FederationNode, payload: &str, observed_at: &str, network_id: Option<&str>) -> Vec<AuditFinding> {
     let wireguard = audit_section(payload, "__TF_WIREGUARD__");
     let addresses = audit_section(payload, "__TF_ADDRESSES__");
     let routes = audit_section(payload, "__TF_ROUTES__");
@@ -162,14 +171,15 @@ fn build_findings(node: &FederationNode, payload: &str, observed_at: &str) -> Ve
             summary, remediation: Some(remediation.into()), expected_state: expected, observed_state: observed, observed_at: observed_at.into(),
         });
     };
-    if zerotier.as_deref().unwrap_or_default().contains("zerotier-cli: not found") {
-        add("error", "zerotier", "ZeroTier není nainstalovaný".into(),
-            "Připravit instalaci balíku a připojení do privátní discovery sítě.",
-            "ZeroTier je nainstalovaný a ve stavu ONLINE.".into(), display_observation(zerotier.as_deref()));
-    } else if !zerotier.as_deref().unwrap_or_default().split_whitespace().any(|word| word == "ONLINE") {
-        add("warning", "zerotier", "ZeroTier není ve stavu ONLINE".into(),
-            "Zkontrolovat službu, identitu a členství v síti.",
-            "ONLINE".into(), display_observation(zerotier.as_deref()));
+    let zt = zerotier::parse(payload, &node.id, network_id, observed_at);
+    if zt.state != "connected" && !(network_id.is_none() && zt.state == "no_network") {
+        add(if zt.state == "not_installed" || zt.state == "error" || zt.state == "unknown" { "error" } else { "warning" }, "zerotier", zt.summary.clone(),
+            "Použijte kontrolu a nastavení ZeroTier. Čekající router autorizujte v ZeroTier Central a obnovte stav.",
+            network_id.map(|id| format!("ONLINE a členství OK v síti {id}")).unwrap_or_else(|| "ONLINE".into()), zt.details.clone());
+    } else if network_id.is_some() && (!zt.persistent || zt.service_enabled != Some(true)) {
+        add("warning", "zerotier", "ZeroTier nemá potvrzené trvalé nastavení pro restart routeru.".into(),
+            "Použijte nastavení ZeroTier pro uložení členství a zapnutí služby při startu.", "Trvalé členství a automatický start služby.".into(),
+            format!("Členství v UCI: {}\nStart služby: {:?}", zt.persistent, zt.service_enabled));
     }
     // Výpis wg dump obsahuje privátní klíče. Do nálezu patří pouze chyba nástroje.
     if let Some(error) = wireguard.as_deref().and_then(|text| text.lines().find(|line| line.contains("wg: not found"))) {
@@ -208,8 +218,8 @@ mod audit_tests {
     }
     #[test]
     fn findings_include_relevant_state_without_configuration_secrets() {
-        let payload = "__TF_ADDRESSES__\n[]\n__TF_ROUTES__\n[{\"dst\":\"10.0.0.0/24\"}]\n__TF_ZEROTIER__\n200 info abc 1.0 OFFLINE\n[]\n__TF_WIREGUARD__\nwg: not found\n__TF_UCI_NETWORK__\nprivate_key SECRET\n192.168.10.0/24 ONLINE";
-        let findings = build_findings(&node(), payload, "2026-09-05T12:00:00Z");
+        let payload = "__TF_ADDRESSES__\n[]\n__TF_ROUTES__\n[{\"dst\":\"10.0.0.0/24\"}]\n__TF_ZT_INSTALLED__\n1\n__TF_ZT_INFO__\n200 info abcdef1234 1.0 OFFLINE\n__TF_ZT_INFO_RC__\n0\n__TF_ZT_NETWORKS__\n[]\n__TF_ZT_NETWORKS_RC__\n0\n__TF_WIREGUARD__\nwg: not found\n__TF_UCI_NETWORK__\nprivate_key SECRET\n192.168.10.0/24 ONLINE";
+        let findings = build_findings(&node(), payload, "2026-09-05T12:00:00Z", None);
         assert_eq!(findings.len(), 3);
         let zt = findings.iter().find(|f| f.component == "zerotier").unwrap();
         assert!(zt.observed_state.contains("OFFLINE"));
@@ -226,8 +236,90 @@ mod audit_tests {
     fn missing_and_empty_observations_are_explicit() {
         assert!(display_observation(None).contains("nepodařilo"));
         assert!(display_observation(Some("")).contains("prázdný"));
-        assert!(build_findings(&node(), "", "now").iter().all(|f| !f.observed_state.is_empty()));
+        assert!(build_findings(&node(), "", "now", None).iter().all(|f| !f.observed_state.is_empty()));
     }
+
+    #[test]
+    fn zerotier_migration_preserves_existing_nodes_and_stores_settings_and_status() {
+        let db = Connection::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        db.execute("INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,status) VALUES('test','Router','router',22,'root','[]','draft')", []).unwrap();
+        db.execute_batch("DROP TABLE app_settings; DROP TABLE zerotier_status;").unwrap();
+        migrate(&db).unwrap();
+        migrate(&db).unwrap();
+        assert_eq!(load_node(&db, "test").unwrap().name, "Router");
+        assert!(load_zerotier_settings(&db).unwrap().network_id.is_none());
+        db.execute("INSERT INTO app_settings(name,value) VALUES('zerotier',?1)", [r#"{"networkId":"ABCDEF0123456789","central":"legacy"}"#]).unwrap();
+        assert_eq!(load_zerotier_settings(&db).unwrap().network_id.as_deref(), Some("abcdef0123456789"));
+        let status = zerotier::parse("__TF_ZT_INSTALLED__\n0\n__TF_ZT_END__", "test", Some("abcdef0123456789"), "now");
+        persist_zerotier_status(&db, &status).unwrap();
+        let saved: String = db.query_row("SELECT payload FROM zerotier_status WHERE node_id='test'", [], |row| row.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<zerotier::Status>(&saved).unwrap().state, "not_installed");
+    }
+}
+
+fn load_zerotier_settings(db: &Connection) -> Result<zerotier::Settings, String> {
+    use rusqlite::OptionalExtension;
+    let json: Option<String> = db.query_row("SELECT value FROM app_settings WHERE name='zerotier'", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    match json { Some(json) => serde_json::from_str::<zerotier::Settings>(&json).map_err(|e| e.to_string())?.normalize(), None => Ok(zerotier::Settings::default()) }
+}
+
+#[tauri::command]
+fn get_zerotier_settings(state: State<'_, AppState>) -> Result<zerotier::Settings, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    load_zerotier_settings(&db)
+}
+
+#[tauri::command]
+fn save_zerotier_settings(settings: zerotier::Settings, state: State<'_, AppState>) -> Result<zerotier::Settings, String> {
+    let settings = settings.normalize()?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.execute("INSERT INTO app_settings(name,value) VALUES('zerotier',?1) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+        [serde_json::to_string(&settings).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+fn persist_zerotier_status(db: &Connection, status: &zerotier::Status) -> Result<(), String> {
+    db.execute("INSERT INTO zerotier_status(node_id,payload) VALUES(?1,?2) ON CONFLICT(node_id) DO UPDATE SET payload=excluded.payload",
+        params![status.router_id, serde_json::to_string(status).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_zerotier_status(state: State<'_, AppState>) -> Result<Vec<zerotier::Status>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = db.prepare("SELECT payload FROM zerotier_status").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_id: Option<String>, configure: bool, state: State<'_, AppState>) -> Result<zerotier::Status, String> {
+    let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
+    if network_id != settings.network_id { return Err("Network ID se změnilo. Znovu otevřete kontrolu ZeroTier.".into()); }
+    let probe = zerotier::probe(network_id.as_deref(), configure)?;
+    let (node, payload) = authenticated_probe_with_timeout(&node_id, credentials, &state, &probe, if configure { 300 } else { 45 }).await
+        .map_err(|error| if configure { format!("{error}\nNastavení mohlo být provedeno částečně. Před opakováním načtěte stav ZeroTier.") } else { error })?;
+    if configure && !payload.lines().any(|line| line == "__TF_ZT_SETUP_OK__") { return Err("Router nepotvrdil dokončení nastavení. Znovu načtěte stav ZeroTier.".into()); }
+    let result = zerotier::parse(&payload, &node.id, network_id.as_deref(), &Utc::now().to_rfc3339());
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    persist_zerotier_status(&db, &result)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn open_zerotier_central(state: State<'_, AppState>) -> Result<String, String> {
+    let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
+    let url = settings.url();
+    let mut child = tokio::process::Command::new("xdg-open").arg(url)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .spawn().map_err(|e| format!("Prohlížeč nelze otevřít: {e}. Otevřete {url} ručně."))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) if status.success() => (),
+        Ok(_) => return Err(format!("Prohlížeč se nepodařilo otevřít. Otevřete {url} ručně.")),
+        Err(_) => { tauri::async_runtime::spawn(async move { let _ = child.wait().await; }); }
+    }
+    Ok(url.into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -237,5 +329,5 @@ pub fn run() {
         let db = Connection::open(data_dir.join("federation.db"))?;
         migrate(&db).map_err(std::io::Error::other)?;
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
-    }).invoke_handler(tauri::generate_handler![list_nodes,save_node,inspect_connection,connect_node,audit_node]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }

@@ -97,20 +97,20 @@ fn ssh_command(host: &str, user: &str, port: u16, key_file: &Path, probe: &str) 
     command
 }
 
-pub async fn execute(dir: &Path, host: &str, user: &str, port: u16, password: &str, keys: &str, probe: &str) -> Result<String, String> {
+pub async fn execute(dir: &Path, host: &str, user: &str, port: u16, password: &str, keys: &str, probe: &str, seconds: u64) -> Result<String, String> {
     validate(host, user, port)?;
     if password.is_empty() || password.len() > 4096 || password.contains(['\n', '\r', '\0']) { return Err("Zadejte heslo o délce 1–4096 bajtů bez řídicích znaků nového řádku.".into()); }
     let file = KeyFile::new(dir, keys)?;
     let command = ssh_command(host, user, port, &file.0, probe);
     let input = format!("{password}\n");
-    let result = output(command, Some(input.as_bytes()), 45).await?;
+    let result = output(command, Some(input.as_bytes()), seconds).await?;
     if !result.status.success() {
         let detail = String::from_utf8_lossy(&result.stderr);
         let summary = if result.status.code() == Some(5) || detail.contains("Permission denied") {
             "Přihlášení bylo odmítnuto. Ověřte uživatele, heslo a povolení přihlášení heslem na routeru."
         } else if detail.contains("Host key verification failed") || detail.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
             "SSH klíč routeru se změnil. Znovu načtěte a ověřte jeho otisk."
-        } else { "SSH připojení selhalo. Ověřte adresu, port a dostupnost routeru." };
+        } else { "SSH připojení nebo vzdálený příkaz selhal. Podrobnosti:" };
         return Err(format!("{summary}\n{}", detail.trim()));
     }
     Ok(String::from_utf8_lossy(&result.stdout).into_owned())
