@@ -4,6 +4,11 @@ Desktopový orchestrátor a routerový agent pro bezpečnou správu federace Tur
 
 Stav implementace a další kroky: [roadmapa a TODO seznam](ROADMAP.md).
 
+Rozhraní je rozdělené do záložek **Routery**, **Notebooky**, **Síť**,
+**Synchronizace**, **Audity** a **Nastavení**. Zobrazuje se vždy obsah jedné
+záložky; rozpracované formuláře zůstávají při přepínání zachované. Routery
+a místní řídicí notebook mají samostatné přehledy.
+
 Spuštění na Ubuntu/Debianu:
 
 ```bash

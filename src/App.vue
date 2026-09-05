@@ -1,7 +1,30 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { nextTick, onMounted, reactive, ref } from "vue";
 import { checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
+
+const tabs = [
+  { id: 'routers', label: 'Routery' },
+  { id: 'notebooks', label: 'Notebooky' },
+  { id: 'network', label: 'Síť' },
+  { id: 'sync', label: 'Synchronizace' },
+  { id: 'audits', label: 'Audity' },
+  { id: 'settings', label: 'Nastavení' },
+] as const;
+type TabId = typeof tabs[number]['id'];
+const activeTab = ref<TabId>('routers');
+
+function navigateTabs(event: KeyboardEvent, index: number) {
+  let target = index;
+  if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
+  else if (event.key === 'ArrowLeft') target = (index + tabs.length - 1) % tabs.length;
+  else if (event.key === 'Home') target = 0;
+  else if (event.key === 'End') target = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  activeTab.value = tabs[target].id;
+  document.getElementById(`tab-${activeTab.value}`)?.focus();
+}
 
 const notebookStatus = ref<ZeroTierStatus | null>(null);
 const notebookChecking = ref(false);
@@ -16,6 +39,7 @@ async function checkNotebook() {
 
 const nodes = ref<FederationNode[]>([]);
 const findings = ref<AuditFinding[]>([]);
+const auditedNodeName = ref("");
 const busyNodeId = ref("");
 const message = ref("");
 const connectionNode = ref<FederationNode | null>(null);
@@ -66,10 +90,12 @@ async function publishChanges() {
   finally { publishing.value = false; }
 }
 
-function editNode(node: FederationNode) {
+async function editNode(node: FederationNode) {
+  activeTab.value = "routers";
   Object.assign(draft, { ...node, lanCidrs: [...node.lanCidrs] });
   lanCidrsText.value = node.lanCidrs.join(", ");
   editing.value = true;
+  await nextTick();
   document.getElementById("draft-form")?.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -205,6 +231,7 @@ async function doImportSettings(event: Event) {
     plans.value = {};
     await reloadSettings();
     findings.value = [];
+    auditedNodeName.value = "";
     message.value = "Drafty byly sloučeny podle ID. Uložená SSH důvěra a historie zůstávají zachované; změny vyžadují novou validaci.";
   } catch (error) {
     message.value = String(error);
@@ -317,8 +344,9 @@ async function submitConnection() {
       plans.value = {};
       message.value = `Deploy ${node.name} dokončen. Stav spojení s protějšky je uveden u stanoviště.`;
     } else if (connectionAction.value === "audit") {
-      findings.value = [];
       findings.value = await auditNode(node.id, credentials);
+      auditedNodeName.value = node.name;
+      activeTab.value = "audits";
       message.value = findings.value.length ? `Audit ${node.name}: ${findings.value.length} položek.` : `Audit ${node.name} nezjistil odchylky.`;
     } else if (connectionAction.value === "zerotier-check" || connectionAction.value === "zerotier-setup") {
       const configure = connectionAction.value === "zerotier-setup";
@@ -347,92 +375,25 @@ async function submitConnection() {
 
 <template>
   <main class="shell">
-    <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Navrhněte topologii, porovnejte ji se skutečným stavem a teprve potom materializujte změny.</p></header>
-    <section class="summary"><article><strong>{{ nodes.length + 1 }}</strong><span>uzlů</span></article><article><strong>{{ findings.filter(f => f.severity === 'error').length }}</strong><span>kritických odchylek</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Správa routerů, řídicích notebooků a společné sítě.</p></header>
+    <section class="summary"><article><strong>{{ nodes.length }}</strong><span>routerů</span></article><article><strong>1</strong><span>notebook</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <nav class="tabs" role="tablist" aria-label="Správa federace">
+      <button v-for="(tab, index) in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button"
+        role="tab" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`"
+        :tabindex="activeTab === tab.id ? 0 : -1" :class="{ selected: activeTab === tab.id }"
+        @click="activeTab = tab.id" @keydown="navigateTabs($event, index)">
+        {{ tab.label }}
+        <span v-if="tab.id === 'routers'" class="tab-count">{{ nodes.length }}</span>
+        <span v-else-if="tab.id === 'notebooks'" class="tab-count">1</span>
+        <span v-else-if="tab.id === 'audits' && findings.length" class="tab-count">{{ findings.length }}</span>
+      </button>
+    </nav>
+    <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">
     <section class="panel">
-      <div><p class="kicker">Nastavení</p><h2>Import / export federace</h2></div>
-      <p>Export obsahuje návrh uzlů a globální nastavení federace. Neobsahuje SSH hesla, uložené host keys, auditní výpisy ani runtime stav routerů.</p>
-      <div class="node-actions">
-        <button type="button" @click="doExportSettings">Exportovat nastavení</button>
-        <button type="button" class="secondary" @click="settingsFileInput?.click()">Importovat nastavení</button>
-        <input ref="settingsFileInput" type="file" accept=".json,application/json" hidden @change="doImportSettings" />
-      </div>
-      <small>Import sloučí drafty podle ID. Ostatní uzly, jejich přijetí do federace a lokální SSH důvěru zachová. Podpisový klíč notebooku není součástí exportu.</small>
-    </section>
-    <section class="panel">
-      <div id="draft-form"><p class="kicker">Návrh</p><h2>{{ editing ? "Upravit stanoviště" : "Nový draft stanoviště" }}</h2></div>
-      <form class="form" @submit.prevent="addDraft">
-        <label>Název<input v-model="draft.name" required placeholder="Praha" /></label>
-        <label>SSH adresa<input v-model="draft.sshHost" placeholder="192.168.1.1" /></label>
-        <label>SSH port<input v-model.number="draft.sshPort" type="number" min="1" max="65535" required /></label>
-        <label>SSH uživatel<input v-model="draft.sshUser" required /></label>
-        <label>LAN sítě<input v-model="lanCidrsText" placeholder="192.168.10.0/24, 10.10.0.0/16" /></label>
-        <label>IPv4 adresa v ZeroTier<input v-model="draft.zeroTierAddress" placeholder="10.147.17.1" /></label>
-        <label>IPv4 adresa WireGuard tunelu
-          <div class="input-with-action">
-            <input v-model="draft.wireguardAddress" placeholder="10.203.0.1" />
-            <button type="button" class="secondary small" @click="suggestDraftWireguard">Navrhnout</button>
-          </div>
-        </label>
-        <label>Veřejný endpoint (rezerva pro přímé spojení)<input v-model="draft.publicEndpoint" placeholder="vpn.example.cz:51820" /></label>
-        <small>Draft může být neúplný. Pro deploy doplňte unikátní adresy bez prefixu; WireGuard se v této verzi spojuje přes ZeroTier.</small>
-        <button type="button" v-if="editing" class="secondary" @click="resetDraft">Zrušit úpravy</button>
-        <button :disabled="saving || !!connectionNode || publishing">{{ saving ? "Ukládám…" : (editing ? "Uložit opravy" : "Uložit draft") }}</button>
-      </form>
-    </section>
-    <section class="panel">
-      <div><p class="kicker">ZeroTier</p><h2>Síť federace</h2></div>
-      <p>Uložte Network ID ze ZeroTier Central. U každého routeru potom zkontrolujte stav a podle potřeby proveďte instalaci a připojení do sítě.</p>
-      <form class="form" @submit.prevent="saveZeroTier">
-        <label>Network ID<input v-model="ztDraft.networkId" pattern="[0-9a-fA-F]{16}" maxlength="16" placeholder="16 hexadecimálních znaků" :disabled="!!connectionNode || ztSaving" /></label>
-        <label>Web pro autorizaci<select v-model="ztDraft.central" :disabled="!!connectionNode || ztSaving"><option value="new">ZeroTier Central (central.zerotier.com)</option><option value="legacy">Legacy Central (my.zerotier.com)</option></select></label>
-        <label>ZeroTier subnet (pro kontrolu)
-          <div class="input-with-action">
-            <input v-model="ztDraft.zeroTierSubnet" placeholder="10.147.17.0/24" :disabled="!!connectionNode || ztSaving" />
-            <button type="button" class="secondary small" @click="suggestSubnets" :disabled="!!connectionNode || ztSaving">Navrhnout subnety</button>
-          </div>
-        </label>
-        <label>WireGuard subnet (pro automatické doplnění)<input v-model="ztDraft.wireguardSubnet" placeholder="10.203.0.0/24" :disabled="!!connectionNode || ztSaving" /></label>
-        <small>Pokud vyplníte subnety, aplikace automaticky doplní ZeroTier adresu zjištěnou z routeru a odvodí z ní WireGuard adresu (použije poslední oktet).</small>
-        <button :disabled="ztSaving || !!connectionNode">{{ ztSaving ? 'Ukládám…' : 'Uložit nastavení ZeroTier' }}</button>
-        <button type="button" class="secondary" @click="proposeAllAddresses" :disabled="ztSaving || !!connectionNode">Doplnit adresy všem uzlům</button>
-        <button type="button" class="secondary" :disabled="browserOpening" @click="openCentral">Otevřít ZeroTier Central</button>
-      </form>
-      <small>Uložená síť: {{ ztSettings.networkId ?? 'zatím nevybraná' }}. Uložení mění pouze místní návrh; router změní až akce „Provést nastavení ZeroTier“.</small>
-    </section>
-    <section class="panel">
-      <div><p class="kicker">Deploy a synchronizace</p><h2>Postupné zprovoznění stanovišť</h2></div>
-      <p>Instalaci i aktualizaci agenta proveďte z notebooku připojeného přímo do LAN routeru přes Ethernet nebo Wi-Fi. Zadejte číselnou LAN IPv4 jako SSH adresu a validujte plán. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
-      <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
-      <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
-      <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
-      <p>Při deployi druhého routeru se nové členství a síťové nastavení předá prvnímu přes ZeroTier. Routery předání opakují i bez notebooku. Nedostupný uzel zůstává na starší revizi do obnovení spojení; sledujte přijatou a aplikovanou revizi.</p>
-      <div class="node-actions">
-        <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
-        <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
-      </div>
-      <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Přes ZeroTier se přenáší jen síťové nastavení a stav, nikoli aktualizace softwaru. WireGuard automaticky obnovuje relační klíče.</small>
-    </section>
-    <section class="panel">
-      <div><p class="kicker">Inventář</p><h2>Uzly federace</h2></div>
+      <div><p class="kicker">Inventář</p><h2>Routery federace</h2></div>
 
+      <p v-if="!nodes.length" class="muted">Zatím nemáte žádný router. Vytvořte jeho draft ve formuláři níže.</p>
       <div class="node-grid">
-        <article class="node">
-          <h3>Tento notebook</h3>
-          <p>Řídicí uzel · pouze ZeroTier · bez WireGuard spojů</p>
-          <p v-if="notebookError" class="error">{{ notebookError }}</p>
-          <template v-if="notebookStatus">
-            <p>{{ notebookStatus.summary }}</p>
-            <p v-if="notebookStatus.networkId !== ztSettings.networkId" class="warning">Nastavení sítě se změnilo. Obnovte kontrolu notebooku.</p>
-            <p>Network ID: {{ notebookStatus.networkId ?? 'nevybráno' }}</p>
-            <p>ID zařízení: {{ notebookStatus.deviceId ?? 'nezjištěno' }}</p>
-            <p>Adresy: {{ notebookStatus.assignedAddresses.join(', ') || 'zatím žádné' }}</p>
-            <small>Načteno {{ new Date(notebookStatus.checkedAt).toLocaleString('cs-CZ') }}</small>
-          </template>
-          <p v-else class="muted">ZeroTier zatím nebyl zkontrolován.</p>
-          <button class="secondary" :disabled="notebookChecking || ztSaving" @click="checkNotebook">{{ notebookChecking ? 'Kontroluji…' : 'Zkontrolovat ZeroTier notebooku' }}</button>
-          <p><small>Kontrola čte místní ZeroTier. Pokud chybí oprávnění ke službě, stav nelze ověřit.</small></p>
-        </article>
         <article v-for="node in nodes" :key="node.id" class="node">
           <div class="node-heading">
           <div><span :class="['status', node.status]">{{ statusLabels[node.status] }}</span><h3>{{ node.name }}</h3><p>{{ node.sshUser }}@{{ node.sshHost }}:{{ node.sshPort }}</p><small>{{ node.lanCidrs.join(' · ') }}</small></div>
@@ -486,9 +447,96 @@ async function submitConnection() {
         </article>
       </div>
     </section>
-    <section v-if="findings.length" class="panel">
-      <div><p class="kicker">Odchylky</p><h2>Co je potřeba opravit</h2></div>
-      <ul>
+    <section class="panel">
+      <div id="draft-form"><p class="kicker">Návrh</p><h2>{{ editing ? "Upravit stanoviště" : "Nový draft stanoviště" }}</h2></div>
+      <form class="form" @submit.prevent="addDraft">
+        <label>Název<input v-model="draft.name" required placeholder="Praha" /></label>
+        <label>SSH adresa<input v-model="draft.sshHost" placeholder="192.168.1.1" /></label>
+        <label>SSH port<input v-model.number="draft.sshPort" type="number" min="1" max="65535" required /></label>
+        <label>SSH uživatel<input v-model="draft.sshUser" required /></label>
+        <label>LAN sítě<input v-model="lanCidrsText" placeholder="192.168.10.0/24, 10.10.0.0/16" /></label>
+        <label>IPv4 adresa v ZeroTier<input v-model="draft.zeroTierAddress" placeholder="10.147.17.1" /></label>
+        <label>IPv4 adresa WireGuard tunelu
+          <div class="input-with-action">
+            <input v-model="draft.wireguardAddress" placeholder="10.203.0.1" />
+            <button type="button" class="secondary small" @click="suggestDraftWireguard">Navrhnout</button>
+          </div>
+        </label>
+        <label>Veřejný endpoint (rezerva pro přímé spojení)<input v-model="draft.publicEndpoint" placeholder="vpn.example.cz:51820" /></label>
+        <small>Draft může být neúplný. Pro deploy doplňte unikátní adresy bez prefixu; WireGuard se v této verzi spojuje přes ZeroTier.</small>
+        <button type="button" v-if="editing" class="secondary" @click="resetDraft">Zrušit úpravy</button>
+        <button :disabled="saving || !!connectionNode || publishing">{{ saving ? "Ukládám…" : (editing ? "Uložit opravy" : "Uložit draft") }}</button>
+      </form>
+    </section>
+    </div>
+    <div v-show="activeTab === 'notebooks'" id="panel-notebooks" class="tab-panel" role="tabpanel" aria-labelledby="tab-notebooks" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">Řídicí uzly</p><h2>Notebooky</h2></div>
+      <p>Tento notebook spravuje federaci a kontroluje své připojení přes ZeroTier.</p>
+      <div class="node-grid">
+        <article class="node">
+          <h3>Tento notebook</h3>
+          <p>Řídicí uzel · pouze ZeroTier · bez WireGuard spojů</p>
+          <p v-if="notebookError" class="error">{{ notebookError }}</p>
+          <template v-if="notebookStatus">
+            <p>{{ notebookStatus.summary }}</p>
+            <p v-if="notebookStatus.networkId !== ztSettings.networkId" class="warning">Nastavení sítě se změnilo. Obnovte kontrolu notebooku.</p>
+            <p>Network ID: {{ notebookStatus.networkId ?? 'nevybráno' }}</p>
+            <p>ID zařízení: {{ notebookStatus.deviceId ?? 'nezjištěno' }}</p>
+            <p>Adresy: {{ notebookStatus.assignedAddresses.join(', ') || 'zatím žádné' }}</p>
+            <small>Načteno {{ new Date(notebookStatus.checkedAt).toLocaleString('cs-CZ') }}</small>
+          </template>
+          <p v-else class="muted">ZeroTier zatím nebyl zkontrolován.</p>
+          <button class="secondary" :disabled="notebookChecking || ztSaving" @click="checkNotebook">{{ notebookChecking ? 'Kontroluji…' : 'Zkontrolovat ZeroTier notebooku' }}</button>
+          <p><small>Kontrola čte místní ZeroTier. Pokud chybí oprávnění ke službě, stav nelze ověřit.</small></p>
+        </article>
+      </div>
+    </section>
+    </div>
+    <div v-show="activeTab === 'network'" id="panel-network" class="tab-panel" role="tabpanel" aria-labelledby="tab-network" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">ZeroTier</p><h2>Síť federace</h2></div>
+      <p>Uložte Network ID ze ZeroTier Central. U každého routeru potom zkontrolujte stav a podle potřeby proveďte instalaci a připojení do sítě.</p>
+      <form class="form" @submit.prevent="saveZeroTier">
+        <label>Network ID<input v-model="ztDraft.networkId" pattern="[0-9a-fA-F]{16}" maxlength="16" placeholder="16 hexadecimálních znaků" :disabled="!!connectionNode || ztSaving" /></label>
+        <label>Web pro autorizaci<select v-model="ztDraft.central" :disabled="!!connectionNode || ztSaving"><option value="new">ZeroTier Central (central.zerotier.com)</option><option value="legacy">Legacy Central (my.zerotier.com)</option></select></label>
+        <label>ZeroTier subnet (pro kontrolu)
+          <div class="input-with-action">
+            <input v-model="ztDraft.zeroTierSubnet" placeholder="10.147.17.0/24" :disabled="!!connectionNode || ztSaving" />
+            <button type="button" class="secondary small" @click="suggestSubnets" :disabled="!!connectionNode || ztSaving">Navrhnout subnety</button>
+          </div>
+        </label>
+        <label>WireGuard subnet (pro automatické doplnění)<input v-model="ztDraft.wireguardSubnet" placeholder="10.203.0.0/24" :disabled="!!connectionNode || ztSaving" /></label>
+        <small>Pokud vyplníte subnety, aplikace automaticky doplní ZeroTier adresu zjištěnou z routeru a odvodí z ní WireGuard adresu (použije poslední oktet).</small>
+        <button :disabled="ztSaving || !!connectionNode">{{ ztSaving ? 'Ukládám…' : 'Uložit nastavení ZeroTier' }}</button>
+        <button type="button" class="secondary" @click="proposeAllAddresses" :disabled="ztSaving || !!connectionNode">Doplnit adresy všem uzlům</button>
+        <button type="button" class="secondary" :disabled="browserOpening" @click="openCentral">Otevřít ZeroTier Central</button>
+      </form>
+      <small>Uložená síť: {{ ztSettings.networkId ?? 'zatím nevybraná' }}. Uložení mění pouze místní návrh; router změní až akce „Provést nastavení ZeroTier“.</small>
+    </section>
+    </div>
+    <div v-show="activeTab === 'sync'" id="panel-sync" class="tab-panel" role="tabpanel" aria-labelledby="tab-sync" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">Deploy a synchronizace</p><h2>Postupné zprovoznění stanovišť</h2></div>
+      <p>Instalaci i aktualizaci agenta proveďte z notebooku připojeného přímo do LAN routeru přes Ethernet nebo Wi-Fi. Zadejte číselnou LAN IPv4 jako SSH adresu a validujte plán. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
+      <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
+      <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
+      <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
+      <p>Při deployi druhého routeru se nové členství a síťové nastavení předá prvnímu přes ZeroTier. Routery předání opakují i bez notebooku. Nedostupný uzel zůstává na starší revizi do obnovení spojení; sledujte přijatou a aplikovanou revizi.</p>
+      <div class="node-actions">
+        <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
+        <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
+      </div>
+      <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Přes ZeroTier se přenáší jen síťové nastavení a stav, nikoli aktualizace softwaru. WireGuard automaticky obnovuje relační klíče.</small>
+    </section>
+    </div>
+    <div v-show="activeTab === 'audits'" id="panel-audits" class="tab-panel" role="tabpanel" aria-labelledby="tab-audits" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">Odchylky</p><h2>Výsledky auditu</h2></div>
+      <p v-if="!auditedNodeName" class="muted">Zatím jste nespustili audit. V záložce Routery vyberte „Auditovat skutečný stav“.</p>
+      <p v-else>Poslední audit: <strong>{{ auditedNodeName }}</strong> · {{ findings.length ? `${findings.length} nálezů` : 'Bez zjištěných odchylek' }}.</p>
+      <button type="button" class="secondary" @click="activeTab = 'routers'">Přejít na routery</button>
+      <ul v-if="findings.length">
         <li v-for="finding in findings" :key="finding.id" :class="finding.severity">
           <strong>{{ finding.component }} · {{ finding.summary }}</strong>
           <small>{{ nodes.find(node => node.id === finding.nodeId)?.name ?? finding.nodeId }} · Načteno {{ new Date(finding.observedAt).toLocaleString('cs-CZ') }}</small>
@@ -500,6 +548,19 @@ async function submitConnection() {
         </li>
       </ul>
     </section>
+    </div>
+    <div v-show="activeTab === 'settings'" id="panel-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-settings" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">Nastavení</p><h2>Import / export federace</h2></div>
+      <p>Export obsahuje návrh uzlů a globální nastavení federace. Neobsahuje SSH hesla, uložené host keys, auditní výpisy ani runtime stav routerů.</p>
+      <div class="node-actions">
+        <button type="button" @click="doExportSettings">Exportovat nastavení</button>
+        <button type="button" class="secondary" @click="settingsFileInput?.click()">Importovat nastavení</button>
+        <input ref="settingsFileInput" type="file" accept=".json,application/json" hidden @change="doImportSettings" />
+      </div>
+      <small>Import sloučí drafty podle ID. Ostatní uzly, jejich přijetí do federace a lokální SSH důvěru zachová. Podpisový klíč notebooku není součástí exportu.</small>
+    </section>
+    </div>
     <div v-if="connectionNode" class="modal-backdrop">
       <section class="connection-dialog panel" role="dialog" aria-modal="true" aria-labelledby="connection-title">
         <h2 id="connection-title">{{ actionLabels[connectionAction] }} · {{ connectionNode.name }}</h2>

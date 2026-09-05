@@ -37,3 +37,12 @@ ul { display: grid; gap: 10px; padding: 0; list-style: none; }li { display: grid
 .input-with-action input { flex: 1; min-width: 0; }
 .small { padding: 6px 12px; font-size: 0.85rem; }
 @media (max-width: 720px) { .node-heading { flex-direction: column; align-items: stretch; } .zt-facts { grid-template-columns: 1fr; } }
+
+.tabs { display: flex; gap: 6px; overflow-x: auto; padding: 6px; background: #dfeae6; border-radius: 16px; }
+.tabs button { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: #36515c; background: transparent; white-space: nowrap; }
+.tabs button.selected { color: #fff; background: #13766f; box-shadow: 0 3px 8px #17304218; }
+.tabs button:hover:not(.selected) { background: #f3f8f6; }
+.tab-count { padding: 2px 7px; border-radius: 999px; background: #ffffff33; font-size: .75rem; }
+.tab-panel { display: grid; gap: 22px; min-width: 0; }
+button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; outline-offset: 3px; }
+@media (max-width: 720px) { .shell { padding-top: 20px; } header { padding: 22px; } .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; } .summary article { padding: 14px; } .summary strong { font-size: 1.3rem; } }
