@@ -142,6 +142,12 @@ neúplný audit je jasně označený a uložená data neobsahují tajné klíče
 **Hotovo, když:** uživatel upraví návrh, vidí skutečný stav každého uzlu
 a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 
+  - [ ] **Vylepšené porovnání (Diff):** Implementovat přehledné "side-by-side" zobrazení rozdílů mezi návrhem a skutečným stavem routeru pro konfiguraci, adresy i routy.
+- [ ] **P1: Návrh a automatizace sítě.**
+  - [x] Implementována volba globálních subnetů pro ZeroTier a WireGuard.
+  - [x] Implementováno inteligentní navrhování a hromadné doplňování tunelových adres (WireGuard/ZeroTier) s kontrolou kolizí a vazbou na poslední oktet.
+  - [ ] Ověřit automatické doplňování adres po reálném auditu routeru se ZeroTier.
+
 ## 3. P1 — navrhnout síť federace a plán změn
 
 - [ ] Potvrdit role ZeroTier a WireGuard: discovery/správa, datový provoz a požadovaná topologie.
@@ -261,6 +267,11 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Ověřit discovery, párování, předání správy a návrat offline notebooku
     na dvou skutečných zařízeních přes LAN a ZeroTier.
   - [ ] Rotace párovacích certifikátů a odvolání již předaného řídicího klíče.
+- [ ] **P2: Robustnost a obnova dat.**
+  - [ ] Implementovat "Reverse Sync": možnost obnovit lokální databázi notebooku z dat uložených na routerech (routery jako zrcadla konfigurace).
+  - [ ] Indikace a ošetření offline stavu notebooku v rámci topologie.
+  - [ ] Vyřešit stabilitu webového GUI při deployi: prověřit chování `lighttpd` při restartu síťových služeb, aby nedocházelo k "vytuhnutí" UI (točící se kolečko) nebo rozbití LuCI při přerušení spojení či konfliktu modulů.
+  - [ ] Detekce a řešení konfliktů při synchronizaci mezi více notebooky.
 
 ## Nejbližší postup
 
