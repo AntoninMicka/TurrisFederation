@@ -7,6 +7,7 @@ mod ssh;
 mod network;
 mod zerotier;
 mod deployment;
+mod notebooks;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -461,7 +462,12 @@ pub fn run() {
     tauri::Builder::default().setup(|app| {
         let data_dir = app.path().app_data_dir()?; fs::create_dir_all(&data_dir)?;
         let db = Connection::open(data_dir.join("federation.db"))?;
+        db.busy_timeout(std::time::Duration::from_secs(10))?;
         migrate(&db).map_err(std::io::Error::other)?;
+        let notebook_service = notebooks::NotebookService::default();
+        notebooks::resume(&data_dir, &notebook_service);
+        app.manage(notebook_service);
+        app.manage(notebooks::NotebookCommandGate::default());
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
-    }).invoke_handler(tauri::generate_handler![check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }

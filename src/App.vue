@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from "vue";
-import { checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import { notebookAction, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import type { NotebookSyncStatus, NotebookPeer } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
 
 const tabs = [
@@ -25,6 +26,53 @@ function navigateTabs(event: KeyboardEvent, index: number) {
   activeTab.value = tabs[target].id;
   document.getElementById(`tab-${activeTab.value}`)?.focus();
 }
+
+const notebookSync = ref<NotebookSyncStatus | null>(null);
+const syncBusy = ref(false);
+const syncError = ref("");
+const syncDraft = reactive({ name: "", address: "" });
+const manualInvitation = ref("");
+const verifiedPeers = reactive<Record<string, boolean>>({});
+const sharedSettingsChanged = ref(false);
+const notebookLabels: Record<string, string> = { synced: "Synchronizováno", local_newer: "Místní změny čekají na převzetí", conflict: "Konflikt změn", error: "Přenos se nezdařil" };
+let notebookPoll: ReturnType<typeof setInterval> | undefined;
+
+async function notebookOperation(request: Record<string, unknown> = { action: "status" }) {
+  if (syncBusy.value) return;
+  syncBusy.value = true;
+  syncError.value = "";
+  try {
+    const result = await notebookAction(request);
+    if (notebookSync.value && notebookSync.value.configurationVersion !== result.configurationVersion) sharedSettingsChanged.value = true;
+    if (!notebookSync.value) Object.assign(syncDraft, { name: result.name, address: result.config.address ?? "" });
+    notebookSync.value = result;
+    if (request.action === "manual") manualInvitation.value = "";
+  } catch (error) { syncError.value = String(error); }
+  finally { syncBusy.value = false; }
+}
+
+async function resolveNotebook(peer: NotebookPeer, choice: "local" | "remote") {
+  if (!window.confirm(choice === "local"
+    ? "Použít místní konfiguraci jako společné řešení konfliktu? Protější notebook ji při synchronizaci převezme."
+    : "Převzít konfiguraci druhého notebooku? Místní návrh bude nahrazen; místní SSH důvěra a audity zůstanou zachované.")) return;
+  await notebookOperation({ action: "resolve", peer: peer.id, choice, token: peer.conflictToken });
+}
+
+async function loadSharedSettings() {
+  try {
+    await reloadSettings();
+    plans.value = {};
+    sharedSettingsChanged.value = false;
+  } catch (error) { syncError.value = String(error); }
+}
+
+onMounted(() => {
+  if ("__TAURI_INTERNALS__" in window) void notebookOperation();
+  notebookPoll = setInterval(() => {
+    if ((activeTab.value === "notebooks" || notebookSync.value?.config.enabled) && !syncBusy.value) void notebookOperation();
+  }, 5000);
+});
+onUnmounted(() => { if (notebookPoll) clearInterval(notebookPoll); });
 
 const notebookStatus = ref<ZeroTierStatus | null>(null);
 const notebookChecking = ref(false);
@@ -376,7 +424,11 @@ async function submitConnection() {
 <template>
   <main class="shell">
     <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Správa routerů, řídicích notebooků a společné sítě.</p></header>
-    <section class="summary"><article><strong>{{ nodes.length }}</strong><span>routerů</span></article><article><strong>1</strong><span>notebook</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <section class="summary"><article><strong>{{ nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <p v-if="sharedSettingsChanged && activeTab !== 'notebooks'" class="setup-preview" role="status">
+      Sdílená konfigurace se změnila.
+      <button class="secondary" @click="activeTab = 'notebooks'">Otevřít synchronizaci notebooků</button>
+    </p>
     <nav class="tabs" role="tablist" aria-label="Správa federace">
       <button v-for="(tab, index) in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button"
         role="tab" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`"
@@ -384,7 +436,7 @@ async function submitConnection() {
         @click="activeTab = tab.id" @keydown="navigateTabs($event, index)">
         {{ tab.label }}
         <span v-if="tab.id === 'routers'" class="tab-count">{{ nodes.length }}</span>
-        <span v-else-if="tab.id === 'notebooks'" class="tab-count">1</span>
+        <span v-else-if="tab.id === 'notebooks'" class="tab-count">{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</span>
         <span v-else-if="tab.id === 'audits' && findings.length" class="tab-count">{{ findings.length }}</span>
       </button>
     </nav>
@@ -470,6 +522,64 @@ async function submitConnection() {
     </section>
     </div>
     <div v-show="activeTab === 'notebooks'" id="panel-notebooks" class="tab-panel" role="tabpanel" aria-labelledby="tab-notebooks" tabindex="0">
+    <section class="panel">
+      <div><p class="kicker">Discovery a synchronizace</p><h2>Správa federace z více notebooků</h2></div>
+      <p>Spárované notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Změny se přenášejí přímo a šifrovaně při spuštěné aplikaci.</p>
+      <p v-if="syncError" class="error" role="alert">{{ syncError }}</p>
+      <p v-if="sharedSettingsChanged" class="warning">Sdílená konfigurace se změnila. Načtení aktualizuje seznam routerů a formulář sítě.</p>
+      <button v-if="sharedSettingsChanged" class="secondary" :disabled="!!connectionNode || saving || ztSaving" @click="loadSharedSettings">Načíst sdílené nastavení</button>
+      <button v-if="!notebookSync" :disabled="syncBusy" @click="notebookOperation()">{{ syncBusy ? 'Načítám…' : 'Načíst stav synchronizace' }}</button>
+      <template v-if="notebookSync">
+        <p><strong>{{ notebookSync.running ? 'Synchronizace běží' : 'Synchronizace je vypnutá nebo služba neběží' }}</strong></p>
+        <p v-if="notebookSync.error" class="error">{{ notebookSync.error }}</p>
+        <form class="form" @submit.prevent="notebookOperation({ action: 'configure', ...syncDraft })">
+          <label>Název tohoto notebooku<input v-model="syncDraft.name" required maxlength="80" :disabled="syncBusy" /></label>
+          <label>Místní IPv4 adresa pro spojení<input v-model="syncDraft.address" placeholder="LAN nebo ZeroTier IPv4 tohoto notebooku" required :disabled="syncBusy" /></label>
+          <small>Použijte rozhraní dosažitelné z ostatních notebooků. Při změně místní adresy zde službu znovu spusťte. Discovery se opakuje každých 30 sekund.</small>
+          <button :disabled="syncBusy">{{ notebookSync.running ? 'Použít nastavení a restartovat' : 'Zapnout discovery a synchronizaci' }}</button>
+          <button type="button" class="secondary" :disabled="syncBusy || !notebookSync.config.enabled" @click="notebookOperation({ action: 'stop' })">Vypnout synchronizaci</button>
+        </form>
+        <div><strong>Otisk tohoto notebooku</strong><code class="fingerprints sync-fingerprint">{{ notebookSync.id }}</code></div>
+        <details><summary>Ruční párování, pokud se notebooky nenajdou</summary>
+          <p>Na druhém notebooku vložte tyto veřejné párovací údaje. Potom údaje přeneste i opačným směrem a na obou zařízeních ověřte otisky.</p>
+          <textarea class="pairing-data" readonly aria-label="Veřejné párovací údaje tohoto notebooku" :value="notebookSync.invitation"></textarea>
+          <form class="connection-form" @submit.prevent="notebookOperation({ action: 'manual', invitation: manualInvitation })">
+            <label>Údaje druhého notebooku<textarea class="pairing-data" v-model="manualInvitation" required></textarea></label>
+            <button :disabled="syncBusy">Přidat do přehledu pro ověření</button>
+          </form>
+        </details>
+        <p v-if="!notebookSync.peers.length" class="muted">Zatím nebyl nalezen jiný notebook. Zapněte synchronizaci i na něm a vyberte společně dostupnou síť.</p>
+        <article v-for="peer in notebookSync.peers" :key="peer.id" class="node">
+          <div><h3>{{ peer.name }}</h3><p>{{ peer.address }} · {{ peer.trusted ? 'Spárovaný notebook' : 'Nalezený notebook · dosud bez přístupu' }}</p></div>
+          <code class="fingerprints sync-fingerprint">{{ peer.id }}</code>
+          <p v-if="peer.state">{{ notebookLabels[peer.state] ?? peer.state }}</p>
+          <p v-if="peer.error" class="error">{{ peer.error }}</p>
+          <small v-if="peer.lastSync">Poslední úspěšný přenos: {{ new Date(peer.lastSync * 1000).toLocaleString('cs-CZ') }}</small>
+          <template v-if="!peer.trusted">
+            <label class="trust-check"><input type="checkbox" v-model="verifiedPeers[peer.id]" />Porovnal(a) jsem otisk přímo na druhém notebooku a povoluji mu synchronizaci i správu federace.</label>
+            <button :disabled="syncBusy || !verifiedPeers[peer.id]" @click="notebookOperation({ action: 'pair', peer: peer.id })">Potvrdit párování a právo správy</button>
+            <small>Potvrzení proveďte také na druhém notebooku. Nový notebook bez vlastní federace pak automaticky převezme konfiguraci a řídicí identitu.</small>
+          </template>
+          <template v-else>
+            <div v-if="peer.conflictToken" class="setup-preview">
+              <strong>Souběžné změny vyžadují rozhodnutí</strong>
+              <p>Místní routery: {{ peer.localNodes?.join(', ') || 'žádné' }}</p>
+              <p>Routery protějšku: {{ peer.remoteNodes?.join(', ') || 'žádné' }}</p>
+              <details><summary>Porovnat nastavení před rozhodnutím</summary>
+                <h4>Místní konfigurace</h4><pre>{{ JSON.stringify(peer.localConfig, null, 2) }}</pre>
+                <h4>Konfigurace protějšku</h4><pre>{{ JSON.stringify(peer.remoteConfig, null, 2) }}</pre>
+              </details>
+              <div class="node-actions">
+                <button :disabled="syncBusy || !!connectionNode" @click="resolveNotebook(peer, 'local')">Zachovat místní konfiguraci</button>
+                <button class="secondary" :disabled="syncBusy || !!connectionNode" @click="resolveNotebook(peer, 'remote')">Převzít konfiguraci protějšku</button>
+              </div>
+            </div>
+            <button class="secondary" :disabled="syncBusy" @click="notebookOperation({ action: 'unpair', peer: peer.id })">Odpojit synchronizaci s notebookem</button>
+            <small>Odpojení zastaví další přenosy. Již předaný kořenový klíč na druhém notebooku zůstává; jeho právo správy tím není odvoláno.</small>
+          </template>
+        </article>
+      </template>
+    </section>
     <section class="panel">
       <div><p class="kicker">Řídicí uzly</p><h2>Notebooky</h2></div>
       <p>Tento notebook spravuje federaci a kontroluje své připojení přes ZeroTier.</p>

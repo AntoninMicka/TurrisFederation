@@ -1033,10 +1033,11 @@ def snapshot(root, config, members):
         for n in config['nodes']:
             if n['id'] in old['members'] and n['id'] in members and n['zeroTierAddress'] != old_nodes[n['id']]['zeroTierAddress']:
                 raise ValueError('Změna správcovské adresy přijatého uzlu vyžaduje samostatnou migraci.')
-    if old and old['config'] == config and old['members'] == members:
+    floor = read(root / 'revision-floor.json', 0)
+    if old and old['revision'] >= floor and old['config'] == config and old['members'] == members:
         return old_envelope
     doc = {'schema': VERSION, 'federationId': old['federationId'] if old else str(uuid.uuid4()),
-           'revision': old['revision'] + 1 if old else 1, 'previous': digest(old) if old else None,
+           'revision': max(old['revision'] + 1 if old else 1, floor), 'previous': digest(old) if old else None,
            'config': config, 'members': members}
     validate_document(doc)
     envelope = sign(root / 'root.pem', doc)
@@ -1050,7 +1051,7 @@ def overview(root, config):
     doc = verify(public_key(root / 'root.pem'), published) if published else None
     reports = read(root / 'reports.json', {})
     members = read(root / 'members.json', {})
-    return {'revision': doc['revision'] if doc else 0, 'unpublishedChanges': not doc or doc['config'] != config or doc['members'] != members,
+    return {'revision': doc['revision'] if doc else 0, 'unpublishedChanges': not doc or doc['config'] != config or doc['members'] != members or doc['revision'] < read(root / 'revision-floor.json', 0),
             'fingerprint': hashlib.sha256(public_key(root / 'root.pem').encode()).hexdigest() if (root / 'root.pem').exists() else None,
             'nodes': {n['id']: {'enrolled': n['id'] in members, **reports.get(n['id'], {})} for n in config['nodes']}}
 
@@ -1072,6 +1073,8 @@ def distribute_bundle(root, envelope, exclude=None):
 
 def controller(root, req):
     root = Path(root)
+    if (root / 'notebook-sync-journal.json').exists():
+        raise ValueError('Nejdřív dokončete obnovu synchronizace v záložce Notebooky.')
     nodes = req['nodes']
     config = normalize(nodes, req['networkId'])
     action = req['action']

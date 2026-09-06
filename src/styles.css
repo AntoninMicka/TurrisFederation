@@ -46,3 +46,6 @@ ul { display: grid; gap: 10px; padding: 0; list-style: none; }li { display: grid
 .tab-panel { display: grid; gap: 22px; min-width: 0; }
 button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; outline-offset: 3px; }
 @media (max-width: 720px) { .shell { padding-top: 20px; } header { padding: 22px; } .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; } .summary article { padding: 14px; } .summary strong { font-size: 1.3rem; } }
+
+.pairing-data { width: 100%; min-height: 100px; padding: 12px; border: 1px solid #b9cbc7; border-radius: 12px; font: inherit; resize: vertical; }
+.sync-fingerprint { display: block; overflow-wrap: anywhere; }

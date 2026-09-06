@@ -9,6 +9,10 @@ Rozhraní je rozdělené do záložek **Routery**, **Notebooky**, **Síť**,
 záložky; rozpracované formuláře zůstávají při přepínání zachované. Routery
 a místní řídicí notebook mají samostatné přehledy.
 
+V záložce **Notebooky** lze zapnout discovery a šifrovanou synchronizaci
+konfigurace i řídicí identity mezi vzájemně spárovanými notebooky.
+Postup párování a řešení konfliktů: [synchronizace notebooků](docs/notebook-sync.md).
+
 Spuštění na Ubuntu/Debianu:
 
 ```bash

@@ -69,3 +69,18 @@ export async function checkNotebookZeroTier(): Promise<ZeroTierStatus> {
   if (browserMode) throw new Error("Kontrola notebooku je dostupná v desktopové aplikaci.");
   return invoke("check_notebook_zerotier");
 }
+
+export interface NotebookPeer {
+  id: string; name: string; address: string; trusted: boolean; seenAt?: number;
+  state?: string; lastSync?: number; error?: string; conflictToken?: string;
+  localNodes?: string[]; remoteNodes?: string[]; localConfig?: unknown; remoteConfig?: unknown;
+}
+export interface NotebookSyncStatus {
+  id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
+  config: { enabled?: boolean; name?: string; address?: string };
+  peers: NotebookPeer[]; updatedAt?: number; error?: string;
+}
+export async function notebookAction(request: Record<string, unknown>): Promise<NotebookSyncStatus> {
+  if (browserMode) throw new Error("Synchronizace notebooků je dostupná v desktopové aplikaci.");
+  return invoke("notebook_action", { request });
+}

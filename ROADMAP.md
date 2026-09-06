@@ -251,8 +251,16 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Implementovat IPv4 routování přes IPv6 nexthop ve WireGuardu (provoz bez přidělených IPv4 adres na tunelech).
   - [ ] Šetřit úložiště na Turrisu: minimalizovat zápisy na eMMC, snížit periodu ukládání stavu na minimum.
 - [ ] **P2: Discovery a mobilita.**
-  - [ ] Implementovat discovery mechanismus: odesílání beaconů (30 min pro routery, 30 s pro notebooky pro rychlou re-konektivitu).
-  - [ ] Obousměrná synchronizace nastavení a secrets (sdílených klíčů) přímo mezi notebooky bez závislosti na centrálním uzlu.
+  - [x] Discovery notebooků: podepsané beacony po 30 s na vybraném IPv4 rozhraní,
+    přehled v UI a ruční párovací údaje jako alternativa k multicastu.
+  - [ ] Discovery routerů: oznámení po 30 minutách.
+  - [x] Obousměrná synchronizace nastavení a řídicí identity mezi vzájemně
+    spárovanými notebooky přes mutual TLS, bez centrálního uzlu. Konflikty se
+    řeší výslovným výběrem verze; lokální SSH důvěra a audity se zachovávají.
+    Viz [postup a omezení](docs/notebook-sync.md).
+  - [ ] Ověřit discovery, párování, předání správy a návrat offline notebooku
+    na dvou skutečných zařízeních přes LAN a ZeroTier.
+  - [ ] Rotace párovacích certifikátů a odvolání již předaného řídicího klíče.
 
 ## Nejbližší postup
 
