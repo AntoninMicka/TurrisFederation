@@ -294,7 +294,7 @@ class FederationTests(unittest.TestCase):
         target, _, _ = self.lan_fixture()
         f.atomic(self.root / 'members.json', {target['id']: self.member(1)})
         lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
-        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': 'abcdef0123456789', 'status': 'OK',
+        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': 'abcdef0123456789', 'status': 'OK', 'portDeviceName': 'zt1234',
                  'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
         req = {'action': 'validate', 'nodes': [target], 'networkId': 'abcdef0123456789',
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
@@ -534,7 +534,7 @@ class FederationTests(unittest.TestCase):
         calls = []
         with patch.object(f, 'run', side_effect=lambda args, data=None, **kw: calls.append((args, data)) or b''), \
              patch.object(f, 'owned_sections', return_value=[]), \
-             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24']}):
+             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24'], 'zeroTierDevice': 'zt1234'}):
             f.render_apply(self.root, self.document())
         config = '\n'.join(raw.decode() for _, raw in calls if raw)
         self.assertNotIn('wireguard_tf_wg', config)
@@ -550,7 +550,7 @@ class FederationTests(unittest.TestCase):
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         with patch.object(f, 'run', side_effect=lambda args, data=None, **kw: calls.append((args, data)) or b''), \
              patch.object(f, 'owned_sections', return_value=[]), \
-             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24']}):
+             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24'], 'zeroTierDevice': 'zt1234'}):
             f.render_apply(self.root, doc)
         config = '\n'.join(raw.decode() for _, raw in calls if raw)
         self.assertIn('192.168.2.0/24', config)

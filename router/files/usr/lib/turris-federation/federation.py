@@ -259,6 +259,9 @@ def local_check(node, network_id):
     assigned = [str(ipaddress.ip_interface(ip).ip) for ip in network.get('assignedAddresses', [])]
     if node['zeroTierAddress'] not in assigned:
         raise ValueError('ZeroTier adresa návrhu není přidělena tomuto routeru.')
+    device = network.get('portDeviceName')
+    if not device:
+        raise ValueError('ZeroTier rozhraní nebylo nalezeno. Zkontrolujte připojení do sítě.')
     output = run(['ip', '-o', 'addr', 'show']).decode()
     actual = {str(ipaddress.ip_interface(ip).network) for ip in re.findall(r'inet6?\s+(\S+/\d+)', output)}
     if not set(node['lanCidrs']).issubset(actual):
@@ -316,14 +319,16 @@ def render_apply(root, doc):
             'allowed_ips': [peer['wireguardAddress'] + '/32'] + peer['lanCidrs']})
     uci_section('firewall', 'tf_zone', 'zone', {'name': 'tf_fed', 'network': ['tf_wg'],
                 'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
+    uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [local['zeroTierDevice']],
+                'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
     uci_section('firewall', 'tf_out', 'forwarding', {'src': 'lan', 'dest': 'tf_fed'})
     uci_section('firewall', 'tf_in', 'forwarding', {'src': 'tf_fed', 'dest': 'lan'})
     uci_section('firewall', 'tf_ping', 'rule', {'src': 'tf_fed', 'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
-    uci_section('firewall', 'tf_control', 'rule', {'src': '*', 'src_ip': local['zeroTierNetworks'],
+    uci_section('firewall', 'tf_control', 'rule', {'src': 'tf_zt', 'src_ip': local['zeroTierNetworks'],
                 'dest_ip': node['zeroTierAddress'], 'proto': 'tcp', 'dest_port': str(PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
     for index, peer in enumerate(peers):
         for suffix, protocol, port in [('wg', 'udp', WG_PORT), ('sync', 'tcp', PORT)]:
-            uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': '*', 'src_ip': peer['zeroTierAddress'],
+            uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
                         'dest_ip': node['zeroTierAddress'], 'proto': protocol, 'dest_port': str(port), 'target': 'ACCEPT', 'family': 'ipv4'})
     for package in ['network', 'firewall']:
         run(['uci', 'commit', package])
