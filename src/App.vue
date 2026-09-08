@@ -116,6 +116,7 @@ const editing = ref(false);
 const deployment = ref<DeploymentOverview | null>(null);
 const plans = ref<Record<string, DeploymentPlan>>({});
 const deployConfirmed = ref(false);
+const deployMode = ref<"full" | "settings">("full");
 const publishing = ref(false);
 const deploymentError = ref("");
 const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
@@ -347,6 +348,7 @@ async function openConnection(node: FederationNode, action: ConnectionAction) {
   connectionNode.value = node;
   connectionAction.value = action;
   deployConfirmed.value = false;
+  deployMode.value = plans.value[node.id]?.recommendedMode ?? "full";
   ztNetworkForOperation.value = ztSettings.value.networkId;
   openCentralAfterSetup.value = true;
   password.value = "";
@@ -386,11 +388,11 @@ async function submitConnection() {
   try {
     if (connectionAction.value === "validate") {
       plans.value[node.id] = await deploymentAction<DeploymentPlan>("validate", node.id, credentials);
-      message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut.`;
+      message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut. ${plans.value[node.id].versionMismatch ? "Verze agenta se liší nebo chybí — doporučena kompletní aktualizace." : "Verze agenta odpovídá, stačí aktualizovat nastavení."}`;
     } else if (connectionAction.value === "deploy") {
-      deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id);
+      deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id, deployMode.value);
       plans.value = {};
-      message.value = `Deploy ${node.name} dokončen. Stav spojení s protějšky je uveden u stanoviště.`;
+      message.value = `${deployMode.value === "settings" ? "Aktualizace nastavení" : "Kompletní deploy"} ${node.name} dokončen. Stav spojení s protějšky je uveden u stanoviště.`;
     } else if (connectionAction.value === "audit") {
       findings.value = await auditNode(node.id, credentials);
       auditedNodeName.value = node.name;
@@ -462,15 +464,17 @@ async function submitConnection() {
             <p v-if="deployment?.nodes[node.id]?.appliedRevision && deployment.nodes[node.id].appliedRevision !== deployment.revision" class="warning">Čeká na opravy z novější revize.</p>
             <p v-if="deployment?.nodes[node.id]?.error" class="error">{{ deployment.nodes[node.id].error }}</p>
             <small v-if="deployment?.nodes[node.id]?.checkedAt">Poslední výsledek: {{ new Date(deployment.nodes[node.id].checkedAt! * 1000).toLocaleString('cs-CZ') }}</small>
+            <p v-if="plans[node.id]?.versionMismatch" class="warning">{{ plans[node.id].installedArtifactHash ? 'Verze agenta na routeru se liší od dostupné verze. Doporučujeme kompletní aktualizaci.' : 'Agent nebo jeho služba chybí. Je nutná kompletní instalace.' }}</p>
             <details v-if="plans[node.id]">
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
               <p>LAN: {{ plans[node.id].lan.source }} → {{ plans[node.id].lan.host }} ({{ plans[node.id].lan.device }})</p>
-              <ol><li v-for="step in plans[node.id].steps" :key="step">{{ step }}</li></ol>
+              <p>Verze agenta: {{ plans[node.id].installedArtifactHash?.slice(0, 12) ?? 'nenainstalováno' }} → {{ plans[node.id].artifactHash.slice(0, 12) }}</p>
+              <ol><li v-for="step in plans[node.id].stepsByMode[plans[node.id].recommendedMode]" :key="step">{{ step }}</li></ol>
               <pre>{{ JSON.stringify(plans[node.id].config, null, 2) }}</pre>
             </details>
             <div class="node-actions">
               <button class="secondary" :disabled="!!connectionNode || publishing || !ztSettings.networkId" @click="openConnection(node, 'validate')">Validovat z notebooku</button>
-              <button v-if="plans[node.id]" :disabled="!!connectionNode || publishing" @click="openConnection(node, 'deploy')">{{ plans[node.id].operation === 'update' ? 'Aktualizovat agenta přes LAN' : 'Deploy přes LAN' }}</button>
+              <button v-if="plans[node.id]" :disabled="!!connectionNode || publishing" @click="openConnection(node, 'deploy')">{{ plans[node.id].operation === 'update' ? 'Vybrat aktualizaci…' : 'Deploy přes LAN' }}</button>
             </div>
           </div>
           <div class="zerotier-node">
@@ -628,7 +632,7 @@ async function submitConnection() {
     <div v-show="activeTab === 'sync'" id="panel-sync" class="tab-panel" role="tabpanel" aria-labelledby="tab-sync" tabindex="0">
     <section class="panel">
       <div><p class="kicker">Deploy a synchronizace</p><h2>Postupné zprovoznění stanovišť</h2></div>
-      <p>Instalaci i aktualizaci agenta proveďte z notebooku připojeného přímo do LAN routeru přes Ethernet nebo Wi-Fi. Zadejte číselnou LAN IPv4 jako SSH adresu a validujte plán. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
+      <p>Kompletní aktualizaci (agent, web a nastavení) nebo aktualizaci pouze nastavení vyberte po validaci. Při rozdílu verzí doporučíme kompletní aktualizaci. Deploy proveďte z notebooku připojeného přímo do LAN routeru přes Ethernet nebo Wi-Fi. Zadejte číselnou LAN IPv4 jako SSH adresu a validujte plán. Drafty se přenesou společně s nastavením, do WireGuardu se zapojí až přijaté routery.</p>
       <p v-if="deployment">Podepsaná revize: <strong>{{ deployment.revision || 'zatím žádná' }}</strong> · {{ deployment.unpublishedChanges ? 'Návrh obsahuje nepublikované změny.' : 'Návrh odpovídá podepsané revizi.' }}</p>
       <p v-if="deploymentError" class="error">{{ deploymentError }}</p>
       <details v-if="deployment?.fingerprint"><summary>Kotva důvěry tohoto notebooku</summary><code class="fingerprints">{{ deployment.fingerprint }}</code></details>
@@ -688,9 +692,12 @@ async function submitConnection() {
         </div>
         <div v-if="connectionAction === 'deploy' && plans[connectionNode.id]" class="setup-preview">
           <strong>Plán nasazení na {{ connectionNode.name }}</strong>
-          <ol><li v-for="step in plans[connectionNode.id].steps" :key="step">{{ step }}</li></ol>
+          <p v-if="plans[connectionNode.id].versionMismatch" class="warning">{{ plans[connectionNode.id].installedArtifactHash ? 'Verze agenta se liší. Doporučujeme kompletní aktualizaci, aby router získal nové funkce a opravy.' : 'Agent nebo jeho služba chybí. Pro tento uzel je dostupná kompletní instalace.' }}</p>
+          <label class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="full" :disabled="submitting" @change="deployConfirmed = false" /> Kompletní aktualizace — agent, web a nastavení</label>
+          <label v-if="plans[connectionNode.id].availableModes.includes('settings')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="settings" :disabled="submitting" @change="deployConfirmed = false" /> Pouze nastavení — zachovat nainstalovaný software</label>
+          <ol><li v-for="step in plans[connectionNode.id].stepsByMode[deployMode]" :key="step">{{ step }}</li></ol>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
-          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji instalaci / aktualizaci přes přímou LAN a aplikování plánu včetně předání síťových změn ostatním přijatým routerům přes ZeroTier.</label>
+          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji {{ deployMode === 'settings' ? 'aktualizaci pouze nastavení' : 'kompletní instalaci / aktualizaci' }} přes přímou LAN a aplikování plánu včetně předání síťových změn ostatním přijatým routerům přes ZeroTier.</label>
         </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>

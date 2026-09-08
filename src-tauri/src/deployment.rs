@@ -7,9 +7,12 @@ use std::{fs, process::Stdio, time::Duration};
 const CONTROLLER: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
 
 #[tauri::command]
-pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, state: State<'_, AppState>) -> Result<Value, String> {
     if !["overview", "validate", "deploy", "publish"].contains(&action.as_str()) {
         return Err("Neznámá operace deploye.".into());
+    }
+    if mode.as_deref().is_some_and(|value| !["full", "settings"].contains(&value)) {
+        return Err("Neznámý režim aktualizace.".into());
     }
     let (nodes, settings) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -37,7 +40,7 @@ pub async fn deployment_action(action: String, node_id: Option<String>, credenti
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let script = root.join(format!("controller-{}.py", uuid::Uuid::new_v4()));
     fs::write(&script, CONTROLLER).map_err(|e| e.to_string())?;
-    let request = json!({"action": action, "nodeId": node_id, "planId": plan_id, "credentials": auth,
+    let request = json!({"action": action, "nodeId": node_id, "planId": plan_id, "mode": mode, "credentials": auth,
                         "nodes": nodes, "networkId": settings.network_id});
     let result = async {
         let mut child = tokio::process::Command::new("python3").arg(&script).arg("controller").arg(&root)

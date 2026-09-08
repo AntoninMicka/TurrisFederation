@@ -5,7 +5,7 @@ implementovaná; níže uvedený návrh zahrnuje i dosud nedokončené funkce.
 
 ## Instalace a aktualizace pouze v přímé LAN
 
-Instalace i opakovaný deploy (aktualizace agenta) vyžadují notebook připojený
+Instalace i oba režimy cíleného deploye vyžadují notebook připojený
 přímo přes fyzický Ethernet nebo Wi-Fi do LAN cílového routeru. SSH adresa
 musí být číselná IPv4 z LAN uvedené v draftu. Controller kontroluje skutečnou
 trasu bez brány a lokální adresu ve stejném subnetu; odmítá virtuální rozhraní,
@@ -17,8 +17,23 @@ Kontrola se opakuje před každým SSH krokem včetně instalátoru, aktualizace
 potvrzení a restartu služby. SSH je vázané na ověřené rozhraní a zdrojovou
 adresu. Plán obsahuje LAN adresy/rozhraní a otisk konkrétního agenta i jeho
 služby; změna připojení nebo artefaktu plán zneplatní. Starší plány bez těchto
-údajů je nutné znovu validovat. U přijatého uzlu UI nabízí aktualizaci agenta
-přes LAN. Aktualizace používá stejné kontroly identity a zachovává klíče;
+údajů je nutné znovu validovat. Po validaci UI nabízí dva režimy:
+
+- **Kompletní aktualizace:** agent, web, chybějící závislosti a síťové nastavení;
+  po dokončení se restartuje služba a ověří web.
+- **Pouze nastavení:** zachová software a členství, podepíše konfiguraci,
+  aplikuje ji s UCI zálohou a rollbackem a potvrdí výsledek dalším SSH spojením.
+  Nevolá instalátor ani restart služby agenta. Změny předá ostatním přijatým uzlům.
+
+Validace přečte SHA-256 otisk obsahu agenta a jeho init služby a porovná jej
+s lokálním instalačním artefaktem, který zahrnuje i web. Při rozdílu verzí
+předvolí a doporučí kompletní aktualizaci; u nainstalovaného přijatého uzlu
+lze přesto výslovně zvolit pouze nastavení. Při shodě předvolí pouze nastavení.
+Nové uzly nebo chybějící agent/služba vyžadují kompletní instalaci.
+Otisk routeru se kontroluje znovu před deployem; změna od validace plán zneplatní.
+UI zobrazuje kroky podle vybraného režimu a při změně režimu ruší potvrzení.
+
+Aktualizace používá stejné kontroly identity a zachovává klíče;
 předchozí soubor agenta je uložen jako `.previous`. Nejde o automatický
 rollback softwaru ani o aktualizaci celého Turris OS.
 

@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import parse_qs
 
 VERSION = 1
 LIMIT = 1024 * 1024
@@ -459,7 +460,7 @@ def stage(root, doc, expected_hash=None):
         raise
 
 
-PING_WINDOW = 20
+PING_COUNT = 5
 PING_MAX_AGE = 120
 
 
@@ -474,28 +475,68 @@ def ping_sample(address, interface):
         return None
 
 
-def ping_diagnostics(root, doc, node, peers):
-    previous_report = read(Path(root) / 'report.json', {})
-    previous = previous_report.get('diagnostics', {}) if previous_report.get('appliedRevision') == doc['revision'] else {}
-    now = time.time()
+def ping_batch(address, interface):
+    samples = [ping_sample(address, interface) for _ in range(PING_COUNT)]
+    # Execution errors are not packet loss: do not publish a misleading percentage.
+    valid = all(sample is not None for sample in samples)
+    return {'address': address, 'samples': samples if valid else [], 'checkedAt': time.time(),
+            'successPercent': 100 * sum(samples) / PING_COUNT if valid else None}
+
+
+def ping_diagnostics(node, peers):
     jobs = []
     with ThreadPoolExecutor(max_workers=8) as pool:
         for peer in peers:
             for transport, field, interface in [('zerotier', 'zeroTierAddress', node['zeroTierAddress']),
                                                  ('wireguard', 'wireguardAddress', 'tf_wg')]:
-                address = peer[field]
-                jobs.append((peer['id'], transport, address, pool.submit(ping_sample, address, interface)))
+                jobs.append((peer['id'], transport, pool.submit(ping_batch, peer[field], interface)))
         diagnostics = {}
-        for peer_id, transport, address, future in jobs:
-            success = future.result()
-            old = previous.get(peer_id, {}).get(transport, {})
-            samples = old.get('samples', []) if (old.get('address') == address and
-                        0 <= now - old.get('checkedAt', 0) <= PING_MAX_AGE) else []
-            samples = (samples + [success])[-PING_WINDOW:] if success is not None else []
-            diagnostics.setdefault(peer_id, {})[transport] = {
-                'address': address, 'samples': samples, 'checkedAt': time.time(),
-                'successPercent': 100 * sum(samples) / len(samples) if samples else None}
+        for peer_id, transport, future in jobs:
+            diagnostics.setdefault(peer_id, {})[transport] = future.result()
     return diagnostics
+
+
+def start_diagnostics(root):
+    root = Path(root)
+    guard = (root / 'diagnostics.lock').open('a')
+    try:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Diagnostika už běží. Obnovte stav za chvíli.')
+        with locked(root):
+            envelope = read(root / 'accepted.json')
+            if not envelope:
+                raise ValueError('Router ještě nemá konfiguraci federace.')
+            doc = validate_document(verify((root / 'root.pub').read_text(), envelope))
+            node = self_node(root, doc)
+            report = read(root / 'report.json', {})
+            if (not node or node['id'] not in doc['members'] or read(root / 'pending.json') or
+                    report.get('appliedRevision') != doc['revision']):
+                raise ValueError('Nejdřív dokončete aplikování konfigurace.')
+            peers = [n for n in doc['config']['nodes'] if n['id'] in doc['members'] and n['id'] != node['id']]
+            if not peers:
+                raise ValueError('Federace nemá přijaté protějšky k měření.')
+            job = {'revision': doc['revision'], 'startedAt': time.time(), 'state': 'running', 'nodes': {}}
+            atomic(root / 'diagnostics.json', job)
+        def measure():
+            try:
+                results = ping_diagnostics(node, peers)
+                with locked(root):
+                    if (read(root / 'accepted.json') != envelope or read(root / 'pending.json') or
+                            read(root / 'report.json', {}).get('appliedRevision') != doc['revision']):
+                        raise ValueError('Konfigurace se během měření změnila.')
+                    atomic(root / 'diagnostics.json', dict(job, state='complete', nodes=results))
+            except Exception:
+                atomic(root / 'diagnostics.json', dict(job, state='error'))
+            finally:
+                guard.close()
+        worker = threading.Thread(target=measure, daemon=True)
+        worker.start()
+        return worker
+    except Exception:
+        guard.close()
+        raise
 
 
 def diagnostic_badge(measurement, now):
@@ -512,7 +553,7 @@ def diagnostic_badge(measurement, now):
 def health(root, doc):
     own_id = read(Path(root) / 'node.json')['nodeId']
     if own_id not in doc['members']:
-        return {'state': 'revoked', 'pendingPeers': [], 'diagnostics': {}}
+        return {'state': 'revoked', 'pendingPeers': []}
     expected_key = doc['members'][own_id]['wireguardKey']
     actual_key = run(['wg', 'show', 'tf_wg', 'public-key']).decode().strip()
     if expected_key != actual_key:
@@ -537,14 +578,18 @@ def health(root, doc):
             route = run(['ip', '-%s' % net.version, 'route', 'get', str(destination)]).decode()
             if not re.search(r'\bdev tf_wg\b', route):
                 raise ValueError('Po deployi chybí WireGuard trasa: ' + cidr)
-    node = next(n for n in doc['config']['nodes'] if n['id'] == own_id)
-    diagnostics = ping_diagnostics(root, doc, node, peers)
+    # Passive health check: only explicit web diagnostics may send ICMP probes.
+    handshakes = {}
+    for line in run(['wg', 'show', 'tf_wg', 'latest-handshakes']).decode().splitlines():
+        fields = line.split()
+        if len(fields) == 2:
+            handshakes[fields[0]] = int(fields[1])
+    now = time.time()
     for peer in peers:
-        samples = diagnostics[peer['id']]['wireguard']['samples']
-        if not samples or not samples[-1]:
+        handshake = handshakes.get(doc['members'][peer['id']]['wireguardKey'], 0)
+        if not handshake or not 0 <= now - handshake <= 180:
             missing.append(peer['id'])
-    return {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing,
-            'diagnostics': diagnostics}
+    return {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing}
 
 
 def confirm(root, token):
@@ -807,7 +852,7 @@ WEB_LABELS = {'pending': 'Čeká na aplikování', 'error': 'Chyba agenta', 'con
               'waiting_peers': 'Čeká na protějšky', 'active': 'Spojení ověřeno', 'rollback': 'Obnovena záloha', 'revoked': 'Členství odvoláno'}
 
 
-def web_page(root):
+def web_page(root, csrf_token=''):
     """Render only selected public configuration/status fields, never raw files or keys."""
     import html
     def esc(value):
@@ -821,13 +866,15 @@ def web_page(root):
     state = WEB_LABELS.get(report.get('state'), 'Zatím nenasazeno')
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
+    diagnostics = read(root / 'diagnostics.json', {})
     rows = []
     now = time.time()
+    running = diagnostics.get('state') == 'running' and 0 <= now - diagnostics.get('startedAt', 0) <= 360
     if doc:
         for node in doc['config']['nodes']:
             member = node['id'] in doc['members']
             label = state if node['id'] == own_id else ('Přijatý uzel' if member else 'Draft')
-            measurements = report.get('diagnostics', {}).get(node['id'], {}) if (member and own_id in doc['members'] and report.get('appliedRevision') == doc['revision']) else {}
+            measurements = diagnostics.get('nodes', {}).get(node['id'], {}) if (member and own_id in doc['members'] and diagnostics.get('revision') == doc['revision'] and report.get('appliedRevision') == doc['revision']) else {}
             badges = ['—' if node['id'] == own_id else diagnostic_badge(measurements.get(transport, {}), now)
                       for transport in ['zerotier', 'wireguard']]
             rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
@@ -840,7 +887,13 @@ def web_page(root):
     if report.get('pendingPeers'):
         names = {node['id']: node['name'] for node in doc['config']['nodes']} if doc else {}
         notices += '<p class="notice">Čekající protějšky: %s</p>' % esc(', '.join(names.get(peer, peer) for peer in report['pendingPeers']))
-    return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    diagnostic_form = ('<form method="post" action="/turris-federation/diagnostics"><input type="hidden" name="token" value="%s"><button class="button" %s>Spustit ping · 5 paketů</button></form>' % (esc(csrf_token), 'disabled' if running else '')) if doc and csrf_token else ''
+    if running:
+        diagnostic_form += '<p class="notice">Probíhá měření. Výsledky se zobrazí po dokončení.</p>'
+    elif diagnostics.get('state') in ['running', 'error']:
+        diagnostic_form += '<p class="notice">Měření nebylo dokončeno. Spusťte diagnostiku znovu.</p>'
+    refresh = '<meta http-equiv="refresh" content="2">' if running else ''
+    return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">''' + refresh + '''
 <title>Turris Federation</title><style>''' + WEB_STYLE + '''</style></head><body><main>
 <nav><a href="/">← Úvodní stránka Turrisu</a><a class="button" href="/turris-federation/">Obnovit stav</a></nav>
 <div class="kicker">Turris Federation · přehled sítě</div><h1>''' + esc(own['name'] if own else 'Federace routerů') + '''</h1>
@@ -849,8 +902,8 @@ def web_page(root):
 <article class="card"><span>Přijatá revize</span><strong>''' + esc(doc['revision'] if doc else '—') + '''</strong></article>
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
-<section><h2>Uzly federace</h2><div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping měří tento router směrem k přijatým protějškům: posledních nejvýše 20 vzorků, běžně po 30 s. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
+<section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<p class="muted">Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -858,6 +911,7 @@ def web_page(root):
 
 
 def web_handler(root):
+    csrf_token = secrets.token_hex(32)
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -867,7 +921,7 @@ def web_handler(root):
                 self.send_error(404)
                 return
             try:
-                body = web_page(root)
+                body = web_page(root, csrf_token)
                 status = 200
             except Exception:
                 body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
@@ -877,14 +931,44 @@ def web_handler(root):
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
             self.end_headers()
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path != WEB_PATH + 'diagnostics':
+                self.send_error(405)
+                return
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+            except ValueError:
+                size = 0
+            if not 0 < size <= 256 or self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
+                self.send_error(400)
+                return
+            fields = parse_qs(self.rfile.read(size).decode('ascii', errors='replace'))
+            token = fields.get('token', [''])[0]
+            if set(fields) != {'token'} or not re.fullmatch('[0-9a-f]{64}', token) or not secrets.compare_digest(token, csrf_token):
+                self.send_error(403)
+                return
+            try:
+                start_diagnostics(root)
+            except ValueError as error:
+                self.send_error(409, 'Diagnostics unavailable', explain=str(error))
+                return
+            except Exception:
+                self.send_error(503)
+                return
+            self.send_response(303)
+            self.send_header('Location', WEB_PATH)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+        def do_PUT(self):
             self.send_error(405)
 
-        do_PUT = do_DELETE = do_PATCH = do_POST
+        do_DELETE = do_PATCH = do_PUT
     return Handler
 
 
@@ -1047,6 +1131,19 @@ def artifact_hash():
     return hashlib.sha256(Path(__file__).read_bytes() + INIT.encode()).hexdigest()
 
 
+def installed_artifact_hash(node, credentials):
+    # Old agents need no version RPC: read the same bytes included in artifact_hash().
+    command = ('set -eu; if test -f ' + PROGRAM + ' && test -f /etc/init.d/turris-federation; then '
+               'cat ' + PROGRAM + ' /etc/init.d/turris-federation | sha256sum; else echo missing; fi')
+    output = ssh(node, credentials, command).decode().strip()
+    if output == 'missing':
+        return None
+    value = output.split()[0] if output else ''
+    if not re.fullmatch('[0-9a-f]{64}', value):
+        raise ValueError('Nelze zjistit verzi nainstalovaného agenta. Opakujte validaci.')
+    return value
+
+
 def ssh(node, credentials, command):
     # Credentials are passed through stdin to this controller and an inherited pipe to sshpass.
     host, user, port = node['sshHost'], node['sshUser'], node['sshPort']
@@ -1172,7 +1269,12 @@ def controller(root, req):
         if not set(target['lanCidrs']).issubset(actual):
             raise ValueError('LAN sítě draftu neodpovídají routeru. Opravte draft a validujte znovu.')
         updating = node['id'] in read(root / 'members.json', {})
-        plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': artifact_hash(),
+        installed = installed_artifact_hash(node, credentials)
+        available = artifact_hash()
+        plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': available,
+                'installedArtifactHash': installed, 'versionMismatch': installed != available,
+                'availableModes': ['full', 'settings'] if updating and installed else ['full'],
+                'recommendedMode': 'settings' if updating and installed == available else 'full',
                 'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
@@ -1184,6 +1286,12 @@ def controller(root, req):
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
                           'Předat nové síťové nastavení ostatním přijatým routerům přes ZeroTier; nedostupné uzly je převezmou po obnovení spojení.'],
                 'config': config, 'validatedAt': time.time()}
+        plan['stepsByMode'] = {'full': plan['steps'], 'settings': [
+            'Zachovat nainstalovaného agenta, web a závislosti.',
+            'Podepsat a přenést konfiguraci včetně všech draftů.',
+            'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
+            'Ověřit další SSH spojení a potvrdit aplikování nastavení.',
+            'Předat síťové nastavení ostatním přijatým routerům přes ZeroTier.']}
         atomic(root / ('plan-' + node['id'] + '.json'), plan)
         return plan
     if action != 'deploy':
@@ -1193,34 +1301,48 @@ def controller(root, req):
         raise ValueError('Plán chybí, vypršel nebo se návrh změnil. Spusťte znovu validaci.')
     if plan.get('artifactHash') != artifact_hash() or not plan.get('lan'):
         raise ValueError('Plán neodpovídá verzi agenta nebo chybí LAN kontrola. Validujte znovu.')
+    mode = req.get('mode') or 'full'
+    if mode not in plan.get('availableModes', []):
+        raise ValueError('Tento režim aktualizace není ve validovaném plánu. Validujte znovu.')
     lan = direct_lan(node)
     if plan['lan'] != lan:
         raise ValueError('LAN připojení se od validace změnilo. Validujte znovu.')
     node = dict(node, _deployLan=lan)
     if ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode() != plan['routerHash']:
         raise ValueError('Konfigurace routeru se od validace změnila. Validujte znovu.')
+    if installed_artifact_hash(node, credentials) != plan.get('installedArtifactHash'):
+        raise ValueError('Verze agenta na routeru se od validace změnila. Validujte znovu.')
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))
-    source = Path(__file__).read_bytes()
-    installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
-    check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
-    installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
-    packages = 'python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file'
-    installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
-    installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
-    installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
-    installer += 'printf %s ' + shell_quote(base64.b64encode(source).decode()) + ' | base64 -d > ' + PROGRAM + '.new; '
-    installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
-    installer += 'printf %s ' + shell_quote(base64.b64encode(INIT.encode()).decode()) + ' | base64 -d > /etc/init.d/turris-federation; chmod 755 /etc/init.d/turris-federation'
-    installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
-    ssh(node, credentials, installer)
-    member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
+    check_node = 'import json; assert json.load(open("/etc/turris-federation/node.json"))["nodeId"] == ' + repr(node['id'])
     members = read(root / 'members.json', {})
-    if node['id'] in members and members[node['id']] != member:
-        raise ValueError('Identita přijatého routeru se změnila. Automatické nahrazení je zakázáno.')
-    members[node['id']] = member
-    atomic(root / 'members.json', members)
+    if mode == 'settings':
+        if node['id'] not in members:
+            raise ValueError('Nejdřív proveďte kompletní instalaci a přijetí uzlu.')
+        check_member = 'import json; assert json.load(open("/etc/turris-federation/node.json")) == ' + repr(members[node['id']])
+        ssh(node, credentials, 'set -eu; test -f ' + REMOTE + '/root.pub; ' + check +
+            '; test ! -f ' + REMOTE + '/pending.json; python3 -c ' + shell_quote(check_member))
+    else:
+        source = Path(__file__).read_bytes()
+        installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
+        check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
+        installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
+        packages = 'python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file'
+        installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
+        installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
+        installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
+        installer += 'printf %s ' + shell_quote(base64.b64encode(source).decode()) + ' | base64 -d > ' + PROGRAM + '.new; '
+        installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
+        installer += 'printf %s ' + shell_quote(base64.b64encode(INIT.encode()).decode()) + ' | base64 -d > /etc/init.d/turris-federation; chmod 755 /etc/init.d/turris-federation'
+        installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
+        ssh(node, credentials, installer)
+        member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
+        members = read(root / 'members.json', {})
+        if node['id'] in members and members[node['id']] != member:
+            raise ValueError('Identita přijatého routeru se změnila. Automatické nahrazení je zakázáno.')
+        members[node['id']] = member
+        atomic(root / 'members.json', members)
     envelope = snapshot(root, config, members)
     pending = remote(node, credentials, 'apply', envelope=envelope, expectedRouterHash=plan['routerHash'])
     # Separate SSH session proves that management survived network changes.
@@ -1228,8 +1350,9 @@ def controller(root, req):
     reports = read(root / 'reports.json', {})
     reports[node['id']] = result
     atomic(root / 'reports.json', reports)
-    ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
-    ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
+    if mode == 'full':
+        ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
+        ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
     (root / ('plan-' + node['id'] + '.json')).unlink()
     distribute_bundle(root, envelope, exclude=node['id'])
     return overview(root, config)

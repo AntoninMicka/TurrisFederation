@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import socket
@@ -274,7 +275,7 @@ class FederationTests(unittest.TestCase):
         plan = {'id': 'update', 'expiresAt': time.time() + 600, 'configHash': f.digest(config),
                 'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
                 'sshHash': f.digest({k: target[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
-                'lan': lan, 'artifactHash': 'old-agent'}
+                'lan': lan, 'availableModes': ['full'], 'artifactHash': 'old-agent'}
         req = {'action': 'deploy', 'nodes': nodes, 'networkId': config['networkId'], 'nodeId': target['id'],
                'planId': 'update', 'credentials': {'hostKey': 'key', 'password': 'test'}}
         path = self.root / ('plan-' + target['id'] + '.json')
@@ -298,12 +299,97 @@ class FederationTests(unittest.TestCase):
                  'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
         req = {'action': 'validate', 'nodes': [target], 'networkId': 'abcdef0123456789',
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
-        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, b'hash']) as ssh:
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, (f.artifact_hash() + '  -').encode(), b'hash']) as ssh:
             plan = f.controller(self.root, req)
         self.assertEqual('update', plan['operation'])
         self.assertEqual(lan, plan['lan'])
         self.assertEqual(f.artifact_hash(), plan['artifactHash'])
         self.assertTrue(all('opkg install' not in call.args[2] for call in ssh.call_args_list))
+
+    def validation_fixture(self, installed, enrolled=True):
+        target = node(1)
+        f.atomic(self.root / 'members.json', {target['id']: self.member(1)} if enrolled else {})
+        lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
+        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': self.config['networkId'], 'status': 'OK',
+                 'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
+        req = {'action': 'validate', 'nodes': self.nodes, 'networkId': self.config['networkId'],
+               'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, b'hash']), \
+                patch.object(f, 'installed_artifact_hash', return_value=installed):
+            plan = f.controller(self.root, req)
+        return req, plan, lan
+
+    def test_validation_recommends_full_update_for_different_or_missing_version(self):
+        for installed, enrolled, recommended, modes in [
+                (f.artifact_hash(), True, 'settings', ['full', 'settings']),
+                ('a' * 64, True, 'full', ['full', 'settings']),
+                (None, True, 'full', ['full']),
+                (f.artifact_hash(), False, 'full', ['full'])]:
+            with self.subTest(installed=installed, enrolled=enrolled):
+                _, plan, _ = self.validation_fixture(installed, enrolled)
+                self.assertEqual(recommended, plan['recommendedMode'])
+                self.assertEqual(modes, plan['availableModes'])
+                self.assertEqual(installed, plan['installedArtifactHash'])
+                self.assertEqual(installed != f.artifact_hash(), plan['versionMismatch'])
+                self.assertNotEqual(plan['stepsByMode']['full'], plan['stepsByMode']['settings'])
+
+    def test_settings_update_preserves_software_and_uses_apply_confirm(self):
+        # A version mismatch recommends full update but an explicit settings-only choice remains valid.
+        req, plan, lan = self.validation_fixture('a' * 64)
+        before = (self.root / 'members.json').read_bytes()
+        req.update(action='deploy', mode='settings', planId=plan['id'])
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash', return_value='a' * 64), \
+                patch.object(f, 'remote', side_effect=[{'token': 'confirm-me'}, {'state': 'active', 'appliedRevision': 1}]) as remote, \
+                patch.object(f, 'distribute_bundle') as distribute:
+            result = f.controller(self.root, req)
+        self.assertEqual(['apply', 'confirm'], [c.args[2] for c in remote.call_args_list])
+        self.assertEqual('hash', remote.call_args_list[0].kwargs['expectedRouterHash'])
+        self.assertEqual('confirm-me', remote.call_args_list[1].kwargs['token'])
+        self.assertEqual(before, (self.root / 'members.json').read_bytes())
+        commands = '\n'.join(c.args[2] for c in ssh.call_args_list)
+        for forbidden in ['opkg', 'install-web', 'web-check', 'restart', '.new', 'base64 -d']:
+            self.assertNotIn(forbidden, commands)
+        self.assertEqual(1, result['nodes'][node(1)['id']]['appliedRevision'])
+        self.assertFalse((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
+        distribute.assert_called_once()
+
+    def test_full_update_installs_software_and_restarts_web(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        req.update(action='deploy', mode='full', planId=plan['id'])
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash', return_value='a' * 64), \
+                patch.object(f, 'remote', side_effect=[self.member(1), {'token': None}, {'state': 'active'}]) as remote, \
+                patch.object(f, 'distribute_bundle'):
+            f.controller(self.root, req)
+        self.assertEqual(['bootstrap', 'apply', 'status'], [c.args[2] for c in remote.call_args_list])
+        commands = '\n'.join(c.args[2] for c in ssh.call_args_list)
+        for expected in ['opkg', 'install-web', 'web-check', 'restart', 'base64 -d']:
+            self.assertIn(expected, commands)
+
+    def test_deploy_rejects_unavailable_mode_and_changed_remote_version(self):
+        req, plan, lan = self.validation_fixture(None, enrolled=False)
+        req.update(action='deploy', mode='settings', planId=plan['id'])
+        with patch.object(f, 'ssh') as ssh, self.assertRaisesRegex(ValueError, 'režim'):
+            f.controller(self.root, req)
+        ssh.assert_not_called()
+        req, plan, lan = self.validation_fixture('a' * 64)
+        req.update(action='deploy', mode='full', planId=plan['id'])
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash', return_value='b' * 64), patch.object(f, 'remote') as remote, \
+                self.assertRaisesRegex(ValueError, 'Verze agenta'):
+            f.controller(self.root, req)
+        remote.assert_not_called()
+        self.assertEqual(1, ssh.call_count)
+        self.assertTrue((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
+
+    def test_installed_version_probe_accepts_hash_or_missing_only(self):
+        for output, expected in [(('a' * 64 + '  -\n').encode(), 'a' * 64), (b'missing\n', None)]:
+            with patch.object(f, 'ssh', return_value=output):
+                self.assertEqual(expected, f.installed_artifact_hash(node(1), {}))
+        for output in [b'', b'permission denied', b'not-a-hash']:
+            with patch.object(f, 'ssh', return_value=output), self.assertRaisesRegex(ValueError, 'verzi'):
+                f.installed_artifact_hash(node(1), {})
 
     def test_publish_only_sends_network_document_and_never_installs(self):
         f.atomic(self.root / 'members.json', {node(1)['id']: self.member(1)})
@@ -390,11 +476,12 @@ class FederationTests(unittest.TestCase):
         plan = {'id': 'deploy-second', 'expiresAt': time.time() + 600, 'configHash': f.digest(self.config),
                 'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
                 'sshHash': f.digest({k: target[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
-                'lan': lan, 'artifactHash': f.artifact_hash(), 'routerHash': 'hash'}
+                'lan': lan, 'availableModes': ['full'], 'installedArtifactHash': f.artifact_hash(), 'artifactHash': f.artifact_hash(), 'routerHash': 'hash'}
         f.atomic(self.root / ('plan-' + target['id'] + '.json'), plan)
         req = {'action': 'deploy', 'nodes': self.nodes, 'networkId': self.config['networkId'],
                'nodeId': target['id'], 'planId': plan['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
         with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash', return_value=f.artifact_hash()), \
                 patch.object(f, 'remote', side_effect=[self.member(2), {'token': 'ok'},
                     {'state': 'waiting_peers', 'appliedRevision': 2}]) as remote, \
                 patch.object(f, 'request_http', side_effect=ValueError('offline')) as http:
@@ -459,66 +546,126 @@ class FederationTests(unittest.TestCase):
             with patch.object(f.subprocess, 'run', side_effect=error):
                 self.assertIs(expected, f.ping_sample('10.147.0.2', 'tf_wg'))
 
-    def test_ping_history_resets_after_gap_or_address_change(self):
-        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
-        for address, checked in [('10.147.0.99', 995), ('10.147.0.2', 879), ('10.147.0.2', 1001)]:
-            f.atomic(self.root / 'report.json', {'appliedRevision': doc['revision'], 'diagnostics': {
-                node(2)['id']: {'zerotier': {'address': address, 'checkedAt': checked, 'samples': [False] * 20}}}})
-            with self.subTest(address=address, checked=checked), patch.object(f.time, 'time', return_value=1000), \
-                    patch.object(f, 'ping_sample', return_value=True):
-                result = f.ping_diagnostics(self.root, doc, node(1), [node(2)])
-            self.assertEqual([True], result[node(2)['id']]['zerotier']['samples'])
-
-    def test_health_collects_ping_history_and_web_displays_it(self):
-        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+    def prepare_diagnostics(self):
+        config = f.normalize(self.nodes + [node(3)], self.config['networkId'])
+        doc = self.document(config=config, members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
-        key = self.member(2)['wireguardKey']
-        def run(args):
-            if args[-1] == 'public-key':
-                return self.member(1)['wireguardKey'].encode()
-            if args[-1] == 'peers':
-                return key.encode()
-            if args[-1] == 'allowed-ips':
-                return (key + ' 10.203.0.2/32 192.168.2.0/24').encode()
-            return b'dev tf_wg'
-        def probe(address, interface):
-            return interface == 'tf_wg'
-        with patch.object(f, 'run', side_effect=run), patch.object(f, 'ping_sample', side_effect=probe) as ping:
-            for _ in range(22):
-                result = f.health(self.root, doc)
-                result['appliedRevision'] = doc['revision']
-                f.atomic(self.root / 'report.json', result)
-        self.assertEqual('active', result['state'])
-        self.assertEqual(44, ping.call_count)
-        measurements = result['diagnostics'][node(2)['id']]
-        self.assertEqual(20, len(measurements['wireguard']['samples']))
-        self.assertEqual(100, measurements['wireguard']['successPercent'])
-        self.assertEqual(0, measurements['zerotier']['successPercent'])
-        page = f.web_page(self.root).decode()
-        for text in ['Ping ZeroTier', 'Ping WireGuard', 'signal green', 'signal red', '20/20', '0/20']:
-            self.assertIn(text, page)
-        # A new revision starts a fresh window, and failed WG probes retain health semantics.
-        doc['revision'] += 1
-        with patch.object(f, 'run', side_effect=run), patch.object(f, 'ping_sample', return_value=False):
-            result = f.health(self.root, doc)
-        self.assertEqual('waiting_peers', result['state'])
-        self.assertEqual([node(2)['id']], result['pendingPeers'])
-        self.assertEqual([False], result['diagnostics'][node(2)['id']]['wireguard']['samples'])
+        f.atomic(self.root / 'report.json', {'appliedRevision': doc['revision'], 'state': 'active'})
+        return doc
 
-    def web_request(self, method, path):
+    def test_on_demand_ping_sends_five_packets_per_transport_without_history(self):
+        self.prepare_diagnostics()
+        with patch.object(f, 'ping_sample', side_effect=lambda address, interface: interface == 'tf_wg') as ping:
+            worker = f.start_diagnostics(self.root)
+            worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(10, ping.call_count)
+        self.assertEqual({('10.147.0.2', '10.147.0.1'), ('10.203.0.2', 'tf_wg')}, {c.args for c in ping.call_args_list})
+        result = f.read(self.root / 'diagnostics.json')
+        self.assertEqual('complete', result['state'])
+        self.assertEqual([True] * 5, result['nodes'][node(2)['id']]['wireguard']['samples'])
+        self.assertEqual(0, result['nodes'][node(2)['id']]['zerotier']['successPercent'])
+        page = f.web_page(self.root).decode()
+        for text in ['Ping ZeroTier', 'Ping WireGuard', 'signal green', 'signal red', '5/5', '0/5']:
+            self.assertIn(text, page)
+        with patch.object(f, 'ping_sample', return_value=False) as ping:
+            worker = f.start_diagnostics(self.root)
+            worker.join(5)
+        self.assertEqual(10, ping.call_count)
+        self.assertEqual([False] * 5, f.read(self.root / 'diagnostics.json')['nodes'][node(2)['id']]['wireguard']['samples'])
+        self.assertNotIn('diagnostics', f.read(self.root / 'report.json'))
+
+    def test_diagnostics_reject_concurrent_requests_and_discard_changed_revision(self):
+        doc = self.prepare_diagnostics()
+        entered, release = threading.Event(), threading.Event()
+        def measure(*_):
+            entered.set()
+            release.wait(5)
+            return {}
+        with patch.object(f, 'ping_diagnostics', side_effect=measure):
+            worker = f.start_diagnostics(self.root)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertIn('Probíhá měření', f.web_page(self.root).decode())
+                with self.assertRaisesRegex(ValueError, 'už běží'):
+                    f.start_diagnostics(self.root)
+                doc['revision'] += 1
+                f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
+            finally:
+                release.set()
+                worker.join(5)
+        result = f.read(self.root / 'diagnostics.json')
+        self.assertEqual('error', result['state'])
+        self.assertEqual({}, result['nodes'])
+
+    def test_diagnostics_require_applied_membership(self):
+        with patch.object(f, 'ping_diagnostics') as ping:
+            with self.assertRaises(ValueError):
+                f.start_diagnostics(self.root)
+            self.prepare_diagnostics()
+            f.atomic(self.root / 'pending.json', {'phase': 'applying'})
+            with self.assertRaises(ValueError):
+                f.start_diagnostics(self.root)
+            (self.root / 'pending.json').unlink()
+            f.atomic(self.root / 'report.json', {'appliedRevision': 0})
+            with self.assertRaises(ValueError):
+                f.start_diagnostics(self.root)
+            ping.assert_not_called()
+
+    def test_periodic_health_uses_handshakes_without_sending_ping(self):
+        doc = self.prepare_diagnostics()
+        key = self.member(2)['wireguardKey']
+        for handshake, state in [(1000, 'active'), (820, 'active'), (819, 'waiting_peers'), (0, 'waiting_peers')]:
+            def run(args):
+                if args[-1] == 'public-key':
+                    return self.member(1)['wireguardKey'].encode()
+                if args[-1] == 'peers':
+                    return key.encode()
+                if args[-1] == 'allowed-ips':
+                    return (key + ' 10.203.0.2/32 192.168.2.0/24').encode()
+                if args[-1] == 'latest-handshakes':
+                    return (key + ' ' + str(handshake)).encode()
+                return b'dev tf_wg'
+            with self.subTest(handshake=handshake), patch.object(f, 'run', side_effect=run), \
+                    patch.object(f.time, 'time', return_value=1000), patch.object(f, 'ping_sample') as ping:
+                result = f.health(self.root, doc)
+                self.assertEqual(state, result['state'])
+                ping.assert_not_called()
+        self.assertFalse((self.root / 'diagnostics.json').exists())
+
+    def test_web_only_explicit_token_protected_post_starts_diagnostics(self):
+        self.prepare_diagnostics()
+        handler = f.web_handler(self.root)
+        with patch.object(f, 'start_diagnostics') as start:
+            page = self.web_request('GET', f.WEB_PATH, handler=handler)
+            token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
+            self.web_request('GET', f.WEB_PATH, handler=handler)
+            self.assertIn(b'404', self.web_request('GET', f.WEB_PATH + 'diagnostics', handler=handler))
+            for body, status in [('token=wrong', b'403'), ('token=%FF', b'403'), ('token=' + token + '&target=8.8.8.8', b'403'), ('', b'400')]:
+                response = self.web_request('POST', f.WEB_PATH + 'diagnostics', body, handler)
+                self.assertIn(status, response)
+            start.assert_not_called()
+            response = self.web_request('POST', f.WEB_PATH + 'diagnostics', 'token=' + token, handler)
+            self.assertIn(b'303', response)
+            self.assertIn(b'Location: /turris-federation/', response)
+            start.assert_called_once_with(self.root)
+        with patch.object(f, 'start_diagnostics', side_effect=ValueError('Diagnostika už běží.')):
+            self.assertIn(b'409', self.web_request('POST', f.WEB_PATH + 'diagnostics', 'token=' + token, handler))
+
+    def web_request(self, method, path, body='', handler=None):
         client, server = socket.socketpair()
         client.settimeout(5)
         server.settimeout(5)
         def handle():
             try:
-                f.web_handler(self.root)(server, ('127.0.0.1', 1234), None)
+                (handler or f.web_handler(self.root))(server, ('127.0.0.1', 1234), None)
             finally:
                 server.close()
         thread = threading.Thread(target=handle)
         thread.start()
         try:
-            client.sendall(('%s %s HTTP/1.0\r\nHost: localhost\r\n\r\n' % (method, path)).encode())
+            client.sendall(('%s %s HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %s\r\n\r\n%s' % (method, path, len(body.encode()), body)).encode())
             parts = []
             while True:
                 part = client.recv(65536)

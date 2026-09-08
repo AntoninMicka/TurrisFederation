@@ -9,21 +9,28 @@ reForisu. Používejte HTTPS webserveru routeru.
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
 U přijatých protějšků jsou samostatné semafory pingu přes ZeroTier a WireGuard,
-měřené z tohoto routeru. Agent v každém kontrolním cyklu (běžně po 30 s) odešle
-jeden ping každou cestou; úspěšnost vychází z posledních nejvýše 20 vzorků.
-Zelená znamená 95–100 %, žlutá 80 až méně než 95 %, červená méně než 80 %
-(včetně 0 %). Web uvádí i počet odpovědí/vzorků a stáří měření.
-Bez vzorků, při chybě spuštění pingu nebo po více než 120 s bez nového měření
-je semafor šedý. Nová revize, změna cílové adresy nebo přestávka nad 120 s
-zahajuje nové okno. Vlastní router má pomlčku, drafty se neprošetřují.
-Členství ostatních uzlů není vydáváno za aktuální dosažitelnost. Tlačítko
-„Obnovit stav“ znovu načte uložený stav, nespouští síťový audit. Web funguje
-nezávisle na synchronizační smyčce a zobrazuje i dosud nenakonfigurovaný router.
+měřené z tohoto routeru. Tlačítko **Spustit ping · 5 paketů** odešle právě
+5 pingů každou cestou ke každému přijatému protějšku. Nový požadavek nahrazuje
+předchozí měření; výsledky se nesčítají do historie. Vlastní router a drafty
+se neměří. Zelená znamená 95–100 %, žlutá 80 až méně než 95 %, červená méně
+než 80 %: při pěti paketech tedy 5/5 zelená, 4/5 žlutá, 3/5 a méně červená.
+Web uvádí počet odpovědí a stáří měření. Bez vzorků, při chybě spuštění pingu
+nebo po více než 120 s je semafor šedý. Při změně konfigurace se staré výsledky
+nezobrazují. Členství samo neprokazuje aktuální dosažitelnost.
 
-Jde o přehled pouze pro čtení. Nevystavuje soukromé ani veřejné klíče, surové
-soubory, synchronizační API ani instalaci nebo změnu konfigurace. Při poškozené
-konfiguraci vrací chybu bez interních podrobností. Změny sítě se nadále podepisují
-v notebooku; instalace a aktualizace softwaru nadále vyžadují přímou LAN.
+Měření běží na pozadí a stránka během něj obnovuje uložený stav. Současně
+může běžet jen jeden požadavek na routeru. Obnovení stránky ani tlačítko
+**Obnovit stav** nový ping nespouštějí. Pravidelná kontrola agenta neposílá ICMP;
+pasivně ověřuje WireGuard identitu, peery, routy a stáří posledního handshake
+(nejvýše 180 s). Tato kontrola nenahrazuje test ztrátovosti.
+
+Web umožňuje číst stav a spustit diagnostiku. Jediný povolený POST je
+`/turris-federation/diagnostics` s tokenem z formuláře; cíle určuje podepsaná
+aplikovaná konfigurace. Výsledky ukládá odděleně do `diagnostics.json`, takže
+nepřepisuje stav deploye. Změna konfigurace během měření výsledky zneplatní.
+Web nevystavuje klíče, surové soubory, synchronizační API ani instalaci nebo
+změnu konfigurace. Při poškozené konfiguraci vrací chybu bez interních podrobností.
+Změny sítě se nadále podepisují v notebooku; aktualizace softwaru vyžadují přímou LAN.
 
 ## Instalované součásti
 
@@ -43,7 +50,7 @@ Obsah webu, konfigurace a ikony je zahrnutý do otisku deploy artefaktu.
 
 Implementace registrace a proxy vychází z
 [oficiální specifikace Turris WebApps](https://gitlab.nic.cz/turris/webapps/-/blob/master/README.md).
-Lokální testy pokrývají vykreslení, escapování, HTTP cesty, zákaz zápisu,
+Lokální testy pokrývají vykreslení, escapování, HTTP cesty, omezení zápisů na diagnostiku,
 opravení oprávnění nových souborů a návrat při chybě aktualizace.
 Zobrazení dlaždice, PAM přihlášení a souběh s ostatními webovými aplikacemi
 je ještě potřeba ověřit na skutečném Turrisu.

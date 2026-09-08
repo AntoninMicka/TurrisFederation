@@ -80,10 +80,16 @@ export interface DeploymentOverview {
   fingerprint: string | null;
   nodes: Record<string, DeploymentReport>;
 }
+export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {
   operation: "install" | "update";
   lan: { host: string; device: string; source: string };
   artifactHash: string;
+  installedArtifactHash: string | null;
+  versionMismatch: boolean;
+  availableModes: DeploymentMode[];
+  recommendedMode: DeploymentMode;
+  stepsByMode: Record<DeploymentMode, string[]>;
   id: string;
   nodeId: string;
   expiresAt: number;
