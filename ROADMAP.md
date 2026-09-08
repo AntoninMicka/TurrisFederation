@@ -62,7 +62,7 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   RFC4193 IPv6 adresy jsou přidělené, ale end-to-end IPv6 konektivita zatím nebyla
   úspěšně ověřena a její použití jako WG transportu je odloženo.
 - [x] Oddělit ZeroTier do zóny `tf_zt` (input/forward REJECT, output ACCEPT);
-  WireGuard UDP/51830 a sync TCP/8844 povolit pouze z IP přijatých peerů.
+  WireGuard UDP/51830, sync TCP/8844 a diagnostický IPv4 ping povolit pouze z IP přijatých peerů.
   Zachovat `lan ↔ tf_fed`, bez obecného forwardingu `tf_zt ↔ lan`.
   Validovat skutečné ZeroTier zařízení a jeho IP; pokrýt regresními testy.
 - [ ] Na routerech ověřit výsledný firewall, výhradní přiřazení ZeroTier zařízení

@@ -266,8 +266,10 @@ provedeno ani ověřeno.
 LAN; forwarding `lan ↔ tf_fed` zůstává povolený. `tf_zt` váže konkrétní
 ZeroTier zařízení a má `input=REJECT`, `output=ACCEPT`, `forward=REJECT`.
 Agent před změnami ověřuje existenci zařízení i očekávanou IP v jádře.
-UDP/51830 a TCP/8844 povoluje pouze z jednotlivých ZeroTier IP přijatých
-peerů na ZeroTier IP routeru. Dřívější `tf_control` pro celý subnet se při
+UDP/51830, TCP/8844 a diagnostický ping (IPv4 ICMP echo-request) povoluje
+pouze z jednotlivých ZeroTier IP přijatých peerů na ZeroTier IP routeru.
+Ping přes WireGuard je také povolený v zóně `tf_fed`.
+Dřívější `tf_control` pro celý subnet se při
 aplikování odstraní spolu s ostatními spravovanými sekcemi `tf_*`.
 
 ZeroTier slouží také explicitně povoleným aplikacím. Vlastní UCI pravidla

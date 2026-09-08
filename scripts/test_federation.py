@@ -440,6 +440,72 @@ class FederationTests(unittest.TestCase):
             self.assertNotIn(unwanted, page)
         self.assertIn('nikoli aktuální dostupnost', page)
 
+    def test_ping_badge_thresholds_and_stale_measurements(self):
+        for replies, color in [(20, 'green'), (19, 'green'), (18, 'yellow'), (16, 'yellow'), (15, 'red'), (14, 'red'), (0, 'red')]:
+            sample = {'samples': [True] * replies + [False] * (20 - replies), 'checkedAt': 100}
+            with self.subTest(replies=replies):
+                self.assertIn('signal ' + color, f.diagnostic_badge(sample, 110))
+                self.assertIn('%s/20' % replies, f.diagnostic_badge(sample, 110))
+                self.assertIn('unknown', f.diagnostic_badge(sample, 221))
+                self.assertIn('unknown', f.diagnostic_badge(sample, 99))
+        self.assertIn('unknown', f.diagnostic_badge({}, 100))
+
+    def test_ping_sample_handles_loss_and_execution_errors(self):
+        for code, expected in [(0, True), (1, False), (2, None)]:
+            with patch.object(f.subprocess, 'run', return_value=subprocess.CompletedProcess([], code)) as run:
+                self.assertIs(expected, f.ping_sample('10.147.0.2', '10.147.0.1'))
+                self.assertEqual(['ping', '-c', '1', '-W', '1', '-I', '10.147.0.1', '10.147.0.2'], run.call_args.args[0])
+        for error, expected in [(FileNotFoundError(), None), (subprocess.TimeoutExpired('ping', 4), False)]:
+            with patch.object(f.subprocess, 'run', side_effect=error):
+                self.assertIs(expected, f.ping_sample('10.147.0.2', 'tf_wg'))
+
+    def test_ping_history_resets_after_gap_or_address_change(self):
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        for address, checked in [('10.147.0.99', 995), ('10.147.0.2', 879), ('10.147.0.2', 1001)]:
+            f.atomic(self.root / 'report.json', {'appliedRevision': doc['revision'], 'diagnostics': {
+                node(2)['id']: {'zerotier': {'address': address, 'checkedAt': checked, 'samples': [False] * 20}}}})
+            with self.subTest(address=address, checked=checked), patch.object(f.time, 'time', return_value=1000), \
+                    patch.object(f, 'ping_sample', return_value=True):
+                result = f.ping_diagnostics(self.root, doc, node(1), [node(2)])
+            self.assertEqual([True], result[node(2)['id']]['zerotier']['samples'])
+
+    def test_health_collects_ping_history_and_web_displays_it(self):
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
+        key = self.member(2)['wireguardKey']
+        def run(args):
+            if args[-1] == 'public-key':
+                return self.member(1)['wireguardKey'].encode()
+            if args[-1] == 'peers':
+                return key.encode()
+            if args[-1] == 'allowed-ips':
+                return (key + ' 10.203.0.2/32 192.168.2.0/24').encode()
+            return b'dev tf_wg'
+        def probe(address, interface):
+            return interface == 'tf_wg'
+        with patch.object(f, 'run', side_effect=run), patch.object(f, 'ping_sample', side_effect=probe) as ping:
+            for _ in range(22):
+                result = f.health(self.root, doc)
+                result['appliedRevision'] = doc['revision']
+                f.atomic(self.root / 'report.json', result)
+        self.assertEqual('active', result['state'])
+        self.assertEqual(44, ping.call_count)
+        measurements = result['diagnostics'][node(2)['id']]
+        self.assertEqual(20, len(measurements['wireguard']['samples']))
+        self.assertEqual(100, measurements['wireguard']['successPercent'])
+        self.assertEqual(0, measurements['zerotier']['successPercent'])
+        page = f.web_page(self.root).decode()
+        for text in ['Ping ZeroTier', 'Ping WireGuard', 'signal green', 'signal red', '20/20', '0/20']:
+            self.assertIn(text, page)
+        # A new revision starts a fresh window, and failed WG probes retain health semantics.
+        doc['revision'] += 1
+        with patch.object(f, 'run', side_effect=run), patch.object(f, 'ping_sample', return_value=False):
+            result = f.health(self.root, doc)
+        self.assertEqual('waiting_peers', result['state'])
+        self.assertEqual([node(2)['id']], result['pendingPeers'])
+        self.assertEqual([False], result['diagnostics'][node(2)['id']]['wireguard']['samples'])
+
     def web_request(self, method, path):
         client, server = socket.socketpair()
         client.settimeout(5)
@@ -599,7 +665,7 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'wireguard.key', b'private-test-only')
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
-        # A draft must never acquire either transport or control access.
+        # A draft must never acquire transport, control, or diagnostic access.
         doc['config']['nodes'].append(node(3))
         existing = "firewall.tf_control=rule\nfirewall.app_service=rule\n"
         with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
@@ -619,13 +685,18 @@ class FederationTests(unittest.TestCase):
         forwards = [v for kind, v in firewall.values() if kind == 'forwarding']
         self.assertCountEqual([{'src': 'lan', 'dest': 'tf_fed'}, {'src': 'tf_fed', 'dest': 'lan'}], forwards)
         rules = [v for kind, v in firewall.values() if kind == 'rule' and v['src'] != 'tf_fed']
-        self.assertEqual(2, len(rules))
-        self.assertCountEqual([('udp', '51830'), ('tcp', '8844')], [(v['proto'], v['dest_port']) for v in rules])
+        self.assertEqual(3, len(rules))
+        self.assertCountEqual([('udp', '51830'), ('tcp', '8844'), ('icmp', None)],
+                              [(v['proto'], v.get('dest_port')) for v in rules])
+        ping = next(v for v in rules if v['proto'] == 'icmp')
+        self.assertEqual(['echo-request'], ping['icmp_type'])
+        self.assertNotIn('dest_port', ping)
         for rule in rules:
             self.assertEqual('tf_zt', rule['src'])
             self.assertEqual('10.147.0.2', rule['src_ip'])
             self.assertEqual('10.147.0.1', rule['dest_ip'])
             self.assertEqual('ACCEPT', rule['target'])
+            self.assertEqual('ipv4', rule['family'])
             self.assertNotIn('dest', rule)
 
     def test_wrong_confirmation_does_not_commit(self):

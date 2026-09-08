@@ -8,6 +8,14 @@ reForisu. Používejte HTTPS webserveru routeru.
 
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
+U přijatých protějšků jsou samostatné semafory pingu přes ZeroTier a WireGuard,
+měřené z tohoto routeru. Agent v každém kontrolním cyklu (běžně po 30 s) odešle
+jeden ping každou cestou; úspěšnost vychází z posledních nejvýše 20 vzorků.
+Zelená znamená 95–100 %, žlutá 80 až méně než 95 %, červená méně než 80 %
+(včetně 0 %). Web uvádí i počet odpovědí/vzorků a stáří měření.
+Bez vzorků, při chybě spuštění pingu nebo po více než 120 s bez nového měření
+je semafor šedý. Nová revize, změna cílové adresy nebo přestávka nad 120 s
+zahajuje nové okno. Vlastní router má pomlčku, drafty se neprošetřují.
 Členství ostatních uzlů není vydáváno za aktuální dosažitelnost. Tlačítko
 „Obnovit stav“ znovu načte uložený stav, nespouští síťový audit. Web funguje
 nezávisle na synchronizační smyčce a zobrazuje i dosud nenakonfigurovaný router.

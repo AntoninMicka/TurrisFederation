@@ -2,6 +2,7 @@
 """Notebook controller and Turris agent. No third-party Python dependencies."""
 import base64
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import http.client
@@ -330,6 +331,9 @@ def render_apply(root, doc):
     uci_section('firewall', 'tf_in', 'forwarding', {'src': 'tf_fed', 'dest': 'lan'})
     uci_section('firewall', 'tf_ping', 'rule', {'src': 'tf_fed', 'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
     for index, peer in enumerate(peers):
+        uci_section('firewall', 'tf_zt_ping_%s' % index, 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
+                    'dest_ip': node['zeroTierAddress'], 'proto': 'icmp', 'icmp_type': ['echo-request'],
+                    'target': 'ACCEPT', 'family': 'ipv4'})
         for suffix, protocol, port in [('wg', 'udp', WG_PORT), ('sync', 'tcp', PORT)]:
             uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
                         'dest_ip': node['zeroTierAddress'], 'proto': protocol, 'dest_port': str(port), 'target': 'ACCEPT', 'family': 'ipv4'})
@@ -455,10 +459,60 @@ def stage(root, doc, expected_hash=None):
         raise
 
 
+PING_WINDOW = 20
+PING_MAX_AGE = 120
+
+
+def ping_sample(address, interface):
+    try:
+        result = subprocess.run(['ping', '-c', '1', '-W', '1', '-I', interface, address],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        return result.returncode == 0 if result.returncode in (0, 1) else None
+    except subprocess.TimeoutExpired:
+        return False
+    except OSError:
+        return None
+
+
+def ping_diagnostics(root, doc, node, peers):
+    previous_report = read(Path(root) / 'report.json', {})
+    previous = previous_report.get('diagnostics', {}) if previous_report.get('appliedRevision') == doc['revision'] else {}
+    now = time.time()
+    jobs = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for peer in peers:
+            for transport, field, interface in [('zerotier', 'zeroTierAddress', node['zeroTierAddress']),
+                                                 ('wireguard', 'wireguardAddress', 'tf_wg')]:
+                address = peer[field]
+                jobs.append((peer['id'], transport, address, pool.submit(ping_sample, address, interface)))
+        diagnostics = {}
+        for peer_id, transport, address, future in jobs:
+            success = future.result()
+            old = previous.get(peer_id, {}).get(transport, {})
+            samples = old.get('samples', []) if (old.get('address') == address and
+                        0 <= now - old.get('checkedAt', 0) <= PING_MAX_AGE) else []
+            samples = (samples + [success])[-PING_WINDOW:] if success is not None else []
+            diagnostics.setdefault(peer_id, {})[transport] = {
+                'address': address, 'samples': samples, 'checkedAt': time.time(),
+                'successPercent': 100 * sum(samples) / len(samples) if samples else None}
+    return diagnostics
+
+
+def diagnostic_badge(measurement, now):
+    samples = measurement.get('samples', [])
+    age = now - measurement.get('checkedAt', 0)
+    if not samples or not 0 <= age <= PING_MAX_AGE:
+        return '<span class="signal unknown">● Bez aktuálního měření</span>'
+    percent = 100 * sum(samples) / len(samples)
+    color, label = ('green', 'Dobré') if percent >= 95 else (('yellow', 'Zhoršené') if percent >= 80 else ('red', 'Výpadky'))
+    return ('<span class="signal %s">● %s · %.1f %%</span><br>'
+            '<small>%s/%s odpovědí · před %s s</small>') % (color, label, percent, sum(samples), len(samples), int(age))
+
+
 def health(root, doc):
     own_id = read(Path(root) / 'node.json')['nodeId']
     if own_id not in doc['members']:
-        return {'state': 'revoked', 'pendingPeers': []}
+        return {'state': 'revoked', 'pendingPeers': [], 'diagnostics': {}}
     expected_key = doc['members'][own_id]['wireguardKey']
     actual_key = run(['wg', 'show', 'tf_wg', 'public-key']).decode().strip()
     if expected_key != actual_key:
@@ -483,11 +537,14 @@ def health(root, doc):
             route = run(['ip', '-%s' % net.version, 'route', 'get', str(destination)]).decode()
             if not re.search(r'\bdev tf_wg\b', route):
                 raise ValueError('Po deployi chybí WireGuard trasa: ' + cidr)
-        probe = subprocess.run(['ping', '-c', '1', '-W', '1', '-I', 'tf_wg', peer['wireguardAddress']],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-        if probe.returncode:
+    node = next(n for n in doc['config']['nodes'] if n['id'] == own_id)
+    diagnostics = ping_diagnostics(root, doc, node, peers)
+    for peer in peers:
+        samples = diagnostics[peer['id']]['wireguard']['samples']
+        if not samples or not samples[-1]:
             missing.append(peer['id'])
-    return {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing}
+    return {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing,
+            'diagnostics': diagnostics}
 
 
 def confirm(root, token):
@@ -742,6 +799,7 @@ section{margin:20px 0}.table-wrap{overflow:auto}table{border-collapse:collapse;w
 th,td{padding:14px 12px;border-bottom:1px solid #2a4355;vertical-align:top}th{color:#a8bdcc;font-weight:500}
 td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb76d;padding:10px 18px;background:#26303a}
 .badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
+.signal{white-space:nowrap;font-size:13px}.green{color:#7ee2a8}.yellow{color:#ffda75}.red{color:#ff9292}.unknown{color:#a8bdcc}
 .button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none}
 @media(max-width:600px){main{padding:24px 14px}section{padding:16px}.cards{grid-template-columns:1fr}}
 '''
@@ -764,14 +822,18 @@ def web_page(root):
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
     rows = []
+    now = time.time()
     if doc:
         for node in doc['config']['nodes']:
             member = node['id'] in doc['members']
             label = state if node['id'] == own_id else ('Přijatý uzel' if member else 'Draft')
-            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><span class="badge">%s</span></td></tr>' % (
+            measurements = report.get('diagnostics', {}).get(node['id'], {}) if (member and own_id in doc['members'] and report.get('appliedRevision') == doc['revision']) else {}
+            badges = ['—' if node['id'] == own_id else diagnostic_badge(measurements.get(transport, {}), now)
+                      for transport in ['zerotier', 'wireguard']]
+            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
                 esc(node['name']), '<br><small>Tento router</small>' if node['id'] == own_id else '',
                 esc(node['zeroTierAddress'] or '—'), esc(node['wireguardAddress'] or '—'),
-                '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', esc(label)))
+                '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', esc(label), *badges))
     notices = '<p class="notice">Router ještě nepřijal konfiguraci federace. Dokončete deploy z notebooku přes LAN.</p>' if not doc else ''
     if report.get('error'):
         notices += '<p class="notice">%s</p>' % esc(report['error'])
@@ -787,8 +849,8 @@ def web_page(root):
 <article class="card"><span>Přijatá revize</span><strong>''' + esc(doc['revision'] if doc else '—') + '''</strong></article>
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
-<section><h2>Uzly federace</h2><div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">U ostatních uzlů je uvedeno členství z přijaté konfigurace, nikoli aktuální dostupnost.</p></section>
+<section><h2>Uzly federace</h2><div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<p class="muted">Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping měří tento router směrem k přijatým protějškům: posledních nejvýše 20 vzorků, běžně po 30 s. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
