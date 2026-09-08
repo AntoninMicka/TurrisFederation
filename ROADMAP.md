@@ -1,6 +1,6 @@
 # Turris Federation — roadmapa a TODO
 
-Aktualizováno: 5. 9. 2026.
+Aktualizováno: 8. 9. 2026.
 
 ## Cíl a podklady
 
@@ -61,9 +61,16 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [ ] Pro první end-to-end test použít ZeroTier IPv4 jako transport WireGuardu;
   RFC4193 IPv6 adresy jsou přidělené, ale end-to-end IPv6 konektivita zatím nebyla
   úspěšně ověřena a její použití jako WG transportu je odloženo.
-- [ ] Ověřit firewall ZeroTier underlaye: zóna `vpn_zerotier` má zůstat restriktivní
-  (`input REJECT`, `forward REJECT`) a Federation má explicitně povolit jen vlastní
-  služby, zejména řídicí TCP/8844, diagnostický ICMP a WireGuard UDP/51830.
+- [x] Oddělit ZeroTier do zóny `tf_zt` (input/forward REJECT, output ACCEPT);
+  WireGuard UDP/51830 a sync TCP/8844 povolit pouze z IP přijatých peerů.
+  Zachovat `lan ↔ tf_fed`, bez obecného forwardingu `tf_zt ↔ lan`.
+  Validovat skutečné ZeroTier zařízení a jeho IP; pokrýt regresními testy.
+- [ ] Na routerech ověřit výsledný firewall, výhradní přiřazení ZeroTier zařízení
+  do `tf_zt` (včetně případné původní `vpn_zerotier`) a explicitní přístup notebooku.
+- [ ] **P1: Přesměrování pouze v rámci routeru.** Umožnit nastavit lokální
+  přesměrování na vybrané kontejnery/služby bez publikování do federovaných LAN.
+  Výslovně vybírat vstupní zónu, cílovou IP, protokol a porty; přístup přes
+  `tf_zt` povolovat jednotlivě, nikdy otevřením celé LAN.
 - [ ] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také

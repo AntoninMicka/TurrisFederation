@@ -534,12 +534,12 @@ class FederationTests(unittest.TestCase):
         calls = []
         with patch.object(f, 'run', side_effect=lambda args, data=None, **kw: calls.append((args, data)) or b''), \
              patch.object(f, 'owned_sections', return_value=[]), \
-             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24'], 'zeroTierDevice': 'zt1234'}):
+             patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}):
             f.render_apply(self.root, self.document())
         config = '\n'.join(raw.decode() for _, raw in calls if raw)
         self.assertNotIn('wireguard_tf_wg', config)
         self.assertNotIn('192.168.2.0/24', config)
-        self.assertIn('tf_control', config)
+        self.assertNotIn('tf_control', config)
         self.assertIn('tf_wg', config)
         self.assertFalse(any('private-test-only' in str(args) for args, _ in calls))
 
@@ -550,7 +550,7 @@ class FederationTests(unittest.TestCase):
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         with patch.object(f, 'run', side_effect=lambda args, data=None, **kw: calls.append((args, data)) or b''), \
              patch.object(f, 'owned_sections', return_value=[]), \
-             patch.object(f, 'local_check', return_value={'zeroTierNetworks': ['10.147.0.0/24'], 'zeroTierDevice': 'zt1234'}):
+             patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}):
             f.render_apply(self.root, doc)
         config = '\n'.join(raw.decode() for _, raw in calls if raw)
         self.assertIn('192.168.2.0/24', config)
@@ -558,6 +558,75 @@ class FederationTests(unittest.TestCase):
         self.assertIn('wireguard_tf_wg', config)
         self.assertNotIn('0.0.0.0/0', config)
         self.assertNotIn('masq', config)
+
+    def test_zerotier_device_must_exist_and_have_expected_address(self):
+        network = {'nwid': self.config['networkId'], 'status': 'OK',
+                   'assignedAddresses': ['10.147.0.1/24'], 'portDeviceName': 'zt1234'}
+
+        def run(args, **kwargs):
+            if args[0] == 'zerotier-cli':
+                return json.dumps([network]).encode()
+            if args == ['ip', '-o', 'addr', 'show', 'dev', 'zt1234']:
+                return b'7: zt1234 inet 10.147.0.1/24 scope global zt1234'
+            if args == ['ip', '-o', 'addr', 'show']:
+                return b'2: br-lan inet 192.168.1.1/24 scope global br-lan'
+            if args == ['uci', '-q', 'get', 'network.lan']:
+                return b'interface'
+            if args == ['uci', 'export', 'firewall']:
+                return b"config zone\n option name 'lan'\n"
+            return b''
+
+        with patch.object(f.os, 'geteuid', return_value=0), patch.object(f, 'run', side_effect=run):
+            self.assertEqual('zt1234', f.local_check(node(1), self.config['networkId'])['zeroTierDevice'])
+            for device in [None, '', '*', 'zt+', 'bad device', 'x' * 16]:
+                network['portDeviceName'] = device
+                with self.subTest(device=device), self.assertRaisesRegex(ValueError, 'rozhraní'):
+                    f.local_check(node(1), self.config['networkId'])
+            network['portDeviceName'] = 'zt1234'
+
+        for result in [b'', b'7: zt1234 inet 10.147.0.99/24', ValueError('Device does not exist')]:
+            def missing(args, **kwargs):
+                if args == ['ip', '-o', 'addr', 'show', 'dev', 'zt1234']:
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+                return run(args, **kwargs)
+            with self.subTest(result=result), patch.object(f.os, 'geteuid', return_value=0), \
+                    patch.object(f, 'run', side_effect=missing), self.assertRaises(ValueError):
+                f.local_check(node(1), self.config['networkId'])
+
+    def test_firewall_zones_peer_allowlist_and_cleanup(self):
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'wireguard.key', b'private-test-only')
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        # A draft must never acquire either transport or control access.
+        doc['config']['nodes'].append(node(3))
+        existing = "firewall.tf_control=rule\nfirewall.app_service=rule\n"
+        with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
+                patch.object(f, 'run', side_effect=lambda args, *a, **kw: existing.encode() if args == ['uci', 'show', 'firewall'] else b'') as run, \
+                patch.object(f, 'uci_section') as section:
+            f.render_apply(self.root, doc)
+        run.assert_any_call(['uci', 'delete', 'firewall.tf_control'])
+        self.assertNotIn((['uci', 'delete', 'firewall.app_service'],), [c.args for c in run.call_args_list])
+        firewall = {c.args[1]: (c.args[2], c.args[3]) for c in section.call_args_list if c.args[0] == 'firewall'}
+        for name, zone in [('tf_zt_zone', 'tf_zt'), ('tf_zone', 'tf_fed')]:
+            self.assertEqual('zone', firewall[name][0])
+            self.assertEqual(zone, firewall[name][1]['name'])
+            for key, value in [('input', 'REJECT'), ('output', 'ACCEPT'), ('forward', 'REJECT')]:
+                self.assertEqual(value, firewall[name][1][key])
+        self.assertEqual(['zt1234'], firewall['tf_zt_zone'][1]['device'])
+        self.assertEqual(['tf_wg'], firewall['tf_zone'][1]['network'])
+        forwards = [v for kind, v in firewall.values() if kind == 'forwarding']
+        self.assertCountEqual([{'src': 'lan', 'dest': 'tf_fed'}, {'src': 'tf_fed', 'dest': 'lan'}], forwards)
+        rules = [v for kind, v in firewall.values() if kind == 'rule' and v['src'] != 'tf_fed']
+        self.assertEqual(2, len(rules))
+        self.assertCountEqual([('udp', '51830'), ('tcp', '8844')], [(v['proto'], v['dest_port']) for v in rules])
+        for rule in rules:
+            self.assertEqual('tf_zt', rule['src'])
+            self.assertEqual('10.147.0.2', rule['src_ip'])
+            self.assertEqual('10.147.0.1', rule['dest_ip'])
+            self.assertEqual('ACCEPT', rule['target'])
+            self.assertNotIn('dest', rule)
 
     def test_wrong_confirmation_does_not_commit(self):
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))

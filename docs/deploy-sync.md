@@ -259,3 +259,32 @@ Desktop ukazuje samostatně požadovanou, přijatou a aplikovanou revizi,
 Konkrétní transport, balení agenta a podporované verze Turris OS budou
 vybrány podle cílových routerů. Nasazení na skutečná zařízení zatím nebylo
 provedeno ani ověřeno.
+
+## Firewall: ZeroTier a federované LAN
+
+`tf_fed` je samostatná WireGuard zóna pro obecný provoz mezi federovanými
+LAN; forwarding `lan ↔ tf_fed` zůstává povolený. `tf_zt` váže konkrétní
+ZeroTier zařízení a má `input=REJECT`, `output=ACCEPT`, `forward=REJECT`.
+Agent před změnami ověřuje existenci zařízení i očekávanou IP v jádře.
+UDP/51830 a TCP/8844 povoluje pouze z jednotlivých ZeroTier IP přijatých
+peerů na ZeroTier IP routeru. Dřívější `tf_control` pro celý subnet se při
+aplikování odstraní spolu s ostatními spravovanými sekcemi `tf_*`.
+
+ZeroTier slouží také explicitně povoleným aplikacím. Vlastní UCI pravidla
+pojmenovávejte mimo vyhrazený prefix `tf_`, aby je agent při aplikování zachoval.
+Pro službu na routeru použijte `src=tf_zt`, konkrétní `src_ip`, `dest_ip`,
+protokol a cílový port, `target=ACCEPT`, bez cílové zóny. Pro službu v LAN
+přidejte `dest=lan` a konkrétní cílovou LAN IP. Obecný forwarding mezi
+`tf_zt` a LAN se nevytváří.
+
+Řídicí notebook nemá automatickou výjimku pro celý ZeroTier subnet.
+Pro publikování a čtení stavu přes ZeroTier potřebuje vlastní explicitní
+pravidlo TCP/8844 z jeho konkrétní ZeroTier IP na ZeroTier IP routeru;
+podpisová autentizace zůstává vyžadovaná. UI pro tuto výjimku zatím není.
+Bez ní přímé doručení z notebooku selže, zatímco synchronizace přijatých
+routerových peerů zůstává povolená.
+
+Na cílovém Turrisu je nutné ověřit výsledná firewallová pravidla a odstranit
+případné konfliktní přiřazení stejného zařízení do jiné existující zóny
+(například `vpn_zerotier`). Agent cizí zóny ani jejich pravidla nemění.
+Lokální testy nenahrazují ověření firewallu a konektivity na routerech.
