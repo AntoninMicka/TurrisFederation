@@ -276,6 +276,7 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Rotace párovacích certifikátů a odvolání již předaného řídicího klíče.
 - [ ] **P2: Robustnost a obnova dat.**
   - [ ] Implementovat "Reverse Sync": možnost obnovit lokální databázi notebooku z dat uložených na routerech (routery jako zrcadla konfigurace).
+  - [ ] Zjistit příčinu a analyzovat neočekávaně velký objem datových přenosů v rámci federace (monitoring provozu `tf_wg` a `tf_zt`).
   - [ ] Indikace a ošetření offline stavu notebooku v rámci topologie.
   - [ ] Vyřešit stabilitu webového GUI při deployi: prověřit chování `lighttpd` při restartu síťových služeb, aby nedocházelo k "vytuhnutí" UI (točící se kolečko) nebo rozbití LuCI při přerušení spojení či konfliktu modulů.
   - [ ] Detekce a řešení konfliktů při synchronizaci mezi více notebooky.
@@ -287,3 +288,4 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 3. Před deployem opravit sběr citlivých dat a zbývající případy neúplného auditu.
 4. Navrhnout konkrétní deploy na dvou uzlech: topologii, routy, firewall a WireGuard, včetně náhledu změn.
 5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Implementovaný deploy zatím není ověřený na routerech.
+
