@@ -47,7 +47,7 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
 - [ ] **P0: Ověřit deploy na dvou skutečných routerech**, včetně výpadku SSH,
   firewallu, restartu během změny a obnovení ze zálohy. Lokální testy toto nenahrazují.
-- [ ] **P0: Ověřit první skutečné WireGuard propojení dvou přijatých routerů.**
+- [x] **P0: Ověřit první skutečné WireGuard propojení dvou přijatých routerů.**
   Na jednom testovacím routeru je nyní nasazen agent a vytvořen `tf_wg`, zatímco
   druhý router má zatím pouze ZeroTier a v návrhu federace zůstává v draft stavu;
   absence WireGuard peeru na prvním routeru je proto v této fázi očekávaná.
@@ -71,7 +71,7 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   přesměrování na vybrané kontejnery/služby bez publikování do federovaných LAN.
   Výslovně vybírat vstupní zónu, cílovou IP, protokol a porty; přístup přes
   `tf_zt` povolovat jednotlivě, nikdy otevřením celé LAN.
-- [ ] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
+- [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také
   rotaci WireGuard klíčů bez přerušení nebo se bezpečně řízeným přerušením federace.
@@ -165,7 +165,7 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 - [ ] **Ověřit životní cyklus WireGuard peeru podle členství:** draft uzel nesmí
   být nasazen jako peer; po přijetí člena musí vzniknout peer na relevantních
   routerech a po odvolání musí být bezpečně odstraněn.
-- [ ] **První ověřený transport:** použít ZeroTier IPv4 adresu peeru jako WG endpoint
+- [x] **První ověřený transport:** použít ZeroTier IPv4 adresu peeru jako WG endpoint
   a ověřit handshake přes UDP/51830 ještě před zapnutím routování LAN sítí.
 - [ ] **Firewall underlaye:** nepovyšovat ZeroTier zónu na důvěryhodnou LAN; místo
   toho generovat minimální explicitní pravidla potřebná pro Federation a WireGuard.
