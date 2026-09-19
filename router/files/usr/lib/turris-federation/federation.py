@@ -322,7 +322,7 @@ def render_apply(root, doc):
         uci_section('network', 'tf_p_' + peer['id'].replace('-', ''), 'wireguard_tf_wg', {
             'public_key': doc['members'][peer['id']]['wireguardKey'],
             'endpoint_host': peer['zeroTierAddress'], 'endpoint_port': str(WG_PORT),
-            'persistent_keepalive': '25', 'route_allowed_ips': '1',
+            'persistent_keepalive': '25', 'route_allowed_ips': '1', 'nohostroute': '1',
             'allowed_ips': [peer['wireguardAddress'] + '/32'] + peer['lanCidrs']})
     uci_section('firewall', 'tf_zone', 'zone', {'name': 'tf_fed', 'network': ['tf_wg'],
                 'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
