@@ -184,6 +184,64 @@ class FederationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'neodpovídá'):
                 f.peer_status(node(1), self.member(1))
 
+    def test_passive_host_catalog_filters_to_owned_lan_and_omits_mac(self):
+        leases = self.root / 'dhcp.leases'
+        leases.write_text('999 aa:bb:cc:dd:ee:ff 192.168.1.20 printer.local *\n')
+        neighbors = (b'192.168.1.20 dev br-lan lladdr aa:bb:cc:dd:ee:ff REACHABLE\n'
+                     b'192.168.1.21 dev br-lan lladdr 11:22:33:44:55:66 FAILED\n'
+                     b'192.168.2.20 dev tf_wg lladdr 22:33:44:55:66:77 STALE\n')
+        completed = subprocess.CompletedProcess([], 0, neighbors, b'')
+        with patch.object(f, 'DHCP_LEASES', leases), patch.object(f.subprocess, 'run', return_value=completed) as run:
+            hosts = f.discover_hosts(node(1))
+        self.assertEqual([{'address': '192.168.1.20', 'name': 'printer.local'}], hosts)
+        self.assertNotIn('aa:bb:cc:dd:ee:ff', json.dumps(hosts))
+        self.assertEqual(['ip', '-4', 'neigh', 'show'], run.call_args.args[0])
+
+    def test_signed_host_catalog_is_limited_to_announcing_node_lan(self):
+        good = {'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100}
+        self.assertEqual(good, f.validate_hosts(node(1), good))
+        for bad in [
+            {'hosts': [{'address': '192.168.2.20', 'name': None}], 'hostsObservedAt': 100},
+            {'hosts': [{'address': '192.168.1.20', 'name': '<script>'}], 'hostsObservedAt': 100},
+            {'hosts': [{'address': '192.168.1.20', 'name': None, 'mac': 'secret'}], 'hostsObservedAt': 100},
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                f.validate_hosts(node(1), bad)
+
+        for malformed in [
+            {'hosts': [{'address': None, 'name': None}], 'hostsObservedAt': 100},
+            {'hosts': [], 'hostsObservedAt': float('nan')},
+        ]:
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                f.validate_hosts(node(1), malformed)
+
+    def test_router_catalog_caches_verified_remote_announcements(self):
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'report.json', {'hosts': [{'address': '192.168.1.10', 'name': None}], 'hostsObservedAt': 90})
+        remote = {'hosts': [{'address': '192.168.2.20', 'name': 'camera'}], 'hostsObservedAt': 100}
+        with patch.object(f, 'peer_status', return_value=remote):
+            catalog = f.refresh_catalog(self.root, doc, node(1)['id'])
+        self.assertEqual('192.168.1.10', catalog[node(1)['id']]['hosts'][0]['address'])
+        self.assertEqual('camera', catalog[node(2)['id']]['hosts'][0]['name'])
+        self.assertEqual(catalog, f.read(self.root / 'catalog.json'))
+
+    def test_live_refresh_reads_signed_catalogs_from_enrolled_nodes(self):
+        members = {node(1)['id']: self.member(1), node(2)['id']: self.member(2)}
+        f.atomic(self.root / 'members.json', members)
+        f.snapshot(self.root, self.config, members)
+        reports = {
+            node(1)['id']: {'state': 'active', 'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100},
+            node(2)['id']: {'state': 'active', 'hosts': [{'address': '192.168.2.30', 'name': 'camera'}], 'hostsObservedAt': 101},
+        }
+        with patch.object(f, 'peer_status', side_effect=lambda peer, *_: reports[peer['id']]) as status:
+            result = f.controller(self.root, {'action': 'refresh', 'nodes': self.nodes,
+                                  'networkId': self.config['networkId']})
+        self.assertEqual(2, status.call_count)
+        self.assertEqual('printer', result['nodes'][node(1)['id']]['hosts'][0]['name'])
+        self.assertEqual('camera', result['nodes'][node(2)['id']]['hosts'][0]['name'])
+        self.assertTrue(result['nodes'][node(1)['id']]['reachable'])
+
     def test_mutated_or_expired_plan_cannot_start_deploy(self):
         request = {'action': 'deploy', 'nodes': self.nodes, 'networkId': 'abcdef0123456789',
                    'nodeId': node(1)['id'], 'planId': 'plan', 'credentials': {'hostKey': 'key', 'password': 'test'}}
@@ -513,15 +571,18 @@ class FederationTests(unittest.TestCase):
         self.assertFalse((self.root / 'accepted.json').exists())
 
     def test_web_renders_selected_status_and_escapes_router_names(self):
-        doc = self.document()
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         doc['config']['nodes'][0]['name'] = '<script>alert(1)</script>'
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'report.json', {'state': 'waiting_peers', 'appliedRevision': 1,
-                 'checkedAt': 100, 'pendingPeers': [node(2)['id']], 'error': '<b>failure</b>', 'secret': 'REPORT-SECRET'})
+                 'checkedAt': 100, 'pendingPeers': [node(2)['id']], 'error': '<b>failure</b>', 'secret': 'REPORT-SECRET',
+                 'hosts': [{'address': '192.168.1.20', 'name': 'printer.local'}], 'hostsObservedAt': 100})
+        f.atomic(self.root / 'catalog.json', {node(2)['id']: {
+                 'hosts': [{'address': '192.168.2.30', 'name': 'camera'}], 'hostsObservedAt': 100}})
         f.atomic(self.root / 'wireguard.key', b'PRIVATE-WG-SECRET')
         page = f.web_page(self.root).decode()
-        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24']:
+        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera']:
             self.assertIn(wanted, page)
         for unwanted in ['<script>', '<b>failure</b>', 'PRIVATE-WG-SECRET', 'REPORT-SECRET', 'BEGIN PUBLIC KEY', 'BEGIN PRIVATE KEY']:
             self.assertNotIn(unwanted, page)

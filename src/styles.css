@@ -30,6 +30,9 @@ ul { display: grid; gap: 10px; padding: 0; list-style: none; }li { display: grid
 .zt-facts dt { color: #607580; font-size: .8rem; }
 .zt-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .zerotier-node pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
+.host-catalog { margin-top: 14px; padding-top: 12px; border-top: 1px solid #d7e4e0; }
+.host-catalog ul { display: grid; gap: 6px; margin: 10px 0; padding: 0; list-style: none; }
+.host-catalog li { display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: space-between; }
 .setup-preview { display: grid; gap: 12px; padding: 16px; background: #edf4f2; border-radius: 12px; }
 .setup-preview ol { margin: 0; padding-left: 22px; }
 .setup-preview li { display: list-item; padding: 4px 0; border: 0; background: transparent; }

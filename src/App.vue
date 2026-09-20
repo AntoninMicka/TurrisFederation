@@ -121,10 +121,10 @@ const publishing = ref(false);
 const deploymentError = ref("");
 const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
 
-async function refreshDeployment() {
+async function refreshDeployment(live = false) {
   if (!ztSettings.value.networkId) { deployment.value = null; return; }
   try {
-    deployment.value = await deploymentAction<DeploymentOverview>("overview");
+    deployment.value = await deploymentAction<DeploymentOverview>(live ? "refresh" : "overview");
     deploymentError.value = "";
   } catch (error) { deploymentError.value = String(error); }
 }
@@ -464,6 +464,14 @@ async function submitConnection() {
             <p v-if="deployment?.nodes[node.id]?.appliedRevision && deployment.nodes[node.id].appliedRevision !== deployment.revision" class="warning">Čeká na opravy z novější revize.</p>
             <p v-if="deployment?.nodes[node.id]?.error" class="error">{{ deployment.nodes[node.id].error }}</p>
             <small v-if="deployment?.nodes[node.id]?.checkedAt">Poslední výsledek: {{ new Date(deployment.nodes[node.id].checkedAt! * 1000).toLocaleString('cs-CZ') }}</small>
+            <div class="host-catalog">
+              <strong>Hosté dostupní přes tento uzel</strong>
+              <ul v-if="deployment?.nodes[node.id]?.hosts?.length">
+                <li v-for="host in deployment.nodes[node.id].hosts" :key="host.address"><code>{{ host.address }}</code><span>{{ host.name ?? 'bez názvu' }}</span></li>
+              </ul>
+              <p v-else class="muted">Uzel zatím neoznámil žádné pasivně známé LAN hosty.</p>
+              <small v-if="deployment?.nodes[node.id]?.hostsObservedAt">Pozorováno {{ new Date(deployment.nodes[node.id].hostsObservedAt! * 1000).toLocaleString('cs-CZ') }} · bez aktivního skenování</small>
+            </div>
             <p v-if="plans[node.id]?.versionMismatch" class="warning">{{ plans[node.id].installedArtifactHash ? 'Verze agenta na routeru se liší od dostupné verze. Doporučujeme kompletní aktualizaci.' : 'Agent nebo jeho služba chybí. Je nutná kompletní instalace.' }}</p>
             <details v-if="plans[node.id]">
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
@@ -641,7 +649,7 @@ async function submitConnection() {
       <p>Při deployi druhého routeru se nové členství a síťové nastavení předá prvnímu přes ZeroTier. Routery předání opakují i bez notebooku. Nedostupný uzel zůstává na starší revizi do obnovení spojení; sledujte přijatou a aplikovanou revizi.</p>
       <div class="node-actions">
         <button :disabled="publishing || !!connectionNode || saving || !ztSettings.networkId" @click="publishChanges">{{ publishing ? 'Publikuji a ověřuji…' : 'Podepsat a synchronizovat opravy' }}</button>
-        <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment">Obnovit místní přehled</button>
+        <button class="secondary" :disabled="publishing || !!connectionNode" @click="refreshDeployment(true)">Obnovit stav a katalog uzlů</button>
       </div>
       <small>Publikování autorizuje aplikování změn na již přijatých uzlech. Přes ZeroTier se přenáší jen síťové nastavení a stav, nikoli aktualizace softwaru. WireGuard automaticky obnovuje relační klíče.</small>
     </section>

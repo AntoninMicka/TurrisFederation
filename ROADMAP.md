@@ -1,6 +1,6 @@
 # Turris Federation — roadmapa a TODO
 
-Aktualizováno: 8. 9. 2026.
+Aktualizováno: 20. 9. 2026.
 
 ## Cíl a podklady
 
@@ -19,7 +19,7 @@ Implementace sama o sobě neznamená ověření na skutečném routeru.
 Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 **P2** navazující rozvoj. Etapy určují pořadí, zatím bez termínů.
 
-## Kontrola deploye a aktuální TODO (5. 9. 2026)
+## Kontrola deploye a aktuální TODO (20. 9. 2026)
 
 - [x] Doplnit webový přehled na routeru a dlaždici Turris Federation do WebApps;
   instalovat i aktualizovat přes LAN, chránit přístup PAM přihlášením.
@@ -87,6 +87,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   i podepsaný stav během čekající synchronizace a úklid při jejím ukončení.
 - [ ] Na routerech ověřit souběh sousedů, zotavení a potvrzení změn bez notebooku.
   Obsluha HTTP může čekat na jednotlivý příkaz aplikování nebo obnovu konfigurace.
+- [x] **P1: Sdílený katalog hostů podle uzlu.** Každý přijatý router oznamuje
+  ve svém podepsaném provozním stavu pasivně známé IPv4 sousedy z vlastních LAN
+  prefixů. DHCP názvy jsou volitelné, MAC adresy se nesdílejí a aktivní skenování
+  se nespouští. Katalog je vidět pod uzlem v desktopu i routerovém WebApps přehledu.
+- [ ] Na dvou skutečných routerech ověřit naplnění katalogu, jeho obnovu po změně
+  sousedů, stáří při výpadku protějšku a zobrazení v desktopu i WebApps.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 
@@ -288,4 +294,3 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 3. Před deployem opravit sběr citlivých dat a zbývající případy neúplného auditu.
 4. Navrhnout konkrétní deploy na dvou uzlech: topologii, routy, firewall a WireGuard, včetně náhledu změn.
 5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Implementovaný deploy zatím není ověřený na routerech.
-

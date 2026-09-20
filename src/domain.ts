@@ -74,6 +74,8 @@ export interface DeploymentReport {
   error?: string;
   reachable?: boolean;
   checkedAt?: number;
+  hosts?: { address: string; name: string | null }[];
+  hostsObservedAt?: number;
 }
 export interface DeploymentOverview {
   revision: number;

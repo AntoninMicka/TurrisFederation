@@ -43,6 +43,16 @@ Nemá operaci instalace ani aktualizace softwaru. Dokument s dodatečnými poli
 pro software nebo příkazy agent odmítne. Publikování síťových změn nevolá SSH
 instalátor. Běžné kontroly routerů přes SSH tímto omezením deploye nejsou změněné.
 
+Součástí podepsaného provozního stavu je sdílený katalog hostů dostupných přes
+daný uzel. Agent pouze čte IPv4 sousedy známé jádru (`ip neigh`) a názvy k nim
+doplňuje z místních DHCP lease; neprovádí aktivní skenování. Do oznámení patří
+jen IP adresa z LAN prefixů přidělených oznamujícímu uzlu a volitelný název,
+nikoli MAC adresa. Příjemce ověří podpis identity uzlu, příslušnost každé adresy
+k jeho podepsaným LAN prefixům, počet položek a formát názvů. Routery si katalogy
+obnovují v pravidelné synchronizační smyčce. Desktop je načte na vyžádání akcí
+**Obnovit stav a katalog uzlů**; při nedostupnosti uzlu ponechá poslední výsledek
+s původním časem pozorování a označí uzel jako nedostupný.
+
 Webový přehled, ikona a dlaždice na úvodní stránce Turrisu jsou součástí
 stejného LAN instalačního/aktualizačního artefaktu. Konfigurace lighttpd se
 kontroluje před reloadem; při selhání se obnoví předchozí webové soubory.

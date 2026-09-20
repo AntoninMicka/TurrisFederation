@@ -8,7 +8,7 @@ const CONTROLLER: &str = include_str!("../../router/files/usr/lib/turris-federat
 
 #[tauri::command]
 pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, state: State<'_, AppState>) -> Result<Value, String> {
-    if !["overview", "validate", "deploy", "publish"].contains(&action.as_str()) {
+    if !["overview", "refresh", "validate", "deploy", "publish"].contains(&action.as_str()) {
         return Err("Neznámá operace deploye.".into());
     }
     if mode.as_deref().is_some_and(|value| !["full", "settings"].contains(&value)) {

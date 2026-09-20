@@ -9,6 +9,7 @@ import http.client
 import http.server
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -31,6 +32,9 @@ REMOTE = '/etc/turris-federation'
 CONFIG_DIR = Path('/etc/config')
 SYS_NET = Path('/sys/class/net')
 PROGRAM = '/usr/lib/turris-federation/federation.py'
+DHCP_LEASES = Path('/tmp/dhcp.leases')
+HOST_LIMIT = 256
+HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 
 
 def encode(value):
@@ -551,6 +555,74 @@ def diagnostic_badge(measurement, now):
             '<small>%s/%s odpovědí · před %s s</small>') % (color, label, percent, sum(samples), len(samples), int(age))
 
 
+def discover_hosts(node):
+    """Best-effort passive LAN catalog. Never scans and never publishes MAC addresses."""
+    try:
+        result = subprocess.run(['ip', '-4', 'neigh', 'show'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    names = {}
+    try:
+        lease_lines = DHCP_LEASES.read_text().splitlines()
+    except OSError:
+        lease_lines = []
+    for line in lease_lines:
+        fields = line.split()
+        if len(fields) < 4 or fields[3] == '*' or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,252}', fields[3]):
+            continue
+        try:
+            names[address(fields[2])] = fields[3]
+        except ValueError:
+            continue
+        pass
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    hosts = {}
+    for line in result.stdout.decode(errors='replace').splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[-1] not in HOST_STATES:
+            continue
+        try:
+            ip = ipaddress.ip_address(fields[0])
+        except ValueError:
+            continue
+        if ip.version != 4 or not any(ip in network for network in networks):
+            continue
+        hosts[str(ip)] = {'address': str(ip), 'name': names.get(str(ip))}
+    return [hosts[ip] for ip in sorted(hosts, key=ipaddress.ip_address)[:HOST_LIMIT]]
+
+
+def validate_hosts(node, report):
+    hosts = report.get('hosts')
+    observed = report.get('hostsObservedAt')
+    if hosts is None and observed is None:
+        return None
+    if (not isinstance(hosts, list) or len(hosts) > HOST_LIMIT or
+            not isinstance(observed, (int, float)) or isinstance(observed, bool) or
+            not math.isfinite(observed) or observed < 0):
+        raise ValueError('Neplatný katalog hostů uzlu.')
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    normalized, seen = [], set()
+    for host in hosts:
+        if not isinstance(host, dict) or set(host) != {'address', 'name'}:
+            raise ValueError('Neplatná položka katalogu hostů.')
+        try:
+            ip = ipaddress.ip_address(host['address'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Neplatná adresa hostu v katalogu.') from exc
+        name = host['name']
+        if ip.version != 4 or not any(ip in network for network in networks) or str(ip) in seen:
+            raise ValueError('Host neleží v LAN sítích oznamujícího uzlu.')
+        if name is not None and (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,252}', name)):
+            raise ValueError('Neplatný název hostu v katalogu.')
+        seen.add(str(ip))
+        normalized.append({'address': str(ip), 'name': name})
+    normalized.sort(key=lambda host: ipaddress.ip_address(host['address']))
+    return {'hosts': normalized, 'hostsObservedAt': observed}
+
+
 def health(root, doc):
     own_id = read(Path(root) / 'node.json')['nodeId']
     if own_id not in doc['members']:
@@ -590,7 +662,11 @@ def health(root, doc):
         handshake = handshakes.get(doc['members'][peer['id']]['wireguardKey'], 0)
         if not handshake or not 0 <= now - handshake <= 180:
             missing.append(peer['id'])
-    return {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing}
+    result = {'state': 'waiting_peers' if missing or not peers else 'active', 'pendingPeers': missing}
+    hosts = discover_hosts(self_node(root, doc))
+    if hosts is not None:
+        result.update(hosts=hosts, hostsObservedAt=time.time())
+    return result
 
 
 def confirm(root, token):
@@ -660,7 +736,44 @@ def peer_status(peer, member, signer=None):
     payload = verify(member['identity'], response)
     if payload.get('nonce') != nonce or payload.get('nodeId') != peer['id']:
         raise ValueError('Odpověď routeru neodpovídá požadavku.')
-    return payload['report']
+    report = payload.get('report')
+    if not isinstance(report, dict):
+        raise ValueError('Uzel vrátil neplatný provozní stav.')
+    catalog = validate_hosts(peer, report)
+    return {**report, **(catalog or {})}
+
+
+def refresh_catalog(root, current, own_id):
+    root = Path(root)
+    members = current['members']
+    nodes = [node for node in current['config']['nodes'] if node['id'] in members]
+    previous = read(root / 'catalog.json', {})
+    if not isinstance(previous, dict):
+        previous = {}
+    catalog = {node['id']: previous[node['id']] for node in nodes if node['id'] in previous}
+    own = next((node for node in nodes if node['id'] == own_id), None)
+    own_report = read(root / 'report.json', {})
+    if own:
+        own_hosts = validate_hosts(own, own_report)
+        if own_hosts is not None:
+            catalog[own_id] = own_hosts
+        else:
+            catalog.pop(own_id, None)
+    peers = [node for node in nodes if node['id'] != own_id]
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(peers)))) as pool:
+        jobs = {pool.submit(peer_status, peer, members[peer['id']]): peer for peer in peers}
+        for future, peer in jobs.items():
+            try:
+                report = future.result()
+                hosts = validate_hosts(peer, report)
+                if hosts is not None:
+                    catalog[peer['id']] = hosts
+                else:
+                    catalog.pop(peer['id'], None)
+            except Exception:
+                pass
+    atomic(root / 'catalog.json', catalog)
+    return catalog
 
 
 def serve(root):
@@ -804,6 +917,7 @@ def sync_loop(root):
                             pass
                 if reachable:
                     confirm(root, pending['token'])
+            refresh_catalog(root, current, own_id)
         except Exception as error:
             with locked(root):
                 report = read(root / 'report.json', {})
@@ -844,6 +958,7 @@ p{line-height:1.6}.muted,dt{color:#a8bdcc}.kicker{color:#80e1d7;letter-spacing:.
 section{margin:20px 0}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left}
 th,td{padding:14px 12px;border-bottom:1px solid #2a4355;vertical-align:top}th{color:#a8bdcc;font-weight:500}
 td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb76d;padding:10px 18px;background:#26303a}
+.hosts{margin:0;padding-left:18px;min-width:170px}.hosts li{margin:0 0 6px}.hosts small{display:block}
 .badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
 .signal{white-space:nowrap;font-size:13px}.green{color:#7ee2a8}.yellow{color:#ffda75}.red{color:#ff9292}.unknown{color:#a8bdcc}
 .button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none}
@@ -868,6 +983,9 @@ def web_page(root, csrf_token=''):
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
     diagnostics = read(root / 'diagnostics.json', {})
+    shared_catalog = read(root / 'catalog.json', {})
+    if not isinstance(shared_catalog, dict):
+        shared_catalog = {}
     rows = []
     now = time.time()
     running = diagnostics.get('state') == 'running' and 0 <= now - diagnostics.get('startedAt', 0) <= 360
@@ -875,13 +993,23 @@ def web_page(root, csrf_token=''):
         for node in doc['config']['nodes']:
             member = node['id'] in doc['members']
             label = state if node['id'] == own_id else ('Přijatý uzel' if member else 'Draft')
+            catalog_source = report if node['id'] == own_id else shared_catalog.get(node['id'], {})
+            try:
+                host_catalog = validate_hosts(node, catalog_source) if member else None
+            except (TypeError, ValueError):
+                host_catalog = None
+            hosts = ('<ul class="hosts">' + ''.join('<li><code>%s</code>%s</li>' % (
+                     esc(host['address']), '<small>%s</small>' % esc(host['name']) if host['name'] else '')
+                     for host in host_catalog['hosts']) + '</ul><small>Pozorováno %s UTC</small>' %
+                     esc(time.strftime('%d. %m. %Y %H:%M:%S', time.gmtime(host_catalog['hostsObservedAt'])))) \
+                    if host_catalog and host_catalog['hosts'] else '—'
             measurements = diagnostics.get('nodes', {}).get(node['id'], {}) if (member and own_id in doc['members'] and diagnostics.get('revision') == doc['revision'] and report.get('appliedRevision') == doc['revision']) else {}
             badges = ['—' if node['id'] == own_id else diagnostic_badge(measurements.get(transport, {}), now)
                       for transport in ['zerotier', 'wireguard']]
-            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
+            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
                 esc(node['name']), '<br><small>Tento router</small>' if node['id'] == own_id else '',
                 esc(node['zeroTierAddress'] or '—'), esc(node['wireguardAddress'] or '—'),
-                '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', esc(label), *badges))
+                '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', hosts, esc(label), *badges))
     notices = '<p class="notice">Router ještě nepřijal konfiguraci federace. Dokončete deploy z notebooku přes LAN.</p>' if not doc else ''
     if report.get('error'):
         notices += '<p class="notice">%s</p>' % esc(report['error'])
@@ -903,8 +1031,8 @@ def web_page(root, csrf_token=''):
 <article class="card"><span>Přijatá revize</span><strong>''' + esc(doc['revision'] if doc else '—') + '''</strong></article>
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
-<section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
+<section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1224,6 +1352,22 @@ def overview(root, config):
             'nodes': {n['id']: {'enrolled': n['id'] in members, **reports.get(n['id'], {})} for n in config['nodes']}}
 
 
+def refresh_reports(root, doc):
+    root = Path(root)
+    reports = read(root / 'reports.json', {})
+    peers = [node for node in doc['config']['nodes'] if node['id'] in doc['members']]
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(peers)))) as pool:
+        jobs = {pool.submit(peer_status, peer, doc['members'][peer['id']], root / 'root.pem'): peer for peer in peers}
+        for future, peer in jobs.items():
+            try:
+                reports[peer['id']] = dict(future.result(), reachable=True)
+                reports[peer['id']].pop('error', None)
+            except Exception as error:
+                reports[peer['id']] = dict(reports.get(peer['id'], {}), error=str(error), reachable=False)
+    atomic(root / 'reports.json', reports)
+    return reports
+
+
 def distribute_bundle(root, envelope, exclude=None):
     root = Path(root)
     doc = verify(public_key(root / 'root.pem'), envelope)
@@ -1247,6 +1391,11 @@ def controller(root, req):
     config = normalize(nodes, req['networkId'])
     action = req['action']
     if action == 'overview':
+        return overview(root, config)
+    if action == 'refresh':
+        published = read(root / 'published.json')
+        if published:
+            refresh_reports(root, verify(public_key(root / 'root.pem'), published))
         return overview(root, config)
     if action == 'publish':
         envelope = snapshot(root, config, read(root / 'members.json', {}))

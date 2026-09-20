@@ -8,6 +8,10 @@ reForisu. Používejte HTTPS webserveru routeru.
 
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
+Pod každým přijatým uzlem zobrazuje také jeho podepsaný katalog pasivně známých
+IPv4 sousedů v příslušných LAN sítích a čas pozorování. Jméno se doplní z DHCP
+lease, pokud je dostupné. Agent hosty aktivně neskenuje a mezi routery neposílá
+MAC adresy; proto prázdný seznam neprokazuje, že je LAN bez dalších zařízení.
 U přijatých protějšků jsou samostatné semafory pingu přes ZeroTier a WireGuard,
 měřené z tohoto routeru. Tlačítko **Spustit ping · 5 paketů** odešle právě
 5 pingů každou cestou ke každému přijatému protějšku. Nový požadavek nahrazuje
@@ -51,6 +55,6 @@ Obsah webu, konfigurace a ikony je zahrnutý do otisku deploy artefaktu.
 Implementace registrace a proxy vychází z
 [oficiální specifikace Turris WebApps](https://gitlab.nic.cz/turris/webapps/-/blob/master/README.md).
 Lokální testy pokrývají vykreslení, escapování, HTTP cesty, omezení zápisů na diagnostiku,
-opravení oprávnění nových souborů a návrat při chybě aktualizace.
+validaci podepsaného katalogu, opravení oprávnění nových souborů a návrat při chybě aktualizace.
 Zobrazení dlaždice, PAM přihlášení a souběh s ostatními webovými aplikacemi
 je ještě potřeba ověřit na skutečném Turrisu.
