@@ -481,6 +481,7 @@ async function submitConnection() {
             <strong>ZeroTier</strong>
             <template v-if="ztStatuses[node.id]">
               <p :class="{ error: ztStatuses[node.id].state === 'error' || ztStatuses[node.id].state === 'unknown' }">{{ ztStatuses[node.id].summary }}</p>
+              <p v-if="ztStatuses[node.id].wireguardInterfaceBlocked === false" class="warning">ZeroTier nemá zakázané rozhraní <code>tf_wg</code> a může přes něj hledat cestu k vlastním peerům. Spusťte nastavení ZeroTier.</p>
               <p v-if="ztStatuses[node.id].networkId !== ztSettings.networkId" class="warning">Tento výsledek patří jiné síti. Pro uložené Network ID spusťte novou kontrolu.</p>
               <dl class="zt-facts">
                 <div><dt>ZeroTier ID zařízení</dt><dd><code>{{ ztStatuses[node.id].deviceId ?? 'nezjištěno' }}</code></dd></div>
@@ -489,6 +490,7 @@ async function submitConnection() {
                 <div><dt>Členství v síti</dt><dd>{{ ztStatuses[node.id].networkStatus ?? 'nezjištěno nebo nepřipojeno' }}</dd></div>
                 <div><dt>Přidělené adresy</dt><dd>{{ ztStatuses[node.id].assignedAddresses.join(', ') || 'zatím žádné' }}</dd></div>
                 <div><dt>Po restartu routeru</dt><dd>{{ ztStatuses[node.id].persistent && ztStatuses[node.id].serviceEnabled ? 'Členství uložené, automatický start zapnutý' : 'Trvalé nastavení nepotvrzeno' }}</dd></div>
+                <div><dt>Ochrana před WireGuard smyčkou</dt><dd>{{ ztStatuses[node.id].wireguardInterfaceBlocked === null ? 'Nelze ověřit' : ztStatuses[node.id].wireguardInterfaceBlocked ? 'Rozhraní tf_wg je pro ZeroTier zakázané' : 'Chybí zákaz rozhraní tf_wg' }}</dd></div>
               </dl>
               <small>Načteno {{ new Date(ztStatuses[node.id].checkedAt).toLocaleString('cs-CZ') }}</small>
               <details><summary>Načtený výstup ZeroTier</summary><pre>{{ ztStatuses[node.id].details }}</pre></details>
@@ -684,6 +686,7 @@ async function submitConnection() {
           <ol>
             <li v-if="!ztStatuses[connectionNode.id]?.installed">Nainstalovat ZeroTier z repozitářů routeru.</li>
             <li>Zálohovat konfiguraci a uložit členství v síti <code>{{ ztNetworkForOperation }}</code>.</li>
+            <li>Zakázat ZeroTieru použití rozhraní <code>tf_wg</code> pomocí <code>interfacePrefixBlacklist</code>.</li>
             <li>Zapnout službu při startu routeru a spustit ji, pokud neběží.</li>
             <li>Připojit síť a načíst stav autorizace a adresy.</li>
           </ol>

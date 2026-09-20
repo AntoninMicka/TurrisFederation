@@ -58,6 +58,7 @@ export interface ZeroTierStatus {
   device: string | null;
   serviceEnabled: boolean | null;
   persistent: boolean;
+  wireguardInterfaceBlocked: boolean | null;
   state: string;
   summary: string;
   details: string;

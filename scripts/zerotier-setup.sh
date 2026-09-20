@@ -24,6 +24,13 @@ elif grep -Eq 'config_foreach[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]+zerot
 else
     tf_fail 'Neznámé UCI schéma služby ZeroTier. Konfigurace nebyla změněna.'
 fi
+if grep -Eq "config_get[[:space:]]+local_conf_path[[:space:]].*['\"]local_conf_path['\"]" /etc/init.d/zerotier; then
+    tf_local_option=local_conf_path
+elif grep -Eq "config_get[[:space:]]+local_conf[[:space:]].*['\"]local_conf['\"]" /etc/init.d/zerotier; then
+    tf_local_option=local_conf
+else
+    tf_fail 'Služba ZeroTier nepodporuje local.conf; nelze bezpečně zakázat WireGuard rozhraní.'
+fi
 mkdir -p /etc/turris-federation/backups
 tf_backup=$(mktemp /etc/turris-federation/backups/zerotier.XXXXXX)
 if [ -f /etc/config/zerotier ]; then cp /etc/config/zerotier "$tf_backup"; fi
@@ -79,6 +86,29 @@ else
     done
     [ "$tf_found" = 1 ] || uci add_list "zerotier.$tf_section.join=$TF_ZT_NETWORK"
 fi
+# ZeroTier musí hledat fyzické cesty mimo WireGuard, nikdy přes tunel,
+# který je sám přenášen přes ZeroTier. Prefix pokrývá spravované tf_wg rozhraní.
+tf_local_conf=/etc/turris-federation/zerotier-local.conf
+tf_existing_local_conf=$(uci -q get "zerotier.$tf_section.$tf_local_option" || true)
+if [ -n "$tf_existing_local_conf" ] && [ "$tf_existing_local_conf" != "$tf_local_conf" ]; then
+    tf_fail "ZeroTier už používá vlastní local.conf ($tf_existing_local_conf). Doplňte do něj interfacePrefixBlacklist pro tf_wg ručně; aplikace cizí soubor nepřepíše."
+fi
+tf_runtime_local_conf=/var/lib/zerotier-one/local.conf
+if [ -z "$tf_existing_local_conf" ] && { [ -e "$tf_runtime_local_conf" ] || [ -L "$tf_runtime_local_conf" ]; }; then
+    tf_runtime_target=$(readlink -f "$tf_runtime_local_conf" 2>/dev/null || true)
+    [ "$tf_runtime_target" = "$tf_local_conf" ] || tf_fail 'ZeroTier už má vlastní runtime local.conf. Aplikace ho nepřepíše; doplňte interfacePrefixBlacklist pro tf_wg ručně.'
+fi
+tf_local_tmp=$(mktemp /etc/turris-federation/zerotier-local.conf.XXXXXX)
+printf '%s\n' '{' '  "settings": {' '    "interfacePrefixBlacklist": ["tf_wg"]' '  }' '}' > "$tf_local_tmp"
+chmod 600 "$tf_local_tmp"
+if [ -e "$tf_local_conf" ] || [ -L "$tf_local_conf" ]; then
+    # Soubor je spravovaný touto cestou, ale mohl být ručně rozšířen. Jeho
+    # obsah nehádat ani nepřepisovat; runtime ověření níže potvrdí tf_wg.
+    rm -f "$tf_local_tmp"
+else
+    mv "$tf_local_tmp" "$tf_local_conf"
+fi
+uci set "zerotier.$tf_section.$tf_local_option=$tf_local_conf"
 # Zachovat existující identitu i u routeru původně nastaveného jen přes CLI.
 if [ -z "$(uci -q get "zerotier.$tf_section.secret" || true)" ] && [ -s /var/lib/zerotier-one/identity.secret ]; then
     uci set "zerotier.$tf_section.secret=$(cat /var/lib/zerotier-one/identity.secret)"
@@ -86,7 +116,11 @@ fi
 uci commit zerotier
 tf_committed=1
 /etc/init.d/zerotier enable >&2 || tf_fail 'Nepodařilo se zapnout automatický start ZeroTier.'
-if ! zerotier-cli info >/dev/null 2>&1; then
+# local.conf se načítá při startu služby; restart zároveň odstraní dříve naučené
+# fyzické cesty přes tf_wg. Akce je uživatelsky potvrzená jako konfigurace ZT.
+if zerotier-cli info >/dev/null 2>&1; then
+    /etc/init.d/zerotier restart >&2 || tf_fail 'Službu ZeroTier nelze restartovat s ochranou WireGuard rozhraní.'
+else
     /etc/init.d/zerotier start >&2 || tf_fail 'Službu ZeroTier nelze spustit.'
 fi
 tf_attempt=0
@@ -95,6 +129,9 @@ until zerotier-cli info >/dev/null 2>&1; do
     [ "$tf_attempt" -lt 20 ] || tf_fail 'Služba ZeroTier nezačala odpovídat. Konfigurace je uložená; ověřte stav služby.'
     sleep 1
 done
+tf_info_json=$(zerotier-cli -j info 2>/dev/null || true)
+printf '%s' "$tf_info_json" | tr -d '[:space:]' | grep -E '"interfacePrefixBlacklist":\[[^]]*"tf_wg"[^]]*\]' >/dev/null || \
+    tf_fail 'ZeroTier nepotvrdil načtení zákazu rozhraní tf_wg. Zkontrolujte local.conf a verzi služby.'
 zerotier-cli join "$TF_ZT_NETWORK" >&2 || tf_fail 'Připojení do ZeroTier sítě selhalo.'
 for tf_setting in allowManaged=true allowGlobal=false allowDefault=false allowDNS=false; do
     zerotier-cli set "$TF_ZT_NETWORK" "${tf_setting%=*}" "${tf_setting#*=}" >&2 || tf_fail 'Nastavení parametrů ZeroTier selhalo.'

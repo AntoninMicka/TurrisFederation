@@ -316,7 +316,8 @@ def render_apply(root, doc):
         return
     key = (Path(root) / 'wireguard.key').read_text().strip()
     uci_section('network', 'tf_wg', 'interface', {'proto': 'wireguard', 'private_key': key,
-                'listen_port': str(WG_PORT), 'addresses': [node['wireguardAddress'] + '/32']})
+                'listen_port': str(WG_PORT), 'addresses': [node['wireguardAddress'] + '/32'],
+                'nohostroute': '1'})
     peers = [n for n in doc['config']['nodes'] if n['id'] in doc['members'] and n['id'] != own_id]
     for peer in peers:
         uci_section('network', 'tf_p_' + peer['id'].replace('-', ''), 'wireguard_tf_wg', {

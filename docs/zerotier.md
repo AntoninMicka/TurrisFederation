@@ -32,9 +32,16 @@ autorizaci ve vybrané síti. `ACCESS_DENIED` vyžaduje autorizaci; při
   a jednotlivými sekcemi `network`. Neznámé schéma odmítne místo zápisu odhadem.
 - Zálohuje `/etc/config/zerotier` do soukromého souboru pod
   `/etc/turris-federation/backups/`. Obsah zálohy neopouští router.
+- Vytvoří spravovaný `local.conf` s `interfacePrefixBlacklist` pro `tf_wg`.
+  ZeroTier tak nesmí použít federační WireGuard tunel jako fyzickou cestu
+  k vlastním peerům, bez ohledu na dynamicky zvolené UDP porty. Pokud router
+  už používá jiný vlastní `local.conf`, aplikace jej nepřepíše a vyžádá jeho
+  ruční sloučení.
 - Doplní členství a zapne službu při startu. Existující identitu a ostatní
   sítě zachová; opakované spuštění nepřidává duplicitní členství.
-- Spustí službu, pokud neodpovídá, a připojí zvolenou síť přes CLI.
+- Spustí službu, pokud neodpovídá; běžící službu po změně `local.conf`
+  restartuje a ověří, že zákaz `tf_wg` skutečně načetla. Potom připojí
+  zvolenou síť přes CLI.
 - Povolí spravované adresy a trasy (`allowManaged`) a vypne převzetí výchozí trasy,
   veřejných rozsahů a DNS (`allowDefault`, `allowGlobal`, `allowDNS`).
 - Načte konečný stav; úspěšný příkaz `join` sám o sobě neznamená autorizaci.
@@ -58,7 +65,8 @@ instancí ve starém schématu jsou důvodem k zastavení konfigurace.
 
 Tento krok nemění firewall ani neprovádí propojení LAN sítí či deploy WireGuardu.
 Samotné členství v ZeroTier proto nezaručuje průchod správcovského provozu přes
-firewall routeru. Návrh těchto pravidel navazuje v deploy fázi.
+firewall routeru. Návrh těchto pravidel navazuje v deploy fázi. Kontrola v
+aplikaci zároveň zobrazuje, zda běžící ZeroTier potvrdil zákaz rozhraní `tf_wg`.
 
 ## Ověření implementace
 

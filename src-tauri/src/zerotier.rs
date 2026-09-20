@@ -57,6 +57,8 @@ pub struct Status {
     pub device: Option<String>,
     pub service_enabled: Option<bool>,
     pub persistent: bool,
+    #[serde(default)]
+    pub wireguard_interface_blocked: Option<bool>,
     pub state: String,
     pub summary: String,
     pub details: String,
@@ -76,6 +78,7 @@ pub fn parse(payload: &str, router_id: &str, network_id: Option<&str>, checked_a
         assigned_addresses: Vec::new(), device: None,
         service_enabled: match section(payload, "__TF_ZT_ENABLED__").as_deref() { Some("1") => Some(true), Some("0") => Some(false), _ => None },
         persistent: section(payload, "__TF_ZT_PERSISTENT__").as_deref() == Some("1"),
+        wireguard_interface_blocked: None,
         state: "unknown".into(), summary: "Stav ZeroTier se nepodařilo načíst.".into(),
         details: format!("Služba:\n{info}\n\nČlenství v sítích:\n{networks}"), checked_at: checked_at.into(),
     };
@@ -87,6 +90,11 @@ pub fn parse(payload: &str, router_id: &str, network_id: Option<&str>, checked_a
     if let Ok(value) = serde_json::from_str::<Value>(&info) {
         result.device_id = text(&value, "address"); result.version = text(&value, "version");
         result.online = value.get("online").and_then(Value::as_bool);
+        result.wireguard_interface_blocked = value.get("config").and_then(|config| config.get("settings")).map(|settings| {
+            settings.get("interfacePrefixBlacklist").and_then(Value::as_array).is_some_and(|prefixes| {
+                prefixes.iter().filter_map(Value::as_str).any(|prefix| !prefix.is_empty() && "tf_wg".starts_with(prefix))
+            })
+        });
     } else {
         let words: Vec<_> = info.split_whitespace().collect();
         if words.len() >= 5 && words[0] == "200" && words[1] == "info" {
@@ -146,7 +154,7 @@ pub fn parse(payload: &str, router_id: &str, network_id: Option<&str>, checked_a
 mod tests {
     use super::*;
     fn payload(network_status: &str) -> String {
-        format!("__TF_ZT_INSTALLED__\n1\n__TF_ZT_INFO__\n{{\"address\":\"abcdef1234\",\"online\":true,\"version\":\"1.14.0\"}}\n__TF_ZT_INFO_RC__\n0\n__TF_ZT_NETWORKS__\n[{{\"nwid\":\"0123456789abcdef\",\"status\":\"{network_status}\",\"assignedAddresses\":[\"10.1.1.2/24\"]}}]\n__TF_ZT_NETWORKS_RC__\n0\n__TF_ZT_ENABLED__\n1\n__TF_ZT_PERSISTENT__\n1\n__TF_ZT_END__\n")
+        format!("__TF_ZT_INSTALLED__\n1\n__TF_ZT_INFO__\n{{\"address\":\"abcdef1234\",\"online\":true,\"version\":\"1.14.0\",\"config\":{{\"settings\":{{\"interfacePrefixBlacklist\":[\"tf_wg\"]}}}}}}\n__TF_ZT_INFO_RC__\n0\n__TF_ZT_NETWORKS__\n[{{\"nwid\":\"0123456789abcdef\",\"status\":\"{network_status}\",\"assignedAddresses\":[\"10.1.1.2/24\"]}}]\n__TF_ZT_NETWORKS_RC__\n0\n__TF_ZT_ENABLED__\n1\n__TF_ZT_PERSISTENT__\n1\n__TF_ZT_END__\n")
     }
     #[test]
     fn online_is_not_authorized_and_other_network_does_not_count() {
@@ -156,6 +164,7 @@ mod tests {
         assert_eq!(parse(&payload("OK"), "router", Some("1111111111111111"), "now").state, "not_joined");
         let ok = parse(&payload("OK"), "router", Some("0123456789abcdef"), "now");
         assert_eq!(ok.state, "connected"); assert!(ok.persistent);
+        assert_eq!(ok.wireguard_interface_blocked, Some(true));
         assert_eq!(ok.assigned_addresses, vec!["10.1.1.2/24"]);
     }
     #[test]
@@ -178,14 +187,22 @@ mod tests {
     #[test]
     fn parses_legacy_text_and_rejects_malformed_network_list() {
         let input = payload("OK")
-            .replace(r#"{"address":"abcdef1234","online":true,"version":"1.14.0"}"#, "200 info abcdef1234 ONLINE 1.2.12")
+            .replace(r#"{"address":"abcdef1234","online":true,"version":"1.14.0","config":{"settings":{"interfacePrefixBlacklist":["tf_wg"]}}}"#, "200 info abcdef1234 ONLINE 1.2.12")
             .replace(r#"[{"nwid":"0123456789abcdef","status":"OK","assignedAddresses":["10.1.1.2/24"]}]"#, "200 listnetworks 0123456789abcdef Home Network aa:bb:cc:dd:ee:ff OK PRIVATE zt0 10.1.1.2/24");
         let result = parse(&input, "r", Some("0123456789abcdef"), "now");
         assert_eq!(result.state, "connected");
         assert_eq!(result.version.as_deref(), Some("1.2.12"));
+        assert_eq!(result.wireguard_interface_blocked, None);
         assert_eq!(result.network_name.as_deref(), Some("Home Network"));
         assert_eq!(result.assigned_addresses, vec!["10.1.1.2/24"]);
         let malformed = payload("OK").replace("\"status\":\"OK\"", "\"unexpected\":true");
         assert_eq!(parse(&malformed, "r", Some("0123456789abcdef"), "now").state, "error");
+    }
+    #[test]
+    fn detects_missing_or_broader_wireguard_interface_prefix() {
+        let missing = payload("OK").replace(r#"["tf_wg"]"#, "[]");
+        assert_eq!(parse(&missing, "r", None, "now").wireguard_interface_blocked, Some(false));
+        let broader = payload("OK").replace("tf_wg", "tf_");
+        assert_eq!(parse(&broader, "r", None, "now").wireguard_interface_blocked, Some(true));
     }
 }

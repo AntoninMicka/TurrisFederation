@@ -302,6 +302,11 @@ fn build_findings(node: &FederationNode, payload: &str, observed_at: &str, netwo
             "Použijte nastavení ZeroTier pro uložení členství a zapnutí služby při startu.", "Trvalé členství a automatický start služby.".into(),
             format!("Členství v UCI: {}\nStart služby: {:?}", zt.persistent, zt.service_enabled));
     }
+    if zt.wireguard_interface_blocked == Some(false) {
+        add("warning", "zerotier", "ZeroTier může použít federační WireGuard rozhraní jako fyzickou cestu.".into(),
+            "Spusťte nastavení ZeroTier; uloží interfacePrefixBlacklist pro tf_wg a bezpečně restartuje službu.",
+            "ZeroTier má načtený zákaz prefixu rozhraní tf_wg.".into(), zt.details.clone());
+    }
     // Výpis wg dump obsahuje privátní klíče. Do nálezu patří pouze chyba nástroje.
     if let Some(error) = wireguard.as_deref().and_then(|text| text.lines().find(|line| line.contains("wg: not found"))) {
         add("warning", "wireguard", "WireGuard nástroje nejsou nainstalované".into(),
@@ -358,6 +363,14 @@ mod audit_tests {
         assert!(display_observation(None).contains("nepodařilo"));
         assert!(display_observation(Some("")).contains("prázdný"));
         assert!(build_findings(&node(), "", "now", None).iter().all(|f| !f.observed_state.is_empty()));
+    }
+
+    #[test]
+    fn audit_warns_when_zerotier_can_discover_over_wireguard() {
+        let payload = "__TF_ADDRESSES__\n[{\"local\":\"192.168.10.1\",\"prefixlen\":24}]\n__TF_ADDRESSES_STATUS__\n0\n__TF_ROUTES__\n[]\n__TF_ROUTES_STATUS__\n0\n__TF_ZT_INSTALLED__\n1\n__TF_ZT_INFO__\n{\"address\":\"abcdef1234\",\"online\":true,\"version\":\"1.14.0\",\"config\":{\"settings\":{\"interfacePrefixBlacklist\":[]}}}\n__TF_ZT_INFO_RC__\n0\n__TF_ZT_NETWORKS__\n[]\n__TF_ZT_NETWORKS_RC__\n0\n__TF_ZT_ENABLED__\n1\n__TF_ZT_PERSISTENT__\n1\n__TF_WIREGUARD__\n";
+        let findings = build_findings(&node(), payload, "now", None);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].summary.contains("WireGuard"));
     }
 
     #[test]

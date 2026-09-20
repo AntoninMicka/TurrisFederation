@@ -66,7 +66,10 @@ elif name == "zerotier-cli":
     if args[0] == "-j": args = args[1:]
     if args[0] == "info":
         if not state.get("running"): die()
-        print(json.dumps({"address":"abcdef1234", "online":True,"version":"1.14.0"}))
+        info = {"address":"abcdef1234", "online":True,"version":"1.14.0"}
+        local_conf = root / "etc/turris-federation/zerotier-local.conf"
+        if local_conf.exists(): info["config"] = json.loads(local_conf.read_text())
+        print(json.dumps(info))
     elif args[0] == "listnetworks":
         print(json.dumps([{"nwid":n,"status":"ACCESS_DENIED"} for n in state.get("joined",[])]))
     elif args[0] == "join":
@@ -78,6 +81,7 @@ elif name == "zerotier-cli":
 elif name == "zerotier":
     state.setdefault("service_calls",[]).append(args[0])
     if args[0] == "start": state["running"] = True
+    if args[0] == "restart": state["running"] = True
     if args[0] == "enable": state["enabled"] = True
     save()
     if args[0] == "enabled" and not state.get("enabled"): die()
@@ -109,7 +113,8 @@ class RouterScripts(unittest.TestCase):
         self.store(state)
         service = self.root / "etc/init.d/zerotier"
         marker = "network" if schema == "new" else "zerotier"
-        service.write_text(FAKE_TOOL + f"\n# config_foreach join_network {marker}\n")
+        local_conf = "config_get local_conf_path 'global' 'local_conf_path'" if schema == "new" else "config_get local_conf $cfg 'local_conf'"
+        service.write_text(FAKE_TOOL + f"\n# config_foreach join_network {marker}\n# {local_conf}\n")
         service.chmod(0o755)
 
     def store(self, state):
@@ -134,15 +139,19 @@ class RouterScripts(unittest.TestCase):
                     self.assertNotIn("KEEP_SECRET", result.stdout + result.stderr)
                 state = self.state()
                 self.assertEqual(state["joined"], sorted([NETWORK, OTHER]))
-                self.assertNotIn("restart", state["service_calls"])
+                self.assertEqual(state["service_calls"].count("restart"), 2)
                 self.assertNotIn("start", state["service_calls"])
                 self.assertNotIn("opkg", state)
                 self.assertEqual(state["settings"]["allowDefault"], "false")
                 if schema == "old":
                     self.assertEqual(state["sections"]["existing"]["join"], [OTHER, NETWORK])
                     self.assertEqual(state["sections"]["existing"]["secret"], "KEEP_SECRET")
+                    self.assertTrue(state["sections"]["existing"]["local_conf"].endswith("/etc/turris-federation/zerotier-local.conf"))
                 else:
                     self.assertEqual(sum(s.get("id") == NETWORK for s in state["sections"].values()), 1)
+                    self.assertTrue(state["sections"]["global"]["local_conf_path"].endswith("/etc/turris-federation/zerotier-local.conf"))
+                local_conf = json.loads((self.root / "etc/turris-federation/zerotier-local.conf").read_text())
+                self.assertEqual(local_conf["settings"]["interfacePrefixBlacklist"], ["tf_wg"])
                 status = self.run_script("zerotier-status.sh")
                 self.assertEqual(status.returncode, 0, status.stderr)
                 self.assertIn("__TF_ZT_PERSISTENT__\n1", status.stdout)
@@ -198,6 +207,29 @@ class RouterScripts(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.state()["sections"], before)
             self.assertNotIn("service_calls", self.state())
+
+    def test_existing_custom_local_config_is_not_overwritten(self):
+        self.write_state("new")
+        custom = self.root / "etc/custom-zerotier.json"
+        custom.write_text('{"settings":{"interfacePrefixBlacklist":["custom"]}}\n')
+        state = self.state()
+        state["sections"]["global"]["local_conf_path"] = str(custom)
+        self.store(state)
+        result = self.run_script("zerotier-setup.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("vlastní local.conf", result.stderr)
+        self.assertEqual(custom.read_text(), '{"settings":{"interfacePrefixBlacklist":["custom"]}}\n')
+        self.assertFalse((self.root / "etc/turris-federation/zerotier-local.conf").exists())
+
+    def test_existing_managed_local_config_keeps_additional_settings(self):
+        self.write_state("new")
+        managed = self.root / "etc/turris-federation/zerotier-local.conf"
+        managed.parent.mkdir(parents=True)
+        contents = '{"settings":{"interfacePrefixBlacklist":["docker","tf_wg"],"allowTcpFallbackRelay":false}}\n'
+        managed.write_text(contents)
+        result = self.run_script("zerotier-setup.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(managed.read_text(), contents)
 
 
 if __name__ == "__main__":

@@ -769,6 +769,7 @@ class FederationTests(unittest.TestCase):
         self.assertIn('192.168.2.0/24', config)
         self.assertIn('10.203.0.2/32', config)
         self.assertIn('wireguard_tf_wg', config)
+        self.assertIn("set network.tf_wg.nohostroute='1'", config)
         self.assertNotIn('0.0.0.0/0', config)
         self.assertNotIn('masq', config)
 
