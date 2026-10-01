@@ -24,6 +24,48 @@ Role je samostatná od provozního stavu. Notebook se nestává administrátorsk
 jen tím, že je dosažitelný, autorizovaný v transportní síti nebo objevený přes
 discovery.
 
+## Trvalý backend a stavová lišta
+
+Na každém notebooku běží backend jako uživatelská služba operačního systému,
+odděleně od okna aplikace. Na Linuxu ji spravuje `systemd --user`; spouští se
+automaticky po přihlášení uživatele, při pádu se řízeně restartuje a nepotřebuje
+trvale běžet jako `root`. Úvodní instalace nebo potvrzená změna systémové VPN
+konfigurace může použít NetworkManager/polkit nebo úzce omezený instalační krok
+s vyšším oprávněním; privilegium se nesmí přenést na běžné API backendu. Běh
+bez přihlášené uživatelské relace pomocí lingeru je
+samostatná, výslovně zapínaná volba, ne vedlejší efekt instalace.
+
+Backend vlastní síťovou identitu notebooku, koncovou konfiguraci VPN, lokální
+diagnostiku a stav připojení. U administrátorského notebooku navíc obsluhuje
+řídicí funkce povolené jeho rolí. Samotná instalace nebo spuštění backendu ale
+žádné administrátorské oprávnění nevytváří.
+
+Grafická aplikace je klient backendu. Může se zavřít bez zastavení služby,
+odpojení VPN nebo ztráty diagnostického stavu. S backendem komunikuje pouze
+přes lokální rozhraní svázané s uživatelskou relací, přednostně Unix socket
+v `$XDG_RUNTIME_DIR`, chráněný oprávněními a kontrolou UID. Backend nesmí
+vystavit neautentizované HTTP API do LAN ani do VPN.
+
+Po přihlášení se spustí také lehká ikona ve stavové liště. Bez otevřeného okna
+ukazuje alespoň tyto stavy:
+
+- připojeno a místní kontrola je v pořádku;
+- připojeno s omezením nebo zastaralým výsledkem kontroly;
+- odpojeno;
+- backend neběží nebo hlásí chybu.
+
+Kliknutí nebo položka **Otevřít Turris Federation** zobrazí existující UI a
+zaměří jeho okno; nespouští druhou instanci backendu. Nabídka smí obsahovat
+obnovení místní kontroly a kopírování stručné diagnostiky. Akce **Ukončit UI**
+a **Zastavit službu / odpojit tento notebook** musí být oddělené a druhá z nich
+vyžaduje výslovné potvrzení. Administrátorské akce se v uživatelské roli vůbec
+nezobrazí, nestačí je pouze vizuálně zakázat.
+
+Instalace služby, její aktualizace a obnova konfigurace musí být atomické a
+zachovat předchozí funkční verzi pro rollback. Privátní klíče a pověření zůstávají
+v uživatelském úložišti s oprávněním `0600` nebo v systémovém úložišti tajemství;
+stavová lišta ani běžné logy je nesmí zobrazit.
+
 ## Síťové chování
 
 Router zůstává tranzitním uzlem lokality a může vlastnit jeden či více LAN
@@ -84,12 +126,14 @@ tohoto návrhu proto vyžaduje verzovanou změnu protokolu, nikoli jen úpravu t
    Uživatelský notebook nesmí vstoupit do stávající synchronizace řídicí identity.
 3. Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
-4. Přidat lokální instalaci, obnovu a rollback konfigurace VPN notebooku bez
-   vzdáleného deploye přes SSH.
-5. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
+4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
+   služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH.
+5. Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance UI;
+   zavření okna nesmí ukončit backend ani VPN.
+6. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
    připojení, místní diagnostiku a povolené cíle; administrátorská role navíc
    inventář, audit, publikování a deploy routerů.
-6. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
+7. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
    roli a pověření, ale nikdy nepřenesly řídicí tajemství uživatelskému uzlu.
 
 ## Akceptační hranice
@@ -107,5 +151,9 @@ administrátorského a jednoho uživatelského notebooku:
   nediagnostikuje;
 - místní kontrola na každém notebooku pravdivě rozliší členství, tunel, routy
   a aktuální dosažitelnost a je zřetelně označená jako lokální výsledek;
+- backend se po přihlášení spustí bez otevření UI, přežije zavření okna a stavová
+  lišta správně zobrazí připojení, omezení, odpojení i chybu služby;
+- otevření UI ze stavové lišty použije běžící backend a nevytvoří druhou službu;
+- uživatelská služba ani její lokální IPC nejsou dostupné jinému místnímu
+  uživateli a neposlouchají na rozhraní LAN nebo VPN;
 - restart všech tří zařízení zachová identity, role a síťovou konfiguraci.
-

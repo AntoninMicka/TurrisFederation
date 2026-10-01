@@ -12,8 +12,10 @@ a místní řídicí notebook mají samostatné přehledy.
 Plánovaný model rozlišuje **administrátorské notebooky** pro správu, audit a
 deploy routerů a **uživatelské notebooky** určené jen k síťovému připojení.
 Oba jsou koncové VPN uzly bez routování mezi VPN a fyzickou sítí a svou
-dostupnost kontrolují pouze lokálně. Návrh, bezpečnostní hranice a stav
-implementace popisují [role notebooků](docs/notebook-node-roles.md).
+dostupnost kontrolují pouze lokálně. Notebookový backend má běžet trvale jako
+uživatelská služba nezávislá na okně aplikace; stavová lišta zobrazí připojení
+a umožní otevřít UI. Návrh, bezpečnostní hranice a stav implementace popisují
+[role notebooků](docs/notebook-node-roles.md).
 
 V záložce **Notebooky** lze zapnout discovery a šifrovanou synchronizaci
 konfigurace i řídicí identity mezi vzájemně spárovanými notebooky.

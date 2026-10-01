@@ -47,7 +47,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   forwardingu nebo masquerade mezi VPN a fyzickou sítí. Administrátorský notebook
   navíc smí kontrolovat a nasazovat routery; uživatelský notebook získá pouze
   síťové pověření a nikdy kořenovou řídicí identitu. Dostupnost každého notebooku
-  se ověřuje pouze lokálně na něm, ne z routerů. Návrh a akceptační hranice:
+  se ověřuje pouze lokálně na něm, ne z routerů. Backend poběží trvale jako
+  uživatelská služba oddělená od UI; stavová lišta ukáže stav připojení a otevře
+  jedinou instanci UI, zatímco zavření okna službu ani VPN neukončí. Návrh a
+  akceptační hranice:
   [role notebooků](docs/notebook-node-roles.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
