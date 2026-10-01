@@ -52,3 +52,28 @@ button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; out
 
 .pairing-data { width: 100%; min-height: 100px; padding: 12px; border: 1px solid #b9cbc7; border-radius: 12px; font: inherit; resize: vertical; }
 .sync-fingerprint { display: block; overflow-wrap: anywhere; }
+
+.overview-page { display: grid; gap: 20px; padding: 24px; color: #e6eff6; background: #0c1925; border-radius: 22px; }
+.overview-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+.overview-heading h2 { margin-bottom: 8px; font-size: clamp(1.8rem, 4vw, 2.7rem); }
+.overview-page .kicker { color: #80e1d7; }
+.overview-page .muted { color: #a8bdcc; line-height: 1.55; }
+.overview-page .secondary { color: #e6eff6; background: #244653; border: 1px solid #517185; }
+.overview-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.overview-cards article, .overview-section { padding: 22px; background: #13283a; border: 1px solid #2a4355; border-radius: 14px; }
+.overview-cards span { color: #a8bdcc; }
+.overview-cards strong { display: block; margin-top: 12px; font-size: 1.65rem; overflow-wrap: anywhere; }
+.overview-section { display: grid; gap: 16px; }
+.overview-section h3, .overview-section p { margin-bottom: 0; }
+.overview-table-wrap { overflow-x: auto; }
+.overview-table { width: 100%; border-collapse: collapse; text-align: left; }
+.overview-table th, .overview-table td { padding: 14px 12px; border-bottom: 1px solid #2a4355; vertical-align: top; overflow-wrap: anywhere; }
+.overview-table th { color: #a8bdcc; font-weight: 500; }
+.overview-line { display: block; }
+.overview-hosts { min-width: 150px; margin: 0; gap: 6px; }
+.overview-hosts li { display: grid; gap: 2px; padding: 0; color: inherit; background: transparent; border: 0; }
+.overview-hosts small { color: #a8bdcc; }
+.overview-badge { display: inline-block; padding: 5px 10px; border-radius: 20px; background: #244653; font-size: .82rem; }
+.overview-signal { white-space: nowrap; font-size: .82rem; }
+.overview-signal.unknown { color: #a8bdcc; }
+@media (max-width: 720px) { .overview-heading { flex-direction: column; } .overview-cards { grid-template-columns: 1fr; } }

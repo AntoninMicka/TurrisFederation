@@ -37,9 +37,9 @@ ve Vue není bezpečnostní hranice.
 ### Administrátorský notebook
 
 Administrátorská role zachová současné desktopové UI se záložkami Routery,
-Notebooky, Síť, Synchronizace, Audity a Nastavení. Může navíc dostat úvodní
-read-only přehled shodný s uživatelskou rolí, ale nesmí jím být nahrazené
-stávající administrační workflow.
+Notebooky, Síť, Synchronizace, Audity a Nastavení. Obsahuje také úvodní
+read-only přehled shodný s uživatelskou rolí, implementovaný jako samostatná
+záložka. Nesmí jím být nahrazené stávající administrační workflow.
 
 Neplatné, chybějící, odvolané nebo prošlé pověření otevře pouze bezpečný stav
 **Notebook není připojen k federaci** s možností načíst nové pozvání. Aplikace
@@ -133,4 +133,3 @@ Produkční instalace je přijatá až po ověření na čistém Ubuntu/Debian A
 - žádný forwarding mezi fyzickou sítí a VPN a žádný inzerovaný LAN prefix;
 - aktualizace se zachováním identity a bezpečný návrat po neúspěšné migraci;
 - odinstalace se zachováním dat a samostatné potvrzené smazání identity.
-

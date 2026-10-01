@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
 
 const tabs = [
+  { id: 'overview', label: 'Přehled' },
   { id: 'routers', label: 'Routery' },
   { id: 'notebooks', label: 'Notebooky' },
   { id: 'network', label: 'Síť' },
@@ -13,7 +15,7 @@ const tabs = [
   { id: 'settings', label: 'Nastavení' },
 ] as const;
 type TabId = typeof tabs[number]['id'];
-const activeTab = ref<TabId>('routers');
+const activeTab = ref<TabId>('overview');
 
 function navigateTabs(event: KeyboardEvent, index: number) {
   let target = index;
@@ -129,6 +131,7 @@ const deployConfirmed = ref(false);
 const deployMode = ref<"full" | "settings">("full");
 const publishing = ref(false);
 const deploymentError = ref("");
+const overviewLoading = ref(false);
 const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
 
 async function refreshDeployment(live = false) {
@@ -137,6 +140,21 @@ async function refreshDeployment(live = false) {
     deployment.value = await deploymentAction<DeploymentOverview>(live ? "refresh" : "overview");
     deploymentError.value = "";
   } catch (error) { deploymentError.value = String(error); }
+}
+
+async function refreshReadOnlyOverview() {
+  overviewLoading.value = true;
+  try {
+    const [freshNodes, freshSettings] = await Promise.all([listNodes(), getZeroTierSettings()]);
+    nodes.value = freshNodes;
+    ztSettings.value = freshSettings;
+    await Promise.all([refreshDeployment(), notebookOperation()]);
+    message.value = "Read-only přehled byl obnoven z místně uloženého stavu.";
+  } catch (error) {
+    message.value = `Přehled nelze obnovit: ${String(error)}`;
+  } finally {
+    overviewLoading.value = false;
+  }
 }
 
 async function publishChanges() {
@@ -452,6 +470,10 @@ async function submitConnection() {
         <span v-else-if="tab.id === 'audits' && findings.length" class="tab-count">{{ findings.length }}</span>
       </button>
     </nav>
+    <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+      <FederationOverview :nodes="nodes" :deployment="deployment" :settings="ztSettings" :notebook="notebookSync"
+        :loading="overviewLoading" @refresh="refreshReadOnlyOverview" />
+    </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">
     <section class="panel">
       <div><p class="kicker">Inventář</p><h2>Routery federace</h2></div>

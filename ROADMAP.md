@@ -58,9 +58,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     odstranění služby v reálné grafické uživatelské relaci.
   - [ ] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty.
-  - [ ] Uživatelské roli zobrazit read-only přehled odpovídající routerové
-    stránce; administrátorské roli zachovat současné plné notebookové UI.
-    Roli načítat jen z podepsaného pověření a vynutit ji také v backendu.
+  - [~] Uživatelské roli zobrazit read-only přehled odpovídající routerové
+    stránce; administrátorské UI už obsahuje stejný read-only přehled jako
+    samostatnou úvodní záložku. Zbývá načíst roli jen z podepsaného pověření,
+    vynutit ji v backendu a doplnit místní diagnostiku na vyžádání.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

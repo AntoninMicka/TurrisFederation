@@ -79,8 +79,9 @@ vyžadují ruční přijetí.
 ## UI podle role
 
 Uživatelský notebook otevře read-only přehled odpovídající routerové webové
-stránce, vykreslený z lokálně ověřených dat backendu. Administrátorský notebook
-zachová současné plné desktopové UI. Role pochází výhradně z podepsaného
+stránce, vykreslený z lokálně ověřených dat backendu. Administrátorské UI už
+obsahuje tento přehled jako úvodní záložku a zachovává celé dosavadní desktopové
+workflow. Role pochází výhradně z podepsaného
 pověření a v uživatelské variantě musí administrátorské příkazy odmítnout i
 backend, nejen skryté Vue komponenty. Přesné mapování obsahu, onboarding,
 balíček a aktualizace popisuje [instalace notebooku](notebook-installation.md).
