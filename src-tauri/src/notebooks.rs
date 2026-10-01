@@ -55,11 +55,17 @@ fn systemctl(args: &[&str]) -> Result<(), String> {
     }
 }
 
+fn systemctl_succeeds(args: &[&str]) -> bool {
+    Command::new("systemctl").arg("--user").args(args)
+        .stdout(Stdio::null()).stderr(Stdio::null()).status()
+        .map(|status| status.success()).unwrap_or(false)
+}
+
 fn service_state(config: &Path) -> Value {
     let installed = unit_path(config).exists();
-    let active = installed && Command::new("systemctl").args(["--user", "is-active", "--quiet", UNIT_NAME])
-        .status().map(|status| status.success()).unwrap_or(false);
-    json!({"installed": installed, "active": active, "unit": UNIT_NAME})
+    let enabled = installed && systemctl_succeeds(&["is-enabled", "--quiet", UNIT_NAME]);
+    let active = installed && systemctl_succeeds(&["is-active", "--quiet", UNIT_NAME]);
+    json!({"installed": installed, "enabled": enabled, "active": active, "unit": UNIT_NAME})
 }
 
 fn install_service(data: &Path, config: &Path) -> Result<(), String> {
@@ -68,14 +74,35 @@ fn install_service(data: &Path, config: &Path) -> Result<(), String> {
     let parent = target.parent().ok_or("Chybí adresář uživatelské služby.")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let previous = fs::read(&target).ok();
+    let previous_enabled = systemctl_succeeds(&["is-enabled", "--quiet", UNIT_NAME]);
+    let previous_active = systemctl_succeeds(&["is-active", "--quiet", UNIT_NAME]);
     let temporary = parent.join(format!(".{UNIT_NAME}.tmp-{}", std::process::id()));
     fs::write(&temporary, unit_contents(data, &script)?).map_err(|e| e.to_string())?;
     fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
-    let result = systemctl(&["daemon-reload"]).and_then(|_| systemctl(&["enable", "--now", UNIT_NAME]));
+    // `enable --now` does not restart an already running unit after its
+    // ExecStart changed. Enable and restart separately so a stale development
+    // or Snap revision path is replaced immediately and configuration changes
+    // take effect in the persistent backend.
+    let result = systemctl(&["daemon-reload"])
+        .and_then(|_| systemctl(&["enable", UNIT_NAME]))
+        .and_then(|_| systemctl(&["restart", UNIT_NAME]));
     if let Err(error) = result {
-        if let Some(contents) = previous { let _ = fs::write(&target, contents); }
-        else { let _ = fs::remove_file(&target); }
+        if let Some(contents) = previous.as_ref() {
+            let _ = fs::write(&target, contents);
+        } else {
+            // Remove the wants symlink while the unit still contains its
+            // [Install] metadata; otherwise a failed first install leaves a
+            // dangling enabled unit behind.
+            let _ = systemctl(&["disable", "--now", UNIT_NAME]);
+            let _ = fs::remove_file(&target);
+        }
         let _ = systemctl(&["daemon-reload"]);
+        if previous.is_some() {
+            let _ = if previous_enabled { systemctl(&["enable", UNIT_NAME]) }
+                else { systemctl(&["disable", UNIT_NAME]) };
+            let _ = if previous_active { systemctl(&["restart", UNIT_NAME]) }
+                else { systemctl(&["stop", UNIT_NAME]) };
+        }
         return Err(error);
     }
     Ok(())
@@ -203,20 +230,30 @@ pub fn require_member(app: &tauri::AppHandle) -> Result<String, String> {
     }
 }
 
-fn persistent_backend_required(config: Option<&Value>, unit_exists: bool) -> bool {
-    !unit_exists && config.and_then(|value| value["enabled"].as_bool()) == Some(true)
+fn persistent_backend_requires_reconcile(
+    config: Option<&Value>, unit_matches: bool, unit_enabled: bool, unit_active: bool,
+) -> bool {
+    config.and_then(|value| value["enabled"].as_bool()) == Some(true)
+        && (!unit_matches || !unit_enabled || !unit_active)
 }
 
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     let config = fs::read(data.join("notebooks/config.json")).ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-    if persistent_backend_required(config.as_ref(), unit_path(config_dir).exists()) {
-        // Older versions only kept an embedded child alive while the UI was
-        // open. Promote that configured backend to an enabled user service so
-        // the next login starts it without launching the UI.
-        if install_service(data, config_dir).is_err() {
+    if config.as_ref().and_then(|value| value["enabled"].as_bool()) != Some(true) { return; }
+    let unit_matches = scripts(data).and_then(|script| unit_contents(data, &script))
+        .ok().is_some_and(|expected| fs::read_to_string(unit_path(config_dir)).ok().as_deref() == Some(expected.as_str()));
+    let state = service_state(config_dir);
+    if persistent_backend_requires_reconcile(
+        config.as_ref(), unit_matches,
+        state["enabled"].as_bool() == Some(true), state["active"].as_bool() == Some(true),
+    ) {
+        // Reconcile missing, disabled, stopped and stale units. In particular,
+        // development launches can inherit a revision-specific Snap data path,
+        // which must not remain in ExecStart after the application moves.
+        if install_service(data, config_dir).is_err() && state["active"].as_bool() != Some(true) {
             // Preserve the previous same-session behaviour; the UI exposes
-            // that the persistent service is still not installed.
+            // that the persistent service still needs repair.
             let _ = start(data, service);
         }
     }
@@ -312,10 +349,13 @@ mod tests {
 
     #[test]
     fn configured_legacy_backend_requires_persistent_service_installation() {
-        assert!(persistent_backend_required(Some(&json!({"enabled": true})), false));
-        assert!(!persistent_backend_required(Some(&json!({"enabled": false})), false));
-        assert!(!persistent_backend_required(Some(&json!({"enabled": true})), true));
-        assert!(!persistent_backend_required(None, false));
+        let configured = json!({"enabled": true});
+        assert!(persistent_backend_requires_reconcile(Some(&configured), false, false, false));
+        assert!(persistent_backend_requires_reconcile(Some(&configured), true, false, false));
+        assert!(persistent_backend_requires_reconcile(Some(&configured), true, true, false));
+        assert!(!persistent_backend_requires_reconcile(Some(&configured), true, true, true));
+        assert!(!persistent_backend_requires_reconcile(Some(&json!({"enabled": false})), false, false, false));
+        assert!(!persistent_backend_requires_reconcile(None, false, false, false));
     }
 
     #[test]

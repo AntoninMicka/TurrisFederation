@@ -79,7 +79,7 @@ export interface NotebookSyncStatus {
   id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
-  service?: { installed: boolean; active: boolean; unit: string };
+  service?: { installed: boolean; enabled: boolean; active: boolean; unit: string };
   access: { state: "unconnected" | "valid" | "invalid"; role: "administrator" | "user" | null; canBootstrapAdmin: boolean; error?: string; federationId?: string; subject?: string; issuedAt?: number; expiresAt?: number | null };
 }
 export async function notebookAction(request: Record<string, unknown>): Promise<NotebookSyncStatus> {
@@ -95,7 +95,7 @@ export async function notebookVpnAction<T>(request: Record<string, unknown>): Pr
   return invoke("notebook_action", { request });
 }
 
-export async function manageNotebookService(action: "service_install" | "service_remove"): Promise<{ service: { installed: boolean; active: boolean; unit: string } }> {
+export async function manageNotebookService(action: "service_install" | "service_remove"): Promise<{ service: { installed: boolean; enabled: boolean; active: boolean; unit: string } }> {
   if (browserMode) throw new Error("Uživatelskou službu lze spravovat v desktopové aplikaci.");
   return invoke("notebook_action", { request: { action } });
 }

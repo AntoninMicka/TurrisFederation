@@ -736,11 +736,12 @@ async function submitConnection() {
       <template v-if="notebookSync">
         <div class="setup-preview">
           <strong>Trvalý backend notebooku</strong>
-          <p v-if="notebookSync.service?.installed">{{ notebookSync.service.active ? 'Uživatelská služba běží.' : 'Uživatelská služba je nainstalovaná, ale neběží.' }}</p>
+          <p v-if="notebookSync.service?.installed">{{ notebookSync.service.active && notebookSync.service.enabled ? 'Uživatelská služba běží a spustí se po přihlášení.' : notebookSync.service.active ? 'Uživatelská služba běží, ale automatický start není povolený.' : 'Uživatelská služba je nainstalovaná, ale neběží.' }}</p>
           <p v-else>Backend je zatím svázaný s otevřenou aplikací.</p>
           <div class="node-actions">
             <button v-if="!notebookSync.service?.installed" :disabled="syncBusy" @click="serviceOperation('service_install')">Nainstalovat a spustit uživatelskou službu</button>
-            <button v-else class="secondary" :disabled="syncBusy" @click="serviceOperation('service_remove')">Zastavit a odstranit službu</button>
+            <button v-else-if="!notebookSync.service.active || !notebookSync.service.enabled" :disabled="syncBusy" @click="serviceOperation('service_install')">Opravit a spustit službu</button>
+            <button v-if="notebookSync.service?.installed" class="secondary" :disabled="syncBusy" @click="serviceOperation('service_remove')">Zastavit a odstranit službu</button>
           </div>
           <small>Služba se spouští po přihlášení uživatele. Zavření okna ji nezastaví; UI lze znovu otevřít ze stavové lišty.</small>
         </div>

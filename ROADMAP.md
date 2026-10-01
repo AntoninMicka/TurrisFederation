@@ -57,7 +57,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     socket, instalaci/odstranění, tray menu a skrytí UI při zavření. Zapnutí
     synchronizace nyní službu automaticky nainstaluje a povolí; dříve pouze
     spustilo proces svázaný s UI, takže po přihlášení backend nenaběhl. Při
-    prvním spuštění nové verze se již zapnutý starší backend na službu převede.
+    prvním spuštění nové verze se již zapnutý starší backend na službu převede;
+    existující vypnutá, zastavená nebo na starou vývojovou cestu odkazující
+    jednotka se znovu nastaví, povolí a spustí.
   - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
     odstranění služby v reálné grafické uživatelské relaci.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci

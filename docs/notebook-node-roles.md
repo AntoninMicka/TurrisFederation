@@ -74,8 +74,10 @@ První implementační řez používá jednotku
 `turris-federation-backend.service`. Zapnutí synchronizace jednotku atomicky
 nainstaluje a povolí; samostatné ovládání v UI zůstává pro opravu instalace a
 výslovné odstranění. Při prvním spuštění nové verze se dříve zapnutý backend,
-který byl svázaný jen s během UI, převede na uživatelskou službu. Lokální socket
-přijímá pouze čtení sanitizovaného stavu, kontroluje UID
+který byl svázaný jen s během UI, převede na uživatelskou službu. Při každém
+dalším spuštění UI opraví také existující, ale vypnutou, zastavenou nebo na
+starou vývojovou cestu odkazující jednotku. Lokální socket přijímá pouze čtení
+sanitizovaného stavu, kontroluje UID
 klienta a má oprávnění `0600`. Zavření hlavního okna ho skryje; samostatná
 položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovaný
 backend. Druhé spuštění UI přes oddělený privátní socket pouze zobrazí a zaměří

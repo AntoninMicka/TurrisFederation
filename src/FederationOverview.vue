@@ -29,7 +29,8 @@ const deploymentLabels: Record<string, string> = {
 };
 
 const notebookState = computed(() => {
-  if (props.notebook?.service?.active) return "Backend běží";
+  if (props.notebook?.service?.active && props.notebook?.service?.enabled) return "Backend běží a má autostart";
+  if (props.notebook?.service?.active) return "Backend běží bez autostartu";
   if (props.notebook?.service?.installed) return "Služba neběží";
   if (props.notebook) return "Backend běží pouze s UI";
   return "Stav není načtený";
