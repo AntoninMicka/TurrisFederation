@@ -70,7 +70,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     kvůli kterým systemd XDG generátor hledal neexistující název binárky.
     Pole bylo odstraněno. Instalace i odstranění autostartu navíc provádějí
     `daemon-reload`, protože při zapnutém lingeru uživatelský `systemd` přežívá
-    odhlášení. Opakovaná zkouška po novém sestavení zůstává otevřená.
+    odhlášení. Následné otevření odhalilo, že binárka `tauri dev` vyžaduje Vite
+    na localhostu; `run.sh` proto pro autostart atomicky instaluje samostatný
+    testovací build s vloženým frontendem. Opakovaná zkouška odhlášení a
+    přihlášení po novém sestavení zůstává otevřená.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
     privátní uživatelský socket zobrazí existující okno; stav ikony vychází

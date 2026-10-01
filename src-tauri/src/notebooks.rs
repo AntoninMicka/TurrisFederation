@@ -6,6 +6,7 @@ const SERVICE: &str = include_str!("../../scripts/notebook_sync.py");
 const FEDERATION: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
 const UNIT_NAME: &str = "turris-federation-backend.service";
 const AUTOSTART_NAME: &str = "cz.turris.federation-tray.desktop";
+const TRAY_EXECUTABLE_ENV: &str = "TF_TRAY_EXECUTABLE";
 
 #[derive(Default)]
 pub struct NotebookService {
@@ -67,11 +68,33 @@ fn autostart_contents(executable: &Path) -> Result<String, String> {
     Ok(format!("[Desktop Entry]\nType=Application\nName=Turris Federation\nComment=Stav federovaného připojení\nExec={executable} --background\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
 }
 
+fn validate_tray_executable(executable: PathBuf) -> Result<PathBuf, String> {
+    if !executable.is_absolute() {
+        return Err("Cesta klienta stavové lišty musí být absolutní.".into());
+    }
+    let executable = fs::canonicalize(&executable)
+        .map_err(|e| format!("Klient stavové lišty {} není dostupný: {e}", executable.display()))?;
+    let metadata = fs::metadata(&executable).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(format!("Klient stavové lišty {} není spustitelný soubor.", executable.display()));
+    }
+    Ok(executable)
+}
+
+fn tray_executable() -> Result<PathBuf, String> {
+    let executable = match std::env::var_os(TRAY_EXECUTABLE_ENV) {
+        Some(path) => PathBuf::from(path),
+        None => std::env::current_exe()
+            .map_err(|e| format!("Nelze zjistit cestu klienta stavové lišty: {e}"))?,
+    };
+    validate_tray_executable(executable)
+}
+
 fn install_tray_autostart(config: &Path) -> Result<(), String> {
     let target = autostart_path(config);
     let parent = target.parent().ok_or("Chybí adresář automatického spuštění.")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let executable = std::env::current_exe().map_err(|e| format!("Nelze zjistit cestu klienta stavové lišty: {e}"))?;
+    let executable = tray_executable()?;
     let temporary = parent.join(format!(".{AUTOSTART_NAME}.tmp-{}", std::process::id()));
     fs::write(&temporary, autostart_contents(&executable)?).map_err(|e| e.to_string())?;
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
@@ -450,6 +473,13 @@ mod tests {
         assert!(!entry.contains("TryExec="));
         assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
         assert!(quote_desktop_exec(Path::new("/tmp/bad\nentry")).is_err());
+    }
+
+    #[test]
+    fn tray_executable_must_be_absolute_and_executable() {
+        assert!(validate_tray_executable(PathBuf::from("relative/client")).is_err());
+        assert!(validate_tray_executable(PathBuf::from("/definitely/missing/turris-federation")).is_err());
+        assert!(validate_tray_executable(std::env::current_exe().unwrap()).is_ok());
     }
 
     #[test]

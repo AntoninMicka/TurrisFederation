@@ -151,4 +151,21 @@ if [[ -r /proc/driver/nvidia/version && ! -v WEBKIT_DISABLE_DMABUF_RENDERER ]]; 
     printf 'NVIDIA: zapínám workaround WebKitGTK (WEBKIT_DISABLE_DMABUF_RENDERER=1).\n'
 fi
 
+# `tauri dev` points its webview at Vite on localhost. That executable cannot
+# be used by XDG autostart after login, when no Vite server exists. Build and
+# atomically install a separate non-bundled test client with embedded frontend;
+# the application uses this path only for the persistent tray entry.
+dev_client_dir=${XDG_DATA_HOME:-$HOME/.local/share}/cz.turris.federation/dev-client
+dev_client=$dev_client_dir/turris-federation
+printf 'Sestavuji testovací klient pro automatické spuštění…\n'
+npm run tauri -- build --debug --no-bundle
+mkdir -p -- "$dev_client_dir"
+temporary_client=$(mktemp --tmpdir="$dev_client_dir" .turris-federation.XXXXXX)
+trap 'rm -f -- "$temporary_client"' EXIT
+install -m 755 -- src-tauri/target/debug/turris-federation "$temporary_client"
+mv -f -- "$temporary_client" "$dev_client"
+trap - EXIT
+export TF_TRAY_EXECUTABLE=$dev_client
+unset dev_client_dir dev_client temporary_client
+
 exec npm run tauri -- dev "$@"

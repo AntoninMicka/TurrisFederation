@@ -66,7 +66,10 @@ ukazuje alespoň tyto stavy:
 
 Vývojová instalace vytváří uživatelský XDG autostart
 `~/.config/autostart/cz.turris.federation-tray.desktop`, který spouští stejný
-klient s parametrem `--background`. V tomto režimu zůstane hlavní okno skryté;
+klient s parametrem `--background`. `run.sh` pro tento účel sestaví samostatný
+testovací klient s vloženým frontendem; binárka `tauri dev` se nepoužívá,
+protože po přihlášení není dostupný její Vite server na localhostu. V režimu
+`--background` zůstane hlavní okno skryté;
 ruční spuštění aplikace nebo položka v menu ikony okno zobrazí.
 
 Kliknutí nebo položka **Otevřít Turris Federation** zobrazí existující UI a
