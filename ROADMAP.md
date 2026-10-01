@@ -125,8 +125,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     `wireguard-tools` a zapnutý IPv4 i IPv6 forwarding. Podepsaná revize 5 navíc
     neobsahuje žádný uživatelský notebook. Jediný přijatý router `Cacke` má přes
     ZeroTier trasu, ale při zkoušce neodpověděl na 5 pingů a TCP port agenta
-    `8844` spojení odmítl; nepřijatý `Palackeho` odpověděl 5/5 a port agenta má
-    otevřený, ale bez členství není autoritativním VPN protějškem.
+    `8844` spojení odmítl. Následný skutečný audit `Cacke` přes přímou LAN
+    `192.168.100.1:22` proběhl bez nálezu a uložil stav `healthy`, ale agent po
+    auditu zůstal na ZeroTier portu nedostupný; audit tedy správně nemění ani
+    neopravuje službu. Nepřijatý `Palackeho` odpověděl 5/5 a port agenta má
+    otevřený, ale bez členství není autoritativním VPN protějškem. Dalším krokem
+    je validovaný plán pro `Cacke` a podle zjištěné verze úplná aktualizace
+    agenta nebo pouze nastavení.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
