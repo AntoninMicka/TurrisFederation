@@ -433,6 +433,13 @@ def render_apply(root, doc):
         uci_section('firewall', 'tf_wg_notebook_%s' % index, 'rule', {
             'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
             'proto': 'udp', 'dest_port': str(WG_PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
+        uci_section('firewall', 'tf_ping_notebook_%s' % index, 'rule', {
+            'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+            'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
+        if peer['role'] == 'administrator':
+            uci_section('firewall', 'tf_sync_notebook_%s' % index, 'rule', {
+                'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+                'proto': 'tcp', 'dest_port': str(PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
     for package in ['network', 'firewall']:
         run(['uci', 'commit', package])
     run(['ifup', 'tf_wg'])

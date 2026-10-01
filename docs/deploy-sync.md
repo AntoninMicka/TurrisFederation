@@ -303,7 +303,9 @@ pouze z jednotlivých ZeroTier IP přijatých peerů na ZeroTier IP routeru.
 Ping přes WireGuard je také povolený v zóně `tf_fed`.
 Podepsaný notebookový endpoint dostává na routeru samostatného WireGuard peeru
 jen s vlastní host route `/32`. Na podkladové zóně se z jeho konkrétní ZeroTier
-IP povolí pouze UDP/51830; nedostane TCP synchronizaci ani diagnostický ping.
+IP povolí UDP/51830 a diagnostický IPv4 ping. TCP/8844 se navíc povolí pouze
+endpointu s podepsanou rolí `administrator`; uživatelský notebook synchronizační
+výjimku nedostane. Aplikační podpisová autentizace zůstává vyžadovaná.
 Router notebooku nenastavuje endpoint, takže koncový notebook musí handshake
 iniciovat sám a jeho výpadek nevstupuje do routerového health stavu.
 Dřívější `tf_control` pro celý subnet se při
@@ -316,12 +318,10 @@ protokol a cílový port, `target=ACCEPT`, bez cílové zóny. Pro službu v LAN
 přidejte `dest=lan` a konkrétní cílovou LAN IP. Obecný forwarding mezi
 `tf_zt` a LAN se nevytváří.
 
-Řídicí notebook nemá automatickou výjimku pro celý ZeroTier subnet.
-Pro publikování a čtení stavu přes ZeroTier potřebuje vlastní explicitní
-pravidlo TCP/8844 z jeho konkrétní ZeroTier IP na ZeroTier IP routeru;
-podpisová autentizace zůstává vyžadovaná. UI pro tuto výjimku zatím není.
-Bez ní přímé doručení z notebooku selže, zatímco synchronizace přijatých
-routerových peerů zůstává povolená.
+Řídicí notebook nemá výjimku pro celý ZeroTier subnet. Agent pravidlo TCP/8844
+vygeneruje jen z konkrétní ZeroTier IP podepsaného administrátorského endpointu
+na ZeroTier IP routeru. Bez této role přímé doručení z notebooku selže, zatímco
+synchronizace přijatých routerových peerů zůstává povolená.
 
 Na cílovém Turrisu je nutné ověřit výsledná firewallová pravidla a odstranit
 případné konfliktní přiřazení stejného zařízení do jiné existující zóny

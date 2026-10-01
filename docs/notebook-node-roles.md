@@ -126,6 +126,9 @@ prefixů. Notebook je vždy koncový uzel:
   mezi VPN a fyzickým rozhraním;
 - router smí pro notebook přidat pouze host route k jeho tunelové adrese,
   nikdy route k síti za notebookem;
+- podkladový firewall smí z konkrétní podepsané ZeroTier adresy notebooku
+  povolit WireGuard UDP/51830 a diagnostický ICMP echo-request; TCP/8844 smí
+  povolit pouze notebooku s podepsanou rolí `administrator`;
 - notebook může mít v `AllowedIPs` povolené tunelové adresy ostatních členů
   a federované LAN prefixy podle přístupové politiky;
 - přístup notebooku do federovaných LAN je koncový provoz notebooku, nikoli
@@ -183,8 +186,9 @@ idempotentně publikuje oba notebooky, potom vydá pověření svázané s člen
 Schéma 3 doplňuje veřejný WireGuard klíč a vyžaduje endpoint buď celý
 (ZeroTier adresa, WireGuard adresa a klíč), nebo dosud nepřidělený. Privátní
 klíč vzniká a zůstává na cílovém notebooku. Router vytvoří notebookovému peeru
-jen host route `/32`, bez endpointu, LAN prefixů a přístupu k synchronizačnímu
-API; notebook spojení iniciuje přes ZeroTier. Handshake notebooku se nekontroluje
+jen host route `/32`, bez endpointu a LAN prefixů. Přístup k synchronizačnímu
+API přes TCP/8844 dostane pouze administrátorský endpoint; notebook spojení
+iniciuje přes ZeroTier. Handshake notebooku se nekontroluje
 v routerovém health stavu.
 
 První autorizační vrstva už ověřuje samostatné podepsané pověření svázané

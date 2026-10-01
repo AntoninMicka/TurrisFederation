@@ -987,13 +987,18 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('0.0.0.0/0', config)
         self.assertNotIn('masq', config)
 
-    def test_notebook_renders_only_host_route_and_underlay_wireguard_rule(self):
+    def test_notebook_renders_only_host_route_and_role_scoped_underlay_rules(self):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'wireguard.key', b'private-test-only')
-        endpoint = {'id': 'e' * 64, 'name': 'User notebook', 'role': 'user',
-                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
-                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
-        config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], [endpoint])
+        endpoints = [
+            {'id': 'e' * 64, 'name': 'User notebook', 'role': 'user',
+             'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+             'wireguardKey': base64.b64encode(b'n' * 32).decode()},
+            {'id': 'a' * 64, 'name': 'Administrator notebook', 'role': 'administrator',
+             'zeroTierAddress': '10.147.0.21', 'wireguardAddress': '10.203.0.21',
+             'wireguardKey': base64.b64encode(b'a' * 32).decode()},
+        ]
+        config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], endpoints)
         doc = self.document(config=config, members={node(1)['id']: self.member(1)})
         doc['schema'] = f.NOTEBOOK_WG_VERSION
         with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
@@ -1002,13 +1007,29 @@ class FederationTests(unittest.TestCase):
             f.render_apply(self.root, doc)
         network = {call.args[1]: call.args[3] for call in section.call_args_list
                    if call.args[0] == 'network' and call.args[2] == 'wireguard_tf_wg'}
-        notebook_peer = next(value for name, value in network.items() if name.startswith('tf_n_'))
-        self.assertEqual(['10.203.0.20/32'], notebook_peer['allowed_ips'])
-        self.assertNotIn('endpoint_host', notebook_peer)
-        firewall = [call.args[3] for call in section.call_args_list
-                    if call.args[0] == 'firewall' and call.args[1].startswith('tf_wg_notebook_')]
-        self.assertEqual([{'src': 'tf_zt', 'src_ip': '10.147.0.20', 'dest_ip': '10.147.0.1',
-                           'proto': 'udp', 'dest_port': '51830', 'target': 'ACCEPT', 'family': 'ipv4'}], firewall)
+        notebook_peers = [value for name, value in network.items() if name.startswith('tf_n_')]
+        self.assertCountEqual([['10.203.0.20/32'], ['10.203.0.21/32']],
+                              [peer['allowed_ips'] for peer in notebook_peers])
+        self.assertTrue(all('endpoint_host' not in peer for peer in notebook_peers))
+        firewall = {call.args[1]: call.args[3] for call in section.call_args_list
+                    if call.args[0] == 'firewall'}
+        notebook_rules = {name: rule for name, rule in firewall.items() if '_notebook_' in name}
+        self.assertEqual(5, len(notebook_rules))
+        self.assertCountEqual(
+            [('10.147.0.20', 'udp', '51830'), ('10.147.0.20', 'icmp', None),
+             ('10.147.0.21', 'udp', '51830'), ('10.147.0.21', 'icmp', None),
+             ('10.147.0.21', 'tcp', '8844')],
+            [(rule['src_ip'], rule['proto'], rule.get('dest_port'))
+             for rule in notebook_rules.values()])
+        self.assertFalse(any(rule['src_ip'] == '10.147.0.20' and rule['proto'] == 'tcp'
+                             for rule in notebook_rules.values()))
+        for rule in notebook_rules.values():
+            self.assertEqual('tf_zt', rule['src'])
+            self.assertEqual('10.147.0.1', rule['dest_ip'])
+            self.assertEqual('ACCEPT', rule['target'])
+            self.assertEqual('ipv4', rule['family'])
+        pings = [rule for rule in notebook_rules.values() if rule['proto'] == 'icmp']
+        self.assertTrue(all(rule['icmp_type'] == ['echo-request'] for rule in pings))
 
     def test_zerotier_device_must_exist_and_have_expected_address(self):
         network = {'nwid': self.config['networkId'], 'status': 'OK',
