@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{fs, path::PathBuf, sync::{atomic::{AtomicBool, Ordering}, Mutex}};
 
 mod ssh;
 mod network;
@@ -15,6 +15,9 @@ use tauri::tray::TrayIconBuilder;
 use uuid::Uuid;
 
 struct AppState { db: Mutex<Connection>, ssh_dir: PathBuf }
+
+#[derive(Default)]
+struct AppLifecycle { allow_exit: AtomicBool }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -484,9 +487,11 @@ async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default().setup(|app| {
+    let app = tauri::Builder::default().setup(|app| {
+        app.manage(AppLifecycle::default());
         let background = std::env::args_os().any(|argument| argument == "--background");
         if matches!(single_instance::acquire(app.handle(), !background).map_err(std::io::Error::other)?, single_instance::Instance::Secondary) {
+            app.state::<AppLifecycle>().allow_exit.store(true, Ordering::Release);
             app.handle().exit(0);
             return Ok(());
         }
@@ -531,7 +536,10 @@ pub fn run() {
             let _ = window.unminimize();
             let _ = window.set_focus();
         },
-        "quit-ui" => app.exit(0),
+        "quit-ui" => {
+            app.state::<AppLifecycle>().allow_exit.store(true, Ordering::Release);
+            app.exit(0);
+        },
         "disconnect-notebook" => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -546,7 +554,18 @@ pub fn run() {
             api.prevent_close();
             let _ = window.hide();
         }
-    }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).build(tauri::generate_context!()).expect("Turris Federation failed to start");
+    app.run(|handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            let lifecycle = handle.state::<AppLifecycle>();
+            if !lifecycle.allow_exit.load(Ordering::Acquire) {
+                api.prevent_exit();
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+        }
+    });
 }
 
 fn tray_icon(state: notebooks::TrayState) -> tauri::image::Image<'static> {

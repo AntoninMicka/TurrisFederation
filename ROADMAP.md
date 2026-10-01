@@ -72,8 +72,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     `daemon-reload`, protože při zapnutém lingeru uživatelský `systemd` přežívá
     odhlášení. Následné otevření odhalilo, že binárka `tauri dev` vyžaduje Vite
     na localhostu; `run.sh` proto pro autostart atomicky instaluje samostatný
-    testovací build s vloženým frontendem. Opakovaná zkouška odhlášení a
-    přihlášení po novém sestavení zůstává otevřená.
+    testovací build s vloženým frontendem. Pokus o zavření okna navíc ukončil
+    celý tray proces, proto životní cyklus blokuje implicitní exit a okno
+    skryje; proces lze cíleně ukončit jen položkou v tray. Opakovaná zkouška
+    zavření okna a odhlášení/přihlášení po novém sestavení zůstává otevřená.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
     privátní uživatelský socket zobrazí existující okno; stav ikony vychází
