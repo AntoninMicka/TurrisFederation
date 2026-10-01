@@ -108,6 +108,10 @@ class NotebookTests(unittest.TestCase):
         status = n.command(self.a, {'action': 'bootstrap_admin'})['access']
         self.assertEqual(('valid', 'administrator', self.a.id),
                          (status['state'], status['role'], status['subject']))
+        document = f.verify(f.public_key(self.a.fleet / 'root.pem'), f.read(self.a.fleet / 'published.json'))
+        self.assertEqual(f.NOTEBOOK_VERSION, document['schema'])
+        self.assertEqual([self.a.id], [item['id'] for item in document['config']['notebooks']])
+        self.assertEqual('administrator', document['config']['notebooks'][0]['role'])
         self.assertEqual(0o600, (self.a.root / 'credential.json').stat().st_mode & 0o777)
         self.assertEqual(0o600, (self.a.root / 'federation-root.pub').stat().st_mode & 0o777)
         with self.assertRaisesRegex(ValueError, 'již existuje'):
@@ -162,6 +166,15 @@ class NotebookTests(unittest.TestCase):
         raw = json.dumps(invitation)
         self.assertNotIn('PRIVATE KEY', raw)
         self.assertEqual(n.INVITATION_SCHEMA, invitation['schema'])
+        published = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
+        self.assertEqual(f.NOTEBOOK_VERSION, published['schema'])
+        self.assertEqual({self.a.id: 'administrator', self.b.id: 'user'},
+                         {item['id']: item['role'] for item in published['config']['notebooks']})
+        user = next(item for item in published['config']['notebooks'] if item['id'] == self.b.id)
+        self.assertEqual({'id': self.b.id, 'name': 'User notebook', 'role': 'user',
+                          'zeroTierAddress': None, 'wireguardAddress': None}, user)
+        self.assertEqual(invitation['published'], f.read(self.a.fleet / 'published.json'))
+        self.assertNotIn(self.b.id, published['members'])
 
         status = self.b.accept_user_invitation(raw)
         self.assertEqual(('valid', 'user', self.b.id), (status['state'], status['role'], status['subject']))
@@ -173,6 +186,21 @@ class NotebookTests(unittest.TestCase):
             self.b.accept_user_invitation(raw)
         with self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
             n.command(self.b, {'action': 'pair', 'peer': self.a.id})
+
+    def test_user_credential_fails_if_signed_topology_does_not_contain_notebook(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('User notebook')
+        invitation = self.a.issue_user_invitation(json.dumps(request))
+        old_published = self.published_federation(self.c)
+        old_public = f.public_key(self.c.fleet / 'root.pem')
+        document = f.verify(invitation['rootPublic'], invitation['published'])
+        old_document = f.verify(old_public, old_published)
+        old_document.update(federationId=document['federationId'], revision=document['revision'] + 1,
+                            previous=f.digest(document))
+        invitation['published'] = f.sign(self.a.fleet / 'root.pem', old_document)
+        with self.assertRaisesRegex(ValueError, 'neodpovídá'):
+            self.b.accept_user_invitation(json.dumps(invitation))
 
     def test_user_invitation_rejects_wrong_notebook_tampering_and_expiry(self):
         self.published_federation(self.a)

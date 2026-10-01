@@ -67,8 +67,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     Uživatelský notebook vytvoří podepsanou žádost a administrátor mu vydá
     patnáct minut platnou pozvánku svázanou s TLS identitou a nonce; přenese se
     jen veřejná kotva, topologie a uživatelské pověření, nikdy `root.pem`.
-    Zbývá konfigurace koncového VPN připojení, odvolání a aktualizace topologie
-    bez řídicí synchronizace. Místní diagnostika přijímá cíle jen z podepsané revize.
+    Podepsané schéma 2 eviduje routery a zvlášť koncové notebooky s rolí, bez
+    možnosti inzerovat notebookovou LAN. Bootstrap zapíše administrátorský
+    notebook a vydání pozvánky atomicky publikuje uživatelský notebook v nové
+    revizi; staré routerové schéma 1 zůstává přijímané. Zbývá přidělení adres,
+    konfigurace koncového VPN připojení, odvolání a aktualizace topologie bez
+    řídicí synchronizace. Místní diagnostika přijímá cíle jen z podepsané revize.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

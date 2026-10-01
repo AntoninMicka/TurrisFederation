@@ -80,6 +80,7 @@ function diagnosticClass(nodeId: string) {
       <article><span>Stav tohoto notebooku</span><strong>{{ notebookState }}</strong></article>
       <article><span>Přijatá revize</span><strong>{{ overview?.revision || "—" }}</strong></article>
       <article><span>Spravované uzly</span><strong>{{ overview?.nodes.length ?? 0 }}</strong></article>
+      <article><span>Notebooky</span><strong>{{ overview?.notebooks.length ?? 0 }}</strong></article>
     </div>
     <p class="muted">Poslední kontrola routeru: {{ lastChecked }}</p>
 
@@ -114,6 +115,26 @@ function diagnosticClass(nodeId: string) {
         </table>
       </div>
       <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z přijaté konfigurace. Ping se spouští pouze tlačítkem a míří výhradně na ZeroTier adresy přijatých routerů z podepsané revize. Notebook WireGuard v této verzi nepoužívá a dostupnost neodhaduje z jiných stavů.</p>
+    </section>
+
+    <section class="overview-section">
+      <h3>Notebooky federace</h3>
+      <p v-if="!overview?.notebooks.length" class="muted">V podepsané topologii zatím není žádný notebook.</p>
+      <div v-else class="overview-table-wrap">
+        <table class="overview-table">
+          <thead><tr><th>Notebook</th><th>Role</th><th>ZeroTier</th><th>WireGuard</th><th>Dostupnost</th></tr></thead>
+          <tbody>
+            <tr v-for="item in overview?.notebooks ?? []" :key="item.id">
+              <td><strong>{{ item.name }}</strong><small v-if="item.id === notebook?.id" class="overview-line">Tento notebook</small></td>
+              <td>{{ item.role === "administrator" ? "Administrátor" : "Uživatel" }}</td>
+              <td><code>{{ item.zeroTierAddress || "čeká na přidělení" }}</code></td>
+              <td><code>{{ item.wireguardAddress || "čeká na přidělení" }}</code></td>
+              <td><span class="overview-signal unknown">Ověřuje se pouze místně</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">Notebook je koncový uzel bez inzerované LAN. Přehled nezobrazuje ani neodhaduje aktuální dostupnost jiných notebooků.</p>
     </section>
 
     <section class="overview-section">

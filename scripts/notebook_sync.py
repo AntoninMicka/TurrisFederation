@@ -174,6 +174,11 @@ class Store:
                 document = f.validate_document(f.verify(public_path.read_text(), published))
                 if document['federationId'] != credential['federationId']:
                     raise ValueError('Pověření patří jiné federaci.')
+                if credential['role'] == 'user':
+                    notebook = next((item for item in document['config'].get('notebooks', [])
+                                     if item['id'] == credential['subject']), None)
+                    if not notebook or notebook['role'] != 'user':
+                        raise ValueError('Uživatelský notebook není členem podepsané topologie.')
             return {'state': 'valid', 'role': credential['role'], 'canBootstrapAdmin': False,
                     'federationId': credential['federationId'], 'subject': credential['subject'],
                     'issuedAt': credential['issuedAt'], 'expiresAt': expires}
@@ -188,11 +193,16 @@ class Store:
         published = f.read(self.fleet / 'published.json')
         if not private.exists() or not published:
             raise ValueError('Chybí stávající řídicí identita a publikovaná federace.')
-        public = f.public_key(private)
         public_path = self.root / 'federation-root.pub'
+        public = f.public_key(private)
         if public_path.exists() and public_path.read_text() != public:
             raise ValueError('Existující kotva notebooku patří jiné federaci.')
-        document = f.validate_document(f.verify(public, published))
+        with f.locked(self.fleet):
+            document = f.validate_document(f.verify(public, f.read(self.fleet / 'published.json')))
+            published, document = self.publish_notebooks(private, document, [{
+                'id': self.id, 'name': self.local_name(), 'role': 'administrator',
+                'zeroTierAddress': None, 'wireguardAddress': None,
+            }])
         now = int(time.time())
         credential = {'schema': CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
                       'subject': self.id, 'role': 'administrator', 'issuedAt': now,
@@ -207,6 +217,25 @@ class Store:
         if status['state'] != 'valid' or status['role'] != 'administrator':
             raise ValueError('Vydané pověření nelze ověřit.')
         return status
+
+    def local_name(self):
+        name = f.read(self.root / 'config.json', {}).get('name', socket.gethostname())
+        name = name.strip() if isinstance(name, str) else ''
+        return name[:80] if name else 'Notebook ' + self.id[:8]
+
+    def publish_notebooks(self, private, document, requested):
+        notebooks = list(document['config'].get('notebooks', []))
+        for item in requested:
+            existing = next((current for current in notebooks if current['id'] == item['id']), None)
+            if existing and existing != item:
+                raise ValueError('Notebook je již evidovaný s jiným názvem, rolí nebo adresou.')
+            if not existing:
+                notebooks.append(item)
+        config = f.normalize_with_notebooks(document['config']['nodes'],
+                                            document['config']['networkId'], notebooks)
+        published = f.snapshot(self.fleet, config, document['members'])
+        public = f.public_key(private)
+        return published, f.validate_document(f.verify(public, published))
 
     def enrollment_request(self, name):
         if self.access_status()['state'] == 'valid':
@@ -234,18 +263,26 @@ class Store:
                 or type(payload['createdAt']) not in [int, float] or not 0 <= time.time() - payload['createdAt'] <= ENROLLMENT_TTL):
             raise ValueError('Žádost notebooku je neplatná nebo vypršela.')
         private = self.fleet / 'root.pem'
-        published = f.read(self.fleet / 'published.json')
-        if not private.exists() or not published:
+        if not private.exists():
             raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
-        root_public = f.public_key(private)
-        document = f.validate_document(f.verify(root_public, published))
-        now = int(time.time())
-        credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
-                      'subject': payload['subject'], 'role': 'user', 'issuedAt': now,
-                      'expiresAt': now + 365 * 24 * 3600, 'serial': str(uuid.uuid4()),
-                      'enrollmentNonce': payload['nonce'], 'acceptBy': now + ENROLLMENT_TTL}
-        return {'schema': INVITATION_SCHEMA, 'rootPublic': root_public, 'published': published,
-                'credential': f.sign(private, credential)}
+        with f.locked(self.fleet):
+            published = f.read(self.fleet / 'published.json')
+            if not published:
+                raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+            root_public = f.public_key(private)
+            document = f.validate_document(f.verify(root_public, published))
+            requested = {'id': payload['subject'], 'name': payload['name'], 'role': 'user',
+                         'zeroTierAddress': None, 'wireguardAddress': None}
+            administrator = {'id': self.id, 'name': self.local_name(), 'role': 'administrator',
+                             'zeroTierAddress': None, 'wireguardAddress': None}
+            published, document = self.publish_notebooks(private, document, [administrator, requested])
+            now = int(time.time())
+            credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
+                          'subject': payload['subject'], 'role': 'user', 'issuedAt': now,
+                          'expiresAt': now + 365 * 24 * 3600, 'serial': str(uuid.uuid4()),
+                          'enrollmentNonce': payload['nonce'], 'acceptBy': now + ENROLLMENT_TTL}
+            return {'schema': INVITATION_SCHEMA, 'rootPublic': root_public, 'published': published,
+                    'credential': f.sign(private, credential)}
 
     def accept_user_invitation(self, raw):
         if self.access_status()['state'] == 'valid' or (self.fleet / 'root.pem').exists():
@@ -256,9 +293,12 @@ class Store:
         credential = f.verify(invitation['rootPublic'], invitation['credential'])
         document = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
         pending = f.read(self.root / 'pending-enrollment.json')
+        notebook = next((item for item in document['config'].get('notebooks', [])
+                         if item['id'] == self.id), None)
         if (not pending or credential.get('schema') != USER_CREDENTIAL_SCHEMA or credential.get('role') != 'user'
                 or credential.get('subject') != self.id or credential.get('federationId') != document['federationId']
-                or credential.get('enrollmentNonce') != pending.get('nonce') or time.time() > credential.get('acceptBy', 0)):
+                or credential.get('enrollmentNonce') != pending.get('nonce') or time.time() > credential.get('acceptBy', 0)
+                or not notebook or notebook['role'] != 'user'):
             raise ValueError('Pozvánka neodpovídá této platné žádosti notebooku.')
         # All signatures and bindings are checked before publishing any file.
         for path, value in [(self.root / 'federation-root.pub', invitation['rootPublic'].encode()),

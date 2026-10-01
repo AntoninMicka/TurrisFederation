@@ -25,6 +25,7 @@ import uuid
 from urllib.parse import parse_qs
 
 VERSION = 1
+NOTEBOOK_VERSION = 2
 LIMIT = 1024 * 1024
 PORT = 8844
 WG_PORT = 51830
@@ -199,13 +200,62 @@ def normalize(nodes, network_id):
     return {'networkId': network_id, 'nodes': result}
 
 
+def normalize_notebooks(notebooks, router_config):
+    if not isinstance(notebooks, list) or len(notebooks) > 128:
+        raise ValueError('Federace podporuje nejvýše 128 notebooků.')
+    result, seen, zt_ips, wg_ips = [], set(), set(), set()
+    router_zt = {node['zeroTierAddress'] for node in router_config['nodes'] if node['zeroTierAddress']}
+    router_wg = {node['wireguardAddress'] for node in router_config['nodes'] if node['wireguardAddress']}
+    router_lans = [ipaddress.ip_network(cidr) for node in router_config['nodes'] for cidr in node['lanCidrs']]
+    for item in sorted(notebooks, key=lambda notebook: notebook['id']):
+        if set(item) != {'id', 'name', 'role', 'zeroTierAddress', 'wireguardAddress'}:
+            raise ValueError('Notebook obsahuje nepodporovaná pole.')
+        notebook_id = item['id']
+        if not isinstance(notebook_id, str) or not re.fullmatch('[a-f0-9]{64}', notebook_id):
+            raise ValueError('Neplatná identita notebooku.')
+        if notebook_id in seen:
+            raise ValueError('Duplicitní ID notebooku.')
+        seen.add(notebook_id)
+        name = item['name']
+        if not isinstance(name, str) or not name.strip() or len(name) > 80:
+            raise ValueError('Název notebooku musí mít 1–80 znaků.')
+        if item['role'] not in ['administrator', 'user']:
+            raise ValueError('Neplatná role notebooku.')
+        zt = address(item['zeroTierAddress']) if item['zeroTierAddress'] else None
+        wg = address(item['wireguardAddress']) if item['wireguardAddress'] else None
+        if zt and (zt in zt_ips or zt in router_zt) or wg and (wg in wg_ips or wg in router_wg):
+            raise ValueError('Duplicitní adresa ZeroTier nebo WireGuard.')
+        if zt:
+            zt_ips.add(zt)
+        if wg:
+            wg_ips.add(wg)
+        result.append({'id': notebook_id, 'name': name, 'role': item['role'],
+                       'zeroTierAddress': zt, 'wireguardAddress': wg})
+    if (zt_ips | router_zt) & (wg_ips | router_wg):
+        raise ValueError('Adresy ZeroTier a WireGuard se nesmí shodovat.')
+    for ip in zt_ips | wg_ips:
+        if any(ipaddress.ip_address(ip) in network for network in router_lans):
+            raise ValueError('Tunelová adresa notebooku koliduje s LAN sítí: ' + ip)
+    return result
+
+
+def normalize_with_notebooks(nodes, network_id, notebooks):
+    config = normalize(nodes, network_id)
+    config['notebooks'] = normalize_notebooks(notebooks, config)
+    return config
+
+
 def validate_document(doc):
     if set(doc) != {'schema', 'federationId', 'revision', 'previous', 'config', 'members'}:
         raise ValueError('Synchronizace přijímá pouze síťové nastavení, nikoli software nebo příkazy.')
-    if doc.get('schema') != VERSION or type(doc.get('revision')) is not int or doc['revision'] < 1:
+    if doc.get('schema') not in [VERSION, NOTEBOOK_VERSION] or type(doc.get('revision')) is not int or doc['revision'] < 1:
         raise ValueError('Nepodporované schéma nebo revize.')
     str(uuid.UUID(doc['federationId']))
     normalized = normalize(doc['config']['nodes'], doc['config']['networkId'])
+    if doc['schema'] == NOTEBOOK_VERSION:
+        if set(doc['config']) != {'networkId', 'nodes', 'notebooks'}:
+            raise ValueError('Konfigurace obsahuje nepodporovaná pole.')
+        normalized['notebooks'] = normalize_notebooks(doc['config']['notebooks'], normalized)
     if normalized != doc['config']:
         raise ValueError('Konfigurace není normalizovaná.')
     keys = set()
@@ -562,7 +612,11 @@ def read_only_notebook_overview(root):
                       'zeroTierAddress': node['zeroTierAddress'], 'wireguardAddress': node['wireguardAddress'],
                       'enrolled': node['id'] in doc['members'], 'state': state, 'reachable': reachable,
                       'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed})
+    notebooks = [{'id': item['id'], 'name': item['name'], 'role': item['role'],
+                  'zeroTierAddress': item['zeroTierAddress'], 'wireguardAddress': item['wireguardAddress']}
+                 for item in doc['config'].get('notebooks', [])]
     return {'revision': doc['revision'], 'networkId': doc['config']['networkId'], 'nodes': nodes,
+            'notebooks': notebooks,
             'diagnostics': notebook_diagnostics_overview(root)}
 
 
@@ -1406,7 +1460,8 @@ def snapshot(root, config, members):
     floor = read(root / 'revision-floor.json', 0)
     if old and old['revision'] >= floor and old['config'] == config and old['members'] == members:
         return old_envelope
-    doc = {'schema': VERSION, 'federationId': old['federationId'] if old else str(uuid.uuid4()),
+    schema = NOTEBOOK_VERSION if 'notebooks' in config else VERSION
+    doc = {'schema': schema, 'federationId': old['federationId'] if old else str(uuid.uuid4()),
            'revision': max(old['revision'] + 1 if old else 1, floor), 'previous': digest(old) if old else None,
            'config': config, 'members': members}
     validate_document(doc)

@@ -107,10 +107,18 @@ export interface ReadOnlyNode {
   hosts: { address: string; name: string | null }[];
   hostsObservedAt?: number;
 }
+export interface ReadOnlyNotebook {
+  id: string;
+  name: string;
+  role: "administrator" | "user";
+  zeroTierAddress: string | null;
+  wireguardAddress: string | null;
+}
 export interface ReadOnlyOverview {
   revision: number;
   networkId: string;
   nodes: ReadOnlyNode[];
+  notebooks: ReadOnlyNotebook[];
   diagnostics: NotebookDiagnostics;
 }
 export type DeploymentMode = "full" | "settings";

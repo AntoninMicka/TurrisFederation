@@ -526,7 +526,7 @@ async function submitConnection() {
         <small>Žádost ani pozvánka neobsahují privátní klíč notebooku nebo federace. Pozvánka je platná 15 minut a pouze pro tuto žádost.</small>
       </div>
     </section>
-    <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ readOnlyOverview?.notebooks.length ?? (1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0)) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
     <p v-if="sharedSettingsChanged && activeTab !== 'notebooks'" class="setup-preview" role="status">
       Sdílená konfigurace se změnila.
       <button class="secondary" @click="activeTab = 'notebooks'">Otevřít synchronizaci notebooků</button>
@@ -647,7 +647,7 @@ async function submitConnection() {
       <details>
         <summary>Vydat pozvánku uživatelskému notebooku</summary>
         <div class="connection-form">
-          <p>Vložte podepsanou žádost z cílového notebooku. Vydaná pozvánka mu předá pouze veřejnou kotvu, podepsanou topologii a časově omezené uživatelské pověření.</p>
+          <p>Vložte podepsanou žádost z cílového notebooku. Vydání přidá notebook jako uživatelský koncový uzel do nové podepsané revize a předá mu pouze veřejnou kotvu, topologii a časově omezené pověření.</p>
           <label>Žádost notebooku<textarea v-model="requestedUser" class="pairing-data"></textarea></label>
           <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue')">Ověřit žádost a vydat pozvánku</button>
           <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>

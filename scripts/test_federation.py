@@ -130,6 +130,33 @@ class FederationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'kompletní'):
             f.validate_document(self.document(config=config, members={node(2)['id']: self.member(2)}))
 
+    def test_notebook_topology_is_versioned_separately_and_cannot_advertise_lan(self):
+        notebook_id = 'a' * 64
+        config = f.normalize_with_notebooks(self.nodes, 'abcdef0123456789', [{
+            'id': notebook_id, 'name': 'User notebook', 'role': 'user',
+            'zeroTierAddress': None, 'wireguardAddress': None,
+        }])
+        envelope = f.snapshot(self.root, config, {node(1)['id']: self.member(1)})
+        document = f.verify(self.public, envelope)
+        self.assertEqual(f.NOTEBOOK_VERSION, document['schema'])
+        self.assertEqual([], [key for key in document['config']['notebooks'][0] if key == 'lanCidrs'])
+        f.validate_document(document)
+
+        invalid = copy.deepcopy(document)
+        invalid['config']['notebooks'][0]['lanCidrs'] = ['10.0.0.0/24']
+        with self.assertRaisesRegex(ValueError, 'nepodporovaná pole'):
+            f.validate_document(invalid)
+
+    def test_notebook_addresses_cannot_collide_with_router_or_lan(self):
+        base = {'id': 'b' * 64, 'name': 'User notebook', 'role': 'user',
+                'zeroTierAddress': None, 'wireguardAddress': None}
+        for field, value in [('zeroTierAddress', '10.147.0.1'),
+                             ('wireguardAddress', '10.203.0.1'),
+                             ('wireguardAddress', '192.168.1.20')]:
+            item = dict(base, **{field: value})
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, 'Duplicitní|koliduje'):
+                f.normalize_with_notebooks(self.nodes, 'abcdef0123456789', [item])
+
     def test_drafts_cannot_enroll_through_publish(self):
         f.atomic(self.root / 'members.json', {node(1)['id']: self.member(1)})
         with patch.object(f, 'request_http', side_effect=ValueError('offline')):
@@ -641,7 +668,11 @@ class FederationTests(unittest.TestCase):
 
     def test_read_only_notebook_overview_uses_signed_revision_and_omits_admin_fields(self):
         members = {node(1)['id']: self.member(1)}
-        f.snapshot(self.root, self.config, members)
+        config = f.normalize_with_notebooks(self.nodes, self.config['networkId'], [{
+            'id': 'c' * 64, 'name': 'User notebook', 'role': 'user',
+            'zeroTierAddress': None, 'wireguardAddress': None,
+        }])
+        f.snapshot(self.root, config, members)
         f.atomic(self.root / 'reports.json', {node(1)['id']: {
             'state': 'active', 'reachable': True, 'checkedAt': 100,
             'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100,
@@ -658,6 +689,8 @@ class FederationTests(unittest.TestCase):
         self.assertEqual([{'address': '192.168.1.20', 'name': 'printer'}], enrolled['hosts'])
         self.assertFalse(draft['enrolled'])
         self.assertEqual([], draft['hosts'])
+        self.assertEqual([{'id': 'c' * 64, 'name': 'User notebook', 'role': 'user',
+                           'zeroTierAddress': None, 'wireguardAddress': None}], result['notebooks'])
         raw = json.dumps(result)
         for secret in ['sshHost', 'sshUser', 'sshPort', 'publicEndpoint', 'privateKey', 'SECRET', 'INTERNAL', 'fingerprint']:
             self.assertNotIn(secret, raw)

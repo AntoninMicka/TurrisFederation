@@ -2,7 +2,8 @@
 
 Stav: schválený směr návrhu. Základ trvalé uživatelské služby, lokálního
 stavového socketu a ovládání ze stavové lišty je implementovaný na feature
-větvi; role uzlů a koncové VPN členství zatím implementované nejsou.
+větvi. Podepsaný model už odděluje routery od notebooků a eviduje roli
+notebooku; koncová VPN konfigurace zatím implementovaná není.
 
 Notebook je plnohodnotný koncový uzel federované VPN, nikoli router lokality.
 Má vlastní identitu a tunelovou adresu a může používat služby dostupné ve
@@ -143,9 +144,12 @@ skutečnost musí před změnou upozornit.
 
 ## Dopad na současnou implementaci
 
-Současný kód modeluje v podepsané konfiguraci jen routery a místní notebook
-zobrazuje jako zvláštní řídicí položku pouze s kontrolou ZeroTier. Dokončení
-návrhu proto vyžaduje verzovanou změnu protokolu, nikoli jen úpravu textů.
+Podepsané schéma 2 zachovává routery v `nodes` a přidává samostatný seznam
+`notebooks`. Notebook má otisk své TLS identity, název, roli a volitelné
+ZeroTier/WireGuard adresy; formát pro něj vůbec nepřijímá LAN prefixy. Starší
+routerové dokumenty schématu 1 zůstávají validní. Jednorázový bootstrap
+administrátora jej zapíše do nové revize a vydání uživatelské pozvánky nejprve
+idempotentně publikuje oba notebooky, potom vydá pověření svázané s členstvím.
 
 První autorizační vrstva už ověřuje samostatné podepsané pověření svázané
 s TLS identitou notebooku a ID federace. Neplatné, cizí nebo prošlé pověření
@@ -164,10 +168,11 @@ odvolání a následné bezpečné obnovování topologie.
 
 Zbývající kroky:
 
-1. Rozšířit společný model uzlu o typ `router | notebook` a u notebooku o roli
-   `administrator | user`; staré routerové záznamy migrovat jako `router`.
-2. Oddělit členství a síťové pověření notebooku od administrátorského párování.
-   Uživatelský notebook nesmí vstoupit do stávající synchronizace řídicí identity.
+1. [x] Rozšířit podepsaný model o samostatný typ notebooku a roli
+   `administrator | user`; zachovat zpětné přijetí starých routerových revizí.
+2. [x] Oddělit členství a podepsané uživatelské pověření notebooku od
+   administrátorského párování. Uživatelský notebook nevstupuje do stávající
+   synchronizace řídicí identity a nedostane kořenový privátní klíč.
 3. Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
