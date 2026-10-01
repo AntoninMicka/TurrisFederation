@@ -16,6 +16,9 @@ dostupnost kontrolují pouze lokálně. Notebookový backend má běžet trvale 
 uživatelská služba nezávislá na okně aplikace; stavová lišta zobrazí připojení
 a umožní otevřít UI. Návrh, bezpečnostní hranice a stav implementace popisují
 [role notebooků](docs/notebook-node-roles.md).
+Uživatelská role má zobrazit read-only přehled odpovídající stránce na routeru,
+zatímco administrátorská zachová dnešní plné UI. Produkční balíček a onboarding
+jsou navržené v dokumentu [instalace notebooku](docs/notebook-installation.md).
 
 V záložce **Notebooky** lze zapnout discovery a šifrovanou synchronizaci
 konfigurace i řídicí identity mezi vzájemně spárovanými notebooky.

@@ -58,6 +58,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     odstranění služby v reálné grafické uživatelské relaci.
   - [ ] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty.
+  - [ ] Uživatelské roli zobrazit read-only přehled odpovídající routerové
+    stránce; administrátorské roli zachovat současné plné notebookové UI.
+    Roli načítat jen z podepsaného pověření a vynutit ji také v backendu.
+  - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
+    Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
+    jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.
+    Návrh: [instalace notebooku](docs/notebook-installation.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
@@ -239,7 +246,9 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 - [ ] SSH klíče a `ssh-agent` jako další metoda přihlášení vedle hesla.
 - [ ] Dokumentace přípravy routeru, ověření otisků, propojení dvou uzlů a obnovy po chybě.
 - [ ] CI pro build frontendu, Rust testy a testy auditních dat.
-- [ ] Balíček desktopové aplikace a ověřená matice podporovaných OS/architektur; začít používaným Ubuntu ARM64.
+- [ ] Balíček desktopové aplikace a ověřená matice podporovaných OS/architektur;
+  začít používaným Ubuntu/Debian ARM64. Podrobnosti:
+  [instalace notebooku](docs/notebook-installation.md).
 
 ## 6. Budoucí rozvoj a optimalizace
 

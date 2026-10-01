@@ -76,6 +76,15 @@ položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovan
 backend. Aktivace a chování stavové lišty v reálné grafické relaci ještě
 vyžadují ruční přijetí.
 
+## UI podle role
+
+Uživatelský notebook otevře read-only přehled odpovídající routerové webové
+stránce, vykreslený z lokálně ověřených dat backendu. Administrátorský notebook
+zachová současné plné desktopové UI. Role pochází výhradně z podepsaného
+pověření a v uživatelské variantě musí administrátorské příkazy odmítnout i
+backend, nejen skryté Vue komponenty. Přesné mapování obsahu, onboarding,
+balíček a aktualizace popisuje [instalace notebooku](notebook-installation.md).
+
 ## Síťové chování
 
 Router zůstává tranzitním uzlem lokality a může vlastnit jeden či více LAN
@@ -145,6 +154,9 @@ tohoto návrhu proto vyžaduje verzovanou změnu protokolu, nikoli jen úpravu t
    inventář, audit, publikování a deploy routerů.
 7. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
    roli a pověření, ale nikdy nepřenesly řídicí tajemství uživatelskému uzlu.
+8. Připravit podepsaný `.deb`, dodanou `systemd --user` jednotku, autostart tray
+   a průvodce přijetím notebooku podle
+   [instalačního návrhu](notebook-installation.md).
 
 ## Akceptační hranice
 
