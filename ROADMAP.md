@@ -105,15 +105,20 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     nepřidává výchozí trasu, instalace selže při zapnutém IP forwardingu a
     předchozí profil zůstává jako obnovovací kopie pro automatický i ruční
     rollback. Tok je pokrytý lokálními testy, ale nebyl spuštěný s reálným
-    polkit agentem ani VPN. Zbývá odvolání,
-    aktualizace topologie bez řídicí synchronizace a fyzická akceptace. Místní
+    polkit agentem ani VPN. Podepsaný přenosný balíček nyní umožní uživatelskému
+    notebooku zobrazit novější revizi a přesný rozdíl rout před potvrzením;
+    starou revizi, jinou federaci, cizí WireGuard klíč nebo změnu role odmítne.
+    Potvrzená aktualizace vymění NetworkManager profil a přijme topologii až po
+    ověření adresy a rout, při selhání obnoví profil i revizi. Místní
     diagnostika nyní kontroluje profil, rozhraní, adresu, forwarding, routy,
     handshake a pět WG pingů; cíle přijímá jen z podepsané revize a výsledek
     označí po 120 sekundách jako zastaralý. Administrátor může uživatelskému
     notebooku po potvrzení odvolat členství novou podepsanou revizí; tím zmizí
     jeho `/32` peer z příštího routerového deploye, ale místní identita ani data
-    notebooku se nemažou. Bezpečný přenos této revize na odvolaný notebook a
-    automatická obnova jeho VPN profilu ještě zbývají.
+    notebooku se nemažou. Odvolaný notebook přijme podepsanou revizi jen dokud
+    je jeho dosavadní členství platné, odpojí spravovaný VPN profil a potom už
+    další aktualizace nepřijme. Tok je lokálně otestovaný; zbývá fyzická
+    akceptace s reálným polkit agentem, NetworkManagerem, VPN a routerem.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

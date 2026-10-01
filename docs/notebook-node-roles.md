@@ -199,8 +199,9 @@ Bez platného členského pověření je odmítnuté. Pozvánky pro nové uživa
 notebooky používají podepsanou žádost cílového TLS klíče a administrátorem
 vydaný balíček s veřejnou kotvou, podepsanou topologií a uživatelským pověřením.
 Balíček je svázaný s jednorázovým nonce a lze jej přijmout do 15 minut; nikdy
-neobsahuje kořenový privátní klíč. Zbývá síťové zprovoznění uživatelského uzlu,
-odvolání a následné bezpečné obnovování topologie.
+neobsahuje kořenový privátní klíč. Odvolání a ručně přenositelná bezpečná
+aktualizace topologie jsou implementované a lokálně otestované; zbývá jejich
+ověření se skutečným routerem, NetworkManagerem, polkit agentem a VPN.
 
 Zbývající kroky:
 
@@ -220,12 +221,17 @@ Zbývající kroky:
 5. [x] Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance
    UI; zavření okna neukončí backend ani VPN. Reálná grafická relace zůstává
    součástí fyzické akceptace.
-6. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
+6. [x] Přidat ručně přenositelnou podepsanou aktualizaci topologie pro
+   uživatelský notebook. Administrátor exportuje pouze veřejnou kotvu a
+   podepsanou revizi. Uživatel před potvrzením vidí přidané a odebrané routy;
+   přijetí aktivního členství koordinovaně navazuje na výměnu VPN profilu s
+   rollbackem. Odvolávající revize VPN odpojí, ale nemaže místní identitu.
+7. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
    připojení, místní diagnostiku a povolené cíle; administrátorská role navíc
    inventář, audit, publikování a deploy routerů.
-7. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
+8. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
    roli a pověření, ale nikdy nepřenesly řídicí tajemství uživatelskému uzlu.
-8. Až po funkčním ověření předchozích kroků na skutečných zařízeních připravit
+9. Až po funkčním ověření předchozích kroků na skutečných zařízeních připravit
    podepsaný `.deb`, dodanou `systemd --user` jednotku, autostart tray a
    průvodce přijetím notebooku podle
    [instalačního návrhu](notebook-installation.md).

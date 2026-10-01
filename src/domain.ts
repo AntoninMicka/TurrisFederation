@@ -157,7 +157,7 @@ export interface NotebookVpnDiagnostics {
   nodes: Record<string, NotebookVpnDiagnosticNode>;
 }
 export interface NotebookVpnStatus {
-  state: "unconfigured" | "ready" | "installed" | "rolled_back" | "error";
+  state: "unconfigured" | "ready" | "installed" | "rolled_back" | "revoked" | "error";
   revision?: number;
   installedAt?: number;
   rolledBackAt?: number;
@@ -167,6 +167,24 @@ export interface NotebookVpnStatus {
   error?: string;
   rollbackComplete?: boolean;
   diagnostics?: NotebookVpnDiagnostics;
+}
+export interface TopologyRefreshPlan {
+  id: string;
+  expiresAt: number;
+  kind: "update" | "revoked";
+  currentRevision: number;
+  revision: number;
+  routes: string[];
+  addedRoutes: string[];
+  removedRoutes: string[];
+  currentConnection: boolean;
+  connectionName?: string;
+  interfaceName?: string;
+  address?: string;
+  zeroTierAddress?: string;
+  underlayDevice?: string;
+  forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
+  steps: string[];
 }
 export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {

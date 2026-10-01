@@ -41,6 +41,7 @@ CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
 USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
 ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-2'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
+TOPOLOGY_UPDATE_SCHEMA = 'tf-notebook-topology-update-1'
 ENROLLMENT_TTL = 15 * 60
 VPN_CONNECTION = 'turris-federation'
 VPN_BACKUP = 'turris-federation-rollback'
@@ -237,7 +238,8 @@ def verify_underlay(address, document):
 
 def public_vpn_plan(plan):
     return {key: (bool(value) if key == 'currentConnection' else value)
-            for key, value in plan.items() if key != 'configHash'}
+            for key, value in plan.items() if key not in ['configHash', 'currentTopologyHash',
+                                                          'proposedTopologyHash', 'rollbackConnection', 'update']}
 
 
 class Store:
@@ -453,10 +455,59 @@ class Store:
             self.write_wireguard_config(updated)
             return {'id': notebook_id, 'name': target['name'], 'revision': updated['revision']}
 
-    def write_wireguard_config(self, document):
-        notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
-        if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
-            raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
+    def topology_update_export(self):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Export aktualizace vyžaduje administrátorské pověření.')
+        published = f.read(self.fleet / 'published.json')
+        public_path = self.root / 'federation-root.pub'
+        if not published or not public_path.exists():
+            raise ValueError('Chybí podepsaná topologie nebo veřejná kotva federace.')
+        f.validate_document(f.verify(public_path.read_text(), published))
+        return json.dumps({'schema': TOPOLOGY_UPDATE_SCHEMA,
+                           'rootPublic': public_path.read_text(), 'published': published})
+
+    def validate_topology_update(self, raw):
+        if self.access_status().get('role') != 'user':
+            raise ValueError('Aktualizace topologie je určena uživatelskému notebooku s platným členstvím.')
+        try:
+            update = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError('Aktualizační balíček není platný JSON.') from exc
+        if (not isinstance(update, dict) or set(update) != {'schema', 'rootPublic', 'published'}
+                or update.get('schema') != TOPOLOGY_UPDATE_SCHEMA):
+            raise ValueError('Neplatný aktualizační balíček topologie.')
+        public_path = self.root / 'federation-root.pub'
+        if not public_path.exists() or update['rootPublic'] != public_path.read_text():
+            raise ValueError('Aktualizace používá jinou kotvu federace.')
+        current_envelope = f.read(self.fleet / 'published.json')
+        if not current_envelope:
+            raise ValueError('Chybí současná podepsaná topologie.')
+        current = f.validate_document(f.verify(update['rootPublic'], current_envelope))
+        proposed = f.validate_document(f.verify(update['rootPublic'], update['published']))
+        if proposed['federationId'] != current['federationId']:
+            raise ValueError('Aktualizace patří jiné federaci.')
+        if proposed['revision'] <= current['revision']:
+            raise ValueError('Aktualizace musí obsahovat novější revizi.')
+        if proposed['revision'] == current['revision'] + 1 and proposed['previous'] != f.digest(current):
+            raise ValueError('Nová revize nenavazuje na současnou topologii.')
+        credential = f.verify(update['rootPublic'], f.read(self.root / 'credential.json'))
+        if credential.get('subject') != self.id or credential.get('role') != 'user':
+            raise ValueError('Pověření nepatří tomuto uživatelskému notebooku.')
+        notebook = next((item for item in f.notebook_endpoints(proposed) if item['id'] == self.id), None)
+        if notebook and (notebook['role'] != 'user' or notebook['wireguardKey'] != self.wireguard_identity()):
+            raise ValueError('Aktualizace mění roli nebo WireGuard identitu tohoto notebooku.')
+        return update, current_envelope, current, proposed, notebook
+
+    @staticmethod
+    def routes_for(document):
+        routes = []
+        for router in document['config']['nodes']:
+            if router['id'] in document['members']:
+                routes.extend([router['wireguardAddress'] + '/32'] + router['lanCidrs'])
+        return sorted(set(routes), key=lambda value: (ipaddress.ip_network(value).network_address,
+                                                       ipaddress.ip_network(value).prefixlen))
+
+    def wireguard_config(self, document, notebook):
         lines = ['[Interface]', 'PrivateKey = ' + (self.root / 'wireguard.key').read_text().strip(),
                  'Address = ' + notebook['wireguardAddress'] + '/32']
         for router in document['config']['nodes']:
@@ -467,7 +518,59 @@ class Store:
             lines.extend(['', '[Peer]', 'PublicKey = ' + member['wireguardKey'],
                           'Endpoint = ' + router['zeroTierAddress'] + ':' + str(f.WG_PORT),
                           'AllowedIPs = ' + ', '.join(allowed), 'PersistentKeepalive = 25'])
-        f.atomic(self.root / 'wireguard.conf', ('\n'.join(lines) + '\n').encode())
+        return ('\n'.join(lines) + '\n').encode()
+
+    def topology_refresh_plan(self, raw):
+        update, current_envelope, current, proposed, notebook = self.validate_topology_update(raw)
+        required = ['/usr/bin/nmcli', '/usr/bin/pkexec'] + (['/usr/sbin/ip'] if notebook else [])
+        if not all(Path(path).exists() for path in required):
+            raise ValueError('Aktualizace topologie vyžaduje NetworkManager a polkit.')
+        managed = nmcli_connections()
+        current_routes = self.routes_for(current)
+        proposed_routes = self.routes_for(proposed) if notebook else []
+        kind = 'update' if notebook else 'revoked'
+        plan = {'id': secrets.token_hex(24), 'expiresAt': time.time() + VPN_PLAN_TTL,
+                'kind': kind, 'currentRevision': current['revision'], 'revision': proposed['revision'],
+                'currentTopologyHash': f.digest(current_envelope),
+                'proposedTopologyHash': f.digest(update['published']), 'update': update,
+                'routes': proposed_routes, 'addedRoutes': sorted(set(proposed_routes) - set(current_routes)),
+                'removedRoutes': sorted(set(current_routes) - set(proposed_routes)),
+                'currentConnection': managed.get(VPN_CONNECTION),
+                'rollbackConnection': managed.get(VPN_BACKUP)}
+        if notebook:
+            forwarding = self.forwarding_state()
+            if any(value is not False for value in forwarding.values()):
+                raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Aktualizace byla zastavena.')
+            underlay = verify_underlay(notebook['zeroTierAddress'], proposed)
+            config = self.wireguard_config(proposed, notebook)
+            f.atomic(self.root / 'wireguard-refresh.conf', config)
+            plan.update({'configHash': hashlib.sha256(config).hexdigest(),
+                         'connectionName': VPN_CONNECTION, 'interfaceName': VPN_INTERFACE,
+                         'address': notebook['wireguardAddress'] + '/32',
+                         'zeroTierAddress': notebook['zeroTierAddress'], 'underlayDevice': underlay,
+                         'forwarding': forwarding,
+                         'steps': [
+                             'Znovu ověřit podpis, federaci, návaznost a místní WireGuard identitu.',
+                             'Přes polkit vytvořit nový NetworkManager profil z nové revize.',
+                             'Předchozí profil zachovat jako obnovovací kopii.',
+                             'Ověřit adresu, routy a vypnutý forwarding před přijetím topologie.',
+                             'Při selhání obnovit předchozí profil i podepsanou revizi.',
+                         ]})
+        else:
+            (self.root / 'wireguard-refresh.conf').unlink(missing_ok=True)
+            plan['steps'] = [
+                'Znovu ověřit podpis, federaci a návaznost odvolávající revize.',
+                'Odstranit aktivní spravovaný VPN profil i jeho federovanou rollback kopii.',
+                'Přijmout odvolání bez smazání místní TLS nebo WireGuard identity.',
+            ]
+        f.atomic(self.root / 'topology-refresh-plan.json', plan)
+        return public_vpn_plan(plan)
+
+    def write_wireguard_config(self, document):
+        notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
+        if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
+            raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
+        f.atomic(self.root / 'wireguard.conf', self.wireguard_config(document, notebook))
 
     def wireguard_endpoint(self):
         status = self.access_status()
@@ -484,12 +587,7 @@ class Store:
         config = self.root / 'wireguard.conf'
         if not config.exists():
             self.write_wireguard_config(document)
-        routes = []
-        for router in document['config']['nodes']:
-            if router['id'] in document['members']:
-                routes.extend([router['wireguardAddress'] + '/32'] + router['lanCidrs'])
-        return document, notebook, config, sorted(set(routes), key=lambda value: (ipaddress.ip_network(value).network_address,
-                                                                                 ipaddress.ip_network(value).prefixlen))
+        return document, notebook, config, self.routes_for(document)
 
     @staticmethod
     def forwarding_state():
@@ -535,14 +633,24 @@ class Store:
                 or plan.get('configHash') != hashlib.sha256(config.read_bytes()).hexdigest()
                 or plan.get('address') != notebook['wireguardAddress'] + '/32' or plan.get('routes') != routes):
             raise ValueError('Plán instalace VPN chybí, vypršel nebo se konfigurace změnila.')
+        return self.activate_vpn(plan, document, notebook, config, routes,
+                                 self.root / 'vpn-plan.json')
+
+    def activate_vpn(self, plan, document, notebook, config, routes, plan_path,
+                     commit=None, restore=None):
         if any(value is not False for value in self.forwarding_state().values()):
             raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Instalace byla zastavena.')
         if plan.get('underlayDevice') != verify_underlay(notebook['zeroTierAddress'], document):
             raise ValueError('ZeroTier podklad se od vytvoření plánu změnil.')
         before = nmcli_connections()
+        if (plan.get('currentConnection') != before.get(VPN_CONNECTION)
+                or ('rollbackConnection' in plan
+                    and plan.get('rollbackConnection') != before.get(VPN_BACKUP))):
+            raise ValueError('Spravované VPN profily se od vytvoření plánu změnily.')
         current = before.get(VPN_CONNECTION, {}).get('uuid')
         new_uuid = None
         backup_uuid = None
+        committed = False
         try:
             stale_backup = before.get(VPN_BACKUP, {}).get('uuid')
             if stale_backup:
@@ -563,14 +671,22 @@ class Store:
                               'ipv6.never-default', 'yes', 'wireguard.peer-routes', 'yes'])
             privileged_nmcli(['connection', 'up', 'uuid', new_uuid])
             verify_vpn(notebook['wireguardAddress'], routes)
+            if commit:
+                commit()
+                committed = True
             receipt = {'state': 'installed', 'revision': document['revision'], 'installedAt': time.time(),
                        'activeUuid': new_uuid, 'backupUuid': backup_uuid, 'address': plan['address'],
                        'routes': routes, 'forwarding': self.forwarding_state()}
             f.atomic(self.root / 'vpn-state.json', receipt)
-            (self.root / 'vpn-plan.json').unlink(missing_ok=True)
+            plan_path.unlink(missing_ok=True)
             return self.vpn_status()
         except Exception as error:
             rollback_errors = []
+            if committed and restore:
+                try:
+                    restore()
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
             if new_uuid:
                 try:
                     privileged_nmcli(['connection', 'delete', 'uuid', new_uuid])
@@ -588,6 +704,77 @@ class Store:
                      'rollbackComplete': not rollback_errors})
             raise ValueError('Instalace VPN selhala; ' + ('předchozí profil byl obnoven.' if not rollback_errors
                              else 'automatickou obnovu se nepodařilo dokončit.')) from error
+
+    def topology_refresh_apply(self, plan_id):
+        plan_path = self.root / 'topology-refresh-plan.json'
+        plan = f.read(plan_path)
+        if not plan or plan.get('id') != plan_id or plan.get('expiresAt', 0) < time.time():
+            raise ValueError('Plán aktualizace topologie chybí nebo vypršel.')
+        update, current_envelope, current, proposed, notebook = self.validate_topology_update(
+            json.dumps(plan.get('update')))
+        if (plan.get('currentRevision') != current['revision'] or plan.get('revision') != proposed['revision']
+                or plan.get('currentTopologyHash') != f.digest(current_envelope)
+                or plan.get('proposedTopologyHash') != f.digest(update['published'])
+                or plan.get('kind') != ('update' if notebook else 'revoked')):
+            raise ValueError('Topologie se od vytvoření plánu změnila.')
+        if not notebook:
+            managed = nmcli_connections()
+            if (plan.get('currentConnection') != managed.get(VPN_CONNECTION)
+                    or plan.get('rollbackConnection') != managed.get(VPN_BACKUP)):
+                raise ValueError('Spravované VPN profily se od vytvoření plánu změnily.')
+            removed = []
+            # Delete the rollback copy first: if removing the active profile
+            # then fails, connectivity remains on the current known profile.
+            for name in [VPN_BACKUP, VPN_CONNECTION]:
+                profile = managed.get(name)
+                if profile:
+                    privileged_nmcli(['connection', 'delete', 'uuid', profile['uuid']])
+                    removed.append(profile['uuid'])
+            f.atomic(self.fleet / 'published.json', update['published'])
+            f.atomic(self.root / 'vpn-state.json', {
+                'state': 'revoked', 'revision': proposed['revision'], 'revokedAt': time.time(),
+                'managedProfilesRemoved': len(removed),
+            })
+            (self.root / 'vpn-plan.json').unlink(missing_ok=True)
+            (self.root / 'vpn-diagnostics.json').unlink(missing_ok=True)
+            (self.root / 'wireguard-refresh.conf').unlink(missing_ok=True)
+            plan_path.unlink(missing_ok=True)
+            return {'access': self.access_status(), 'vpn': self.vpn_status(),
+                    'revision': proposed['revision'], 'kind': 'revoked'}
+
+        config = self.root / 'wireguard-refresh.conf'
+        routes = self.routes_for(proposed)
+        if (not config.exists() or plan.get('configHash') != hashlib.sha256(config.read_bytes()).hexdigest()
+                or plan.get('address') != notebook['wireguardAddress'] + '/32'
+                or plan.get('routes') != routes):
+            raise ValueError('Připravená VPN konfigurace se změnila.')
+        old_config = (self.root / 'wireguard.conf').read_bytes() if (self.root / 'wireguard.conf').exists() else None
+
+        def commit():
+            try:
+                f.atomic(self.root / 'wireguard.conf', config.read_bytes())
+                f.atomic(self.fleet / 'published.json', update['published'])
+            except Exception:
+                if old_config is None:
+                    (self.root / 'wireguard.conf').unlink(missing_ok=True)
+                else:
+                    f.atomic(self.root / 'wireguard.conf', old_config)
+                f.atomic(self.fleet / 'published.json', current_envelope)
+                raise
+
+        def restore():
+            if old_config is None:
+                (self.root / 'wireguard.conf').unlink(missing_ok=True)
+            else:
+                f.atomic(self.root / 'wireguard.conf', old_config)
+            f.atomic(self.fleet / 'published.json', current_envelope)
+
+        vpn = self.activate_vpn(plan, proposed, notebook, config, routes, plan_path,
+                                commit=commit, restore=restore)
+        config.unlink(missing_ok=True)
+        (self.root / 'vpn-diagnostics.json').unlink(missing_ok=True)
+        return {'access': self.access_status(), 'vpn': vpn,
+                'revision': proposed['revision'], 'kind': 'update'}
 
     def vpn_rollback(self):
         if self.access_status().get('state') != 'valid':
@@ -1227,7 +1414,7 @@ def serve(store):
 
 def command(store, req):
     action = req['action']
-    if action in ['pair', 'unpair', 'resolve', 'manual', 'revoke_user_notebook'] and store.access_status().get('role') != 'administrator':
+    if action in ['pair', 'unpair', 'resolve', 'manual', 'revoke_user_notebook', 'topology_update_export'] and store.access_status().get('role') != 'administrator':
         raise ValueError('Operace vyžaduje platné administrátorské pověření notebooku.')
     if action == 'status':
         return store.public_status()
@@ -1250,6 +1437,15 @@ def command(store, req):
         result = store.public_status()
         result['revoked'] = revoked
         return result
+    if action == 'topology_update_export':
+        return {'update': store.topology_update_export()}
+    if action == 'topology_refresh_plan':
+        return {'plan': store.topology_refresh_plan(req.get('update')),
+                'vpn': store.vpn_status()}
+    if action == 'topology_refresh_apply':
+        if req.get('confirm') is not True:
+            raise ValueError('Aktualizace topologie vyžaduje výslovné potvrzení.')
+        return store.topology_refresh_apply(req.get('planId'))
     if action == 'vpn_plan':
         return {'plan': store.vpn_plan(), 'vpn': store.vpn_status()}
     if action == 'vpn_install':

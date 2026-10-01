@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, TopologyRefreshPlan } from "./domain";
 
 const tabs = [
   { id: 'overview', label: 'Přehled' },
@@ -52,6 +52,12 @@ const vpnDiagnostics = ref<NotebookVpnDiagnostics | null>(null);
 const vpnBusy = ref(false);
 const vpnError = ref("");
 const vpnConfirmed = ref(false);
+const topologyUpdateInput = ref("");
+const topologyUpdateExport = ref("");
+const topologyRefreshPlan = ref<TopologyRefreshPlan | null>(null);
+const topologyRefreshBusy = ref(false);
+const topologyRefreshError = ref("");
+const topologyRefreshConfirmed = ref(false);
 const notebookLabels: Record<string, string> = { synced: "Synchronizováno", local_newer: "Místní změny čekají na převzetí", conflict: "Konflikt změn", error: "Přenos se nezdařil" };
 let notebookPoll: ReturnType<typeof setInterval> | undefined;
 let unlistenTrayDisconnect: UnlistenFn | undefined;
@@ -118,6 +124,52 @@ async function revokeUserNotebook(id: string, name: string) {
   if (!window.confirm(`Odvolat členství notebooku „${name}“? Nová podepsaná revize jej odebere z routerových WireGuard peerů. Jeho místní identita ani data se nesmažou.`)) return;
   await notebookOperation({ action: "revoke_user_notebook", notebookId: id, confirm: true });
   await refreshReadOnlyOverview();
+}
+
+async function exportTopologyUpdate() {
+  topologyRefreshBusy.value = true;
+  topologyRefreshError.value = "";
+  try {
+    const result = await notebookEnrollmentAction<{ update: string }>({ action: "topology_update_export" });
+    topologyUpdateExport.value = result.update;
+  } catch (error) { topologyRefreshError.value = String(error); }
+  finally { topologyRefreshBusy.value = false; }
+}
+
+async function previewTopologyRefresh() {
+  topologyRefreshBusy.value = true;
+  topologyRefreshError.value = "";
+  topologyRefreshConfirmed.value = false;
+  try {
+    const result = await notebookVpnAction<{ plan: TopologyRefreshPlan; vpn: NotebookVpnStatus }>({
+      action: "topology_refresh_plan", update: topologyUpdateInput.value,
+    });
+    topologyRefreshPlan.value = result.plan;
+    vpnStatus.value = result.vpn;
+  } catch (error) { topologyRefreshError.value = String(error); }
+  finally { topologyRefreshBusy.value = false; }
+}
+
+async function applyTopologyRefresh() {
+  if (!topologyRefreshPlan.value || !topologyRefreshConfirmed.value) return;
+  topologyRefreshBusy.value = true;
+  topologyRefreshError.value = "";
+  try {
+    const result = await notebookVpnAction<{ kind: "update" | "revoked"; revision: number; vpn: NotebookVpnStatus }>({
+      action: "topology_refresh_apply", planId: topologyRefreshPlan.value.id, confirm: true,
+    });
+    vpnStatus.value = result.vpn;
+    topologyRefreshPlan.value = null;
+    topologyRefreshConfirmed.value = false;
+    topologyUpdateInput.value = "";
+    await notebookOperation();
+    if (result.kind === "update") await refreshReadOnlyOverview();
+    else {
+      readOnlyOverview.value = null;
+      message.value = `Členství bylo odvoláno revizí ${result.revision}; místní identita a data zůstaly zachované.`;
+    }
+  } catch (error) { topologyRefreshError.value = String(error); }
+  finally { topologyRefreshBusy.value = false; }
 }
 
 async function loadVpnStatus() {
@@ -625,6 +677,12 @@ async function submitConnection() {
         :service-busy="syncBusy" :service-error="syncError"
         :vpn-plan="vpnPlan" :vpn-status="vpnStatus" :vpn-diagnostics="vpnDiagnostics" :vpn-busy="vpnBusy" :vpn-error="vpnError"
         :vpn-confirmed="vpnConfirmed" @update:vpn-confirmed="vpnConfirmed = $event"
+        :topology-update="topologyUpdateInput" :topology-refresh-plan="topologyRefreshPlan"
+        :topology-refresh-busy="topologyRefreshBusy" :topology-refresh-error="topologyRefreshError"
+        :topology-refresh-confirmed="topologyRefreshConfirmed"
+        @update:topology-update="topologyUpdateInput = $event"
+        @update:topology-refresh-confirmed="topologyRefreshConfirmed = $event"
+        @topology-refresh-preview="previewTopologyRefresh" @topology-refresh-apply="applyTopologyRefresh"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
         @service-install="serviceOperation('service_install')" @service-remove="serviceOperation('service_remove')"
         @revoke-notebook="revokeUserNotebook"
@@ -736,6 +794,15 @@ async function submitConnection() {
           <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
           <label v-if="issuedInvitation">Pozvánka pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
           <small>Před předáním porovnejte otisk notebooku z žádosti s údajem zobrazeným přímo na cílovém zařízení.</small>
+        </div>
+      </details>
+      <details>
+        <summary>Exportovat podepsanou aktualizaci pro uživatelské notebooky</summary>
+        <div class="connection-form">
+          <p>Balíček obsahuje veřejnou kotvu a aktuální podepsanou topologii, nikdy kořenový privátní klíč. Uživatelský notebook před použitím zobrazí změny rout a vyžádá potvrzení.</p>
+          <button :disabled="topologyRefreshBusy" @click="exportTopologyUpdate">Vytvořit aktualizační balíček</button>
+          <p v-if="topologyRefreshError" class="error">{{ topologyRefreshError }}</p>
+          <label v-if="topologyUpdateExport">Podepsaná aktualizace<textarea class="pairing-data" readonly :value="topologyUpdateExport"></textarea></label>
         </div>
       </details>
       <p v-if="syncError" class="error" role="alert">{{ syncError }}</p>

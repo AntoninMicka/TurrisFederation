@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview } from "./domain";
+import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, TopologyRefreshPlan } from "./domain";
 
 const props = defineProps<{
   overview: ReadOnlyOverview | null;
@@ -16,9 +16,14 @@ const props = defineProps<{
   serviceBusy: boolean;
   serviceError: string;
   vpnConfirmed: boolean;
+  topologyUpdate: string;
+  topologyRefreshPlan: TopologyRefreshPlan | null;
+  topologyRefreshBusy: boolean;
+  topologyRefreshError: string;
+  topologyRefreshConfirmed: boolean;
 }>();
 
-defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; revokeNotebook: [id: string, name: string]; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
+defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; revokeNotebook: [id: string, name: string]; vpnPreview: []; vpnInstall: []; vpnRollback: []; topologyRefreshPreview: []; topologyRefreshApply: []; "update:vpnConfirmed": [value: boolean]; "update:topologyUpdate": [value: string]; "update:topologyRefreshConfirmed": [value: boolean] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -212,6 +217,24 @@ function presenceLabel(value: boolean | null, positive: string) {
       <p class="muted">Změny konfigurace, audity a nasazení jsou oddělené v administračních záložkách.</p>
     </section>
 
+    <section v-if="notebook?.access.state === 'valid' && notebook.access.role === 'user'" class="overview-section">
+      <h3>Aktualizace podepsané topologie</h3>
+      <p>Vložte balíček předaný administrátorem. Nejprve se ověří podpis, federace, novější revize, role a WireGuard identita; systémové změny se provedou až po náhledu a potvrzení.</p>
+      <label>Aktualizační balíček<textarea class="pairing-data" :value="topologyUpdate" @input="$emit('update:topologyUpdate', ($event.target as HTMLTextAreaElement).value)"></textarea></label>
+      <button type="button" class="secondary" :disabled="topologyRefreshBusy || !topologyUpdate.trim()" @click="$emit('topologyRefreshPreview')">{{ topologyRefreshBusy ? "Ověřuji…" : "Ověřit a zobrazit plán" }}</button>
+      <p v-if="topologyRefreshError" class="error">{{ topologyRefreshError }}</p>
+      <div v-if="topologyRefreshPlan" class="setup-preview">
+        <strong>{{ topologyRefreshPlan.kind === "revoked" ? "Revize odvolává členství tohoto notebooku" : "Podepsaná aktualizace je připravená" }}</strong>
+        <p>Revize {{ topologyRefreshPlan.currentRevision }} → {{ topologyRefreshPlan.revision }}</p>
+        <p v-if="topologyRefreshPlan.addedRoutes.length">Přidané routy: <code>{{ topologyRefreshPlan.addedRoutes.join(", ") }}</code></p>
+        <p v-if="topologyRefreshPlan.removedRoutes.length">Odebrané routy: <code>{{ topologyRefreshPlan.removedRoutes.join(", ") }}</code></p>
+        <p v-if="topologyRefreshPlan.kind === 'revoked'" class="warning">Spravovaný VPN profil i jeho federovaná rollback kopie budou odstraněny; ostatní NetworkManager profily, místní identita, pověření a data zůstanou zachované.</p>
+        <ol><li v-for="step in topologyRefreshPlan.steps" :key="step">{{ step }}</li></ol>
+        <label class="trust-check"><input type="checkbox" :checked="topologyRefreshConfirmed" @change="$emit('update:topologyRefreshConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím změnám a potvrzuji použití podepsané revize.</label>
+        <button type="button" :disabled="topologyRefreshBusy || !topologyRefreshConfirmed" @click="$emit('topologyRefreshApply')">{{ topologyRefreshPlan.kind === "revoked" ? "Přijmout odvolání a odpojit VPN" : "Aktualizovat topologii a VPN" }}</button>
+      </div>
+    </section>
+
     <section class="overview-section">
       <div class="overview-section-heading">
         <h3>VPN tohoto notebooku</h3>
@@ -220,7 +243,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         </button>
       </div>
       <p v-if="vpnError" class="error">{{ vpnError }}</p>
-      <p><strong>{{ vpnStatus?.state === "installed" ? "VPN profil je nainstalovaný" : vpnStatus?.state === "rolled_back" ? "Předchozí profil byl obnoven" : vpnStatus?.state === "error" ? "Poslední instalace selhala" : "VPN profil zatím není nainstalovaný" }}</strong></p>
+      <p><strong>{{ vpnStatus?.state === "installed" ? "VPN profil je nainstalovaný" : vpnStatus?.state === "rolled_back" ? "Předchozí profil byl obnoven" : vpnStatus?.state === "revoked" ? "Členství bylo odvoláno a spravovaná VPN odstraněna" : vpnStatus?.state === "error" ? "Poslední instalace selhala" : "VPN profil zatím není nainstalovaný" }}</strong></p>
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
       <template v-if="vpnDiagnostics">
         <p :class="vpnDiagnosticFresh ? '' : 'warning'">Místní kontrola revize {{ vpnDiagnostics.revision }}: profil {{ profileLabel }}, rozhraní {{ presenceLabel(vpnDiagnostics.interfacePresent, "nalezeno") }}, adresa {{ presenceLabel(vpnDiagnostics.addressAssigned, "odpovídá") }}, routy {{ vpnDiagnostics.routesActive }}/{{ vpnDiagnostics.routesExpected }}.</p>

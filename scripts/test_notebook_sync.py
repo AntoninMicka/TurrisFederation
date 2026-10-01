@@ -165,6 +165,7 @@ class NotebookTests(unittest.TestCase):
             {'action': 'manual', 'invitation': '{}'},
             {'action': 'resolve', 'peer': self.b.id, 'choice': 'local', 'token': 'x'},
             {'action': 'revoke_user_notebook', 'notebookId': self.b.id, 'confirm': True},
+            {'action': 'topology_update_export'},
         ]:
             with self.subTest(action=request['action']), self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
                 n.command(self.a, request)
@@ -263,6 +264,146 @@ class NotebookTests(unittest.TestCase):
         self.a.bootstrap_admin_credential()
         with self.assertRaisesRegex(ValueError, 'Administrátorský notebook'):
             self.a.revoke_user_notebook(self.a.id)
+
+    def test_user_previews_and_atomically_applies_newer_signed_topology(self):
+        invitation = self.onboard_user()
+        identity = (self.b.root / 'key.pem').read_bytes()
+        old_config = (self.b.root / 'wireguard.conf').read_bytes()
+        public = invitation['rootPublic']
+        current = f.validate_document(f.verify(public, f.read(self.a.fleet / 'published.json')))
+        updated_config = copy.deepcopy(current['config'])
+        updated_config['nodes'][0]['lanCidrs'] = ['192.168.2.0/24']
+        f.snapshot(self.a.fleet, updated_config, current['members'])
+        update = self.a.topology_update_export()
+
+        forwarding = {'ipv4': False, 'ipv6': False}
+        old_uuid, new_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+        managed = {n.VPN_CONNECTION: {'uuid': old_uuid, 'type': 'wireguard'}}
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value=managed), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.topology_refresh_plan(update)
+        self.assertEqual(('update', current['revision'], current['revision'] + 1),
+                         (plan['kind'], plan['currentRevision'], plan['revision']))
+        self.assertEqual(['192.168.2.0/24'], plan['addedRoutes'])
+        self.assertEqual(['192.168.1.0/24'], plan['removedRoutes'])
+        self.assertNotIn('update', plan)
+        self.assertNotIn('configHash', plan)
+
+        f.atomic(self.b.root / 'vpn-state.json', {'state': 'installed', 'activeUuid': old_uuid,
+                 'backupUuid': None, 'revision': current['revision'], 'address': '10.203.0.3/32',
+                 'routes': ['10.203.0.1/32', '192.168.1.0/24']})
+        calls = []
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'), \
+                patch.object(n, 'nmcli_connections', return_value=managed), \
+                patch.object(n, 'nmcli_uuids', side_effect=[{old_uuid}, {old_uuid, new_uuid}]), \
+                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
+                patch.object(n, 'verify_vpn') as verify:
+            result = n.command(self.b, {'action': 'topology_refresh_apply',
+                                        'planId': plan['id'], 'confirm': True})
+        self.assertEqual(('update', current['revision'] + 1, 'valid', 'installed'),
+                         (result['kind'], result['revision'], result['access']['state'], result['vpn']['state']))
+        verify.assert_called_once_with('10.203.0.3', ['10.203.0.1/32', '192.168.2.0/24'])
+        self.assertNotEqual(old_config, (self.b.root / 'wireguard.conf').read_bytes())
+        self.assertEqual(identity, (self.b.root / 'key.pem').read_bytes())
+        accepted = f.validate_document(f.verify(public, f.read(self.b.fleet / 'published.json')))
+        self.assertEqual(current['revision'] + 1, accepted['revision'])
+        self.assertFalse((self.b.root / 'topology-refresh-plan.json').exists())
+        self.assertFalse((self.b.root / 'wireguard-refresh.conf').exists())
+
+    def test_topology_refresh_rejects_old_foreign_and_role_changing_documents(self):
+        invitation = self.onboard_user()
+        with self.assertRaisesRegex(ValueError, 'novější revizi'):
+            self.b.topology_refresh_plan(self.a.topology_update_export())
+
+        foreign = json.loads(self.a.topology_update_export())
+        foreign['rootPublic'] = f.public_key(self.c.root / 'key.pem')
+        with self.assertRaisesRegex(ValueError, 'jinou kotvu'):
+            self.b.topology_refresh_plan(json.dumps(foreign))
+
+        public = invitation['rootPublic']
+        current = f.validate_document(f.verify(public, f.read(self.a.fleet / 'published.json')))
+        changed = copy.deepcopy(current['config'])
+        target = next(item for item in changed['notebooks'] if item['id'] == self.b.id)
+        target['role'] = 'administrator'
+        envelope = f.snapshot(self.a.fleet, changed, current['members'])
+        update = json.dumps({'schema': n.TOPOLOGY_UPDATE_SCHEMA,
+                             'rootPublic': public, 'published': envelope})
+        with self.assertRaisesRegex(ValueError, 'mění roli'):
+            self.b.topology_refresh_plan(update)
+
+    def test_topology_refresh_restores_profile_and_revision_after_commit_failure(self):
+        invitation = self.onboard_user()
+        public = invitation['rootPublic']
+        old_envelope = f.read(self.b.fleet / 'published.json')
+        old_config = (self.b.root / 'wireguard.conf').read_bytes()
+        current = f.validate_document(f.verify(public, old_envelope))
+        changed = copy.deepcopy(current['config'])
+        changed['nodes'][0]['lanCidrs'] = ['192.168.9.0/24']
+        f.snapshot(self.a.fleet, changed, current['members'])
+        forwarding = {'ipv4': False, 'ipv6': False}
+        old_uuid, new_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+        managed = {n.VPN_CONNECTION: {'uuid': old_uuid, 'type': 'wireguard'}}
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value=managed), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+
+        real_atomic = f.atomic
+
+        def fail_receipt(path, value):
+            if Path(path) == self.b.root / 'vpn-state.json' and value.get('state') == 'installed':
+                raise OSError('receipt failed')
+            return real_atomic(path, value)
+
+        calls = []
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'), \
+                patch.object(n, 'nmcli_connections', return_value=managed), \
+                patch.object(n, 'nmcli_uuids', side_effect=[{old_uuid}, {old_uuid, new_uuid}]), \
+                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
+                patch.object(n, 'verify_vpn'), patch.object(f, 'atomic', side_effect=fail_receipt), \
+                self.assertRaisesRegex(ValueError, 'předchozí profil byl obnoven'):
+            self.b.topology_refresh_apply(plan['id'])
+        self.assertEqual(old_envelope, f.read(self.b.fleet / 'published.json'))
+        self.assertEqual(old_config, (self.b.root / 'wireguard.conf').read_bytes())
+        self.assertIn(['connection', 'delete', 'uuid', new_uuid], calls)
+        self.assertIn(['connection', 'modify', 'uuid', old_uuid,
+                       'connection.id', n.VPN_CONNECTION], calls)
+
+    def test_signed_revocation_disconnects_vpn_but_preserves_identity(self):
+        self.onboard_user()
+        identity = (self.b.root / 'key.pem').read_bytes()
+        credential = (self.b.root / 'credential.json').read_bytes()
+        wireguard = (self.b.root / 'wireguard.key').read_bytes()
+        active = str(uuid.uuid4())
+        f.atomic(self.b.root / 'vpn-state.json', {'state': 'installed', 'activeUuid': active,
+                 'backupUuid': None, 'revision': 3, 'address': '10.203.0.3/32', 'routes': []})
+        self.a.revoke_user_notebook(self.b.id)
+        backup = str(uuid.uuid4())
+        managed = {
+            n.VPN_CONNECTION: {'uuid': active, 'type': 'wireguard'},
+            n.VPN_BACKUP: {'uuid': backup, 'type': 'wireguard'},
+        }
+        with patch.object(n, 'nmcli_connections', return_value=managed):
+            plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        self.assertEqual('revoked', plan['kind'])
+        self.assertNotIn('underlayDevice', plan)
+        with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
+            n.command(self.b, {'action': 'topology_refresh_apply', 'planId': plan['id']})
+        calls = []
+        with patch.object(n, 'nmcli_connections', return_value=managed), \
+                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''):
+            result = n.command(self.b, {'action': 'topology_refresh_apply',
+                                        'planId': plan['id'], 'confirm': True})
+        self.assertEqual(('revoked', 'invalid', 'revoked'),
+                         (result['kind'], result['access']['state'], result['vpn']['state']))
+        self.assertEqual([['connection', 'delete', 'uuid', backup],
+                          ['connection', 'delete', 'uuid', active]], calls)
+        self.assertEqual(identity, (self.b.root / 'key.pem').read_bytes())
+        self.assertEqual(credential, (self.b.root / 'credential.json').read_bytes())
+        self.assertEqual(wireguard, (self.b.root / 'wireguard.key').read_bytes())
 
     def test_user_credential_fails_if_signed_topology_does_not_contain_notebook(self):
         self.published_federation(self.a)

@@ -151,6 +151,17 @@ doručit jej administrátorovi a zobrazit, zda bylo odvolání potvrzeno. Volba
 **Smazat místní identitu a data** bude samostatná destruktivní akce s přesným
 náhledem a nebude součástí běžného odinstalování.
 
+Pro první implementaci aktualizace administrátor exportuje balíček obsahující
+jen veřejnou kotvu a aktuální podepsanou topologii. Uživatelský notebook jej
+ověří proti připnuté kotvě a přijme pouze novější revizi stejné federace, která
+nemění jeho roli ani WireGuard klíč. Před zápisem zobrazí rozdíl rout a vyžádá
+výslovné potvrzení. Aktivní členství se přijme až po úspěšné aktivaci a ověření
+nového NetworkManager profilu; při chybě se obnoví předchozí profil, konfigurace
+i podepsaná revize. Odvolávající revize nejprve odstraní přesně pojmenovaný
+spravovaný profil i jeho federovanou rollback kopii a teprve potom zneplatní
+členství; jiných NetworkManager profilů se nedotkne. Privátní TLS a WireGuard
+identita zůstávají zachované.
+
 Obnova z existujícího datového adresáře nesmí vytvořit novou identitu ani
 přepsat jiné pověření. Při nekompatibilní nebo poškozené konfiguraci backend
 zůstane zastavený, tray zobrazí chybu a UI nabídne export diagnostiky bez klíčů.
