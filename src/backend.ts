@@ -80,6 +80,7 @@ export interface NotebookSyncStatus {
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
   service?: { installed: boolean; active: boolean; unit: string };
+  access: { state: "unconnected" | "valid" | "invalid"; role: "administrator" | "user" | null; canBootstrapAdmin: boolean; error?: string; federationId?: string; subject?: string; issuedAt?: number; expiresAt?: number | null };
 }
 export async function notebookAction(request: Record<string, unknown>): Promise<NotebookSyncStatus> {
   if (browserMode) throw new Error("Synchronizace notebooků je dostupná v desktopové aplikaci.");

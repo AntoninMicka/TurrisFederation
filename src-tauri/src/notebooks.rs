@@ -132,6 +132,25 @@ fn start(data: &Path, service: &NotebookService) -> Result<(), String> {
     Ok(())
 }
 
+fn script_request(data: &Path, request: &Value) -> Result<Value, String> {
+    let script = scripts(data)?;
+    let mut child = Command::new("python3").arg(&script).arg("command").arg(data)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|e| format!("Notebook potřebuje python3 a openssl: {e}"))?;
+    child.stdin.take().ok_or("Chybí vstup synchronizace.")?
+        .write_all(&serde_json::to_vec(request).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().into()); }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+pub fn require_admin(app: &tauri::AppHandle) -> Result<(), String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let access = script_request(&data, &json!({"action": "access_status"}))?;
+    if access["state"].as_str() == Some("valid") && access["role"].as_str() == Some("administrator") { Ok(()) }
+    else { Err("Operace vyžaduje platné administrátorské pověření notebooku.".into()) }
+}
+
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     if unit_path(config_dir).exists() { return; }
     let config = fs::read(data.join("notebooks/config.json")).ok()
@@ -148,7 +167,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let config_dir = app.path().config_dir().map_err(|e| e.to_string())?;
         let service = app.state::<NotebookService>();
         let action = request["action"].as_str().ok_or("Chybí operace.")?;
-        if !["status", "configure", "stop", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
+        if !["status", "access_status", "bootstrap_admin", "configure", "stop", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
             return Err("Neznámá operace notebooku.".into());
         }
         // Serialize commands, including config/status updates, without blocking the UI.
@@ -178,15 +197,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             result["service"] = service_state(&config_dir);
             return Ok(result);
         }
-        let script = scripts(&data)?;
-        let mut child = Command::new("python3").arg(&script).arg("command").arg(&data)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().map_err(|e| format!("Notebook potřebuje python3 a openssl: {e}"))?;
-        child.stdin.take().ok_or("Chybí vstup synchronizace.")?
-            .write_all(&serde_json::to_vec(&request).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().into()); }
-        let mut result: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        let mut result = script_request(&data, &request)?;
         if action == "configure" || action == "stop" {
             if unit_path(&config_dir).exists() {
                 systemctl(&["restart", UNIT_NAME])?;

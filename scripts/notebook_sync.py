@@ -34,6 +34,7 @@ COLUMNS = ['id', 'name', 'ssh_host', 'ssh_port', 'ssh_user', 'lan_cidrs',
            'zero_tier_address', 'public_endpoint', 'wireguard_address']
 FLEET_FILES = ['root.pem', 'members.json', 'published.json', 'revision-floor.json']
 LOCAL_LIMIT = 16 * 1024
+CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
 
 
 def fingerprint(cert):
@@ -136,6 +137,65 @@ class Store:
                     f.atomic(self.root / 'cert.pem', cert.read_bytes())
         self.cert = (self.root / 'cert.pem').read_text()
         self.id = fingerprint(self.cert)
+
+    def access_status(self):
+        credential_path = self.root / 'credential.json'
+        public_path = self.root / 'federation-root.pub'
+        can_bootstrap = (self.fleet / 'root.pem').exists() and (self.fleet / 'published.json').exists()
+        if not credential_path.exists() or not public_path.exists():
+            return {'state': 'unconnected', 'role': None, 'canBootstrapAdmin': can_bootstrap}
+        try:
+            envelope = f.read(credential_path)
+            credential = f.verify(public_path.read_text(), envelope)
+            if set(credential) != {'schema', 'federationId', 'subject', 'role', 'issuedAt', 'expiresAt', 'serial'}:
+                raise ValueError('Neplatná pole pověření.')
+            if credential['schema'] != CREDENTIAL_SCHEMA or credential['role'] not in ['administrator', 'user']:
+                raise ValueError('Neplatný typ pověření.')
+            if credential['subject'] != self.id or str(uuid.UUID(credential['serial'])) != credential['serial']:
+                raise ValueError('Pověření patří jinému notebooku.')
+            if type(credential['issuedAt']) not in [int, float] or credential['issuedAt'] > time.time() + 300:
+                raise ValueError('Neplatný čas vydání pověření.')
+            expires = credential['expiresAt']
+            if expires is not None and (type(expires) not in [int, float] or expires <= time.time()):
+                raise ValueError('Pověření vypršelo.')
+            published = f.read(self.fleet / 'published.json')
+            if published:
+                document = f.validate_document(f.verify(public_path.read_text(), published))
+                if document['federationId'] != credential['federationId']:
+                    raise ValueError('Pověření patří jiné federaci.')
+            return {'state': 'valid', 'role': credential['role'], 'canBootstrapAdmin': False,
+                    'federationId': credential['federationId'], 'subject': credential['subject'],
+                    'issuedAt': credential['issuedAt'], 'expiresAt': expires}
+        except Exception:
+            return {'state': 'invalid', 'role': None, 'canBootstrapAdmin': False,
+                    'error': 'Podepsané pověření notebooku není platné.'}
+
+    def bootstrap_admin_credential(self):
+        if (self.root / 'credential.json').exists():
+            raise ValueError('Pověření notebooku již existuje.')
+        private = self.fleet / 'root.pem'
+        published = f.read(self.fleet / 'published.json')
+        if not private.exists() or not published:
+            raise ValueError('Chybí stávající řídicí identita a publikovaná federace.')
+        public = f.public_key(private)
+        public_path = self.root / 'federation-root.pub'
+        if public_path.exists() and public_path.read_text() != public:
+            raise ValueError('Existující kotva notebooku patří jiné federaci.')
+        document = f.validate_document(f.verify(public, published))
+        now = int(time.time())
+        credential = {'schema': CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
+                      'subject': self.id, 'role': 'administrator', 'issuedAt': now,
+                      'expiresAt': None, 'serial': str(uuid.uuid4())}
+        envelope = f.sign(private, credential)
+        # Publish the pinned verifier before the credential. If interrupted,
+        # the same verified migration can safely finish on the next attempt.
+        if not public_path.exists():
+            f.atomic(public_path, public.encode())
+        f.atomic(self.root / 'credential.json', envelope)
+        status = self.access_status()
+        if status['state'] != 'valid' or status['role'] != 'administrator':
+            raise ValueError('Vydané pověření nelze ověřit.')
+        return status
 
     @contextlib.contextmanager
     def db(self):
@@ -293,6 +353,7 @@ class Store:
                             remoteConfig={k: remote['data'][k] for k in ['nodes', 'zerotier']})
             items.append(item)
         return {'id': self.id, 'name': f.read(self.root / 'config.json', {}).get('name', socket.gethostname()),
+                'access': self.access_status(),
                 'config': f.read(self.root / 'config.json', {}), 'peers': sorted(items, key=lambda p: p.get('name', p['id'])),
                 'updatedAt': runtime.get('updatedAt'), 'error': runtime.get('error'),
                 'configurationVersion': f.digest(snapshot['data']),
@@ -558,7 +619,14 @@ def serve(store):
 
 def command(store, req):
     action = req['action']
+    if action in ['pair', 'unpair', 'resolve', 'manual'] and store.access_status().get('role') != 'administrator':
+        raise ValueError('Operace vyžaduje platné administrátorské pověření notebooku.')
     if action == 'status':
+        return store.status()
+    if action == 'access_status':
+        return store.access_status()
+    if action == 'bootstrap_admin':
+        store.bootstrap_admin_credential()
         return store.status()
     if action == 'configure':
         name, address = req['name'].strip(), req['address'].strip()

@@ -109,7 +109,8 @@ fn validate_import_node(node: &FederationNode) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn export_settings(state: State<'_, AppState>) -> Result<String, String> {
+fn export_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    notebooks::require_admin(&app)?;
     let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
     let export = SettingsExport {
         version: 2,
@@ -126,7 +127,8 @@ fn export_settings(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn import_settings(payload: String, state: State<'_, AppState>) -> Result<(), String> {
+fn import_settings(payload: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    notebooks::require_admin(&app)?;
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
     import_settings_to_db(&payload, &mut db)
 }
@@ -175,7 +177,8 @@ fn import_settings_to_db(payload: &str, db: &mut Connection) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn save_node(node: FederationNode, state: State<'_, AppState>) -> Result<FederationNode, String> {
+fn save_node(node: FederationNode, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<FederationNode, String> {
+    notebooks::require_admin(&app)?;
     validate_import_node(&node)?;
     let db = state.db.lock().map_err(|_| "Databáze je právě používána.".to_string())?;
     db.execute("INSERT INTO nodes(id,name,ssh_host,ssh_port,ssh_user,lan_cidrs,zero_tier_address,public_endpoint,status,last_audit_at,wireguard_address) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'draft',NULL,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,ssh_host=excluded.ssh_host,ssh_port=excluded.ssh_port,ssh_user=excluded.ssh_user,lan_cidrs=excluded.lan_cidrs,zero_tier_address=excluded.zero_tier_address,public_endpoint=excluded.public_endpoint,wireguard_address=excluded.wireguard_address,status='draft',last_audit_at=NULL",
@@ -195,7 +198,8 @@ fn saved_host_key(db: &Connection, node: &FederationNode) -> Result<Option<Strin
 }
 
 #[tauri::command]
-async fn inspect_connection(node_id: String, state: State<'_, AppState>) -> Result<ssh::HostIdentity, String> {
+async fn inspect_connection(node_id: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<ssh::HostIdentity, String> {
+    notebooks::require_admin(&app)?;
     let (node, saved) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let node = load_node(&db, &node_id)?;
@@ -240,7 +244,8 @@ async fn authenticated_probe_with_timeout(node_id: &str, credentials: SshCredent
 }
 
 #[tauri::command]
-async fn connect_node(node_id: String, credentials: SshCredentials, state: State<'_, AppState>) -> Result<FederationNode, String> {
+async fn connect_node(node_id: String, credentials: SshCredentials, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<FederationNode, String> {
+    notebooks::require_admin(&app)?;
     let (node, payload) = authenticated_probe(&node_id, credentials, &state, "printf '__TF_CONNECTED__\\n'").await?;
     if !payload.lines().any(|line| line == "__TF_CONNECTED__") {
         return Err("SSH odpovědělo, ale router neumožnil provést ověřovací příkaz.".into());
@@ -251,7 +256,8 @@ async fn connect_node(node_id: String, credentials: SshCredentials, state: State
 }
 
 #[tauri::command]
-async fn audit_node(node_id: String, credentials: SshCredentials, state: State<'_, AppState>) -> Result<Vec<AuditFinding>, String> {
+async fn audit_node(node_id: String, credentials: SshCredentials, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<AuditFinding>, String> {
+    notebooks::require_admin(&app)?;
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
     let zt_probe = zerotier::probe(settings.network_id.as_deref(), false)?;
     let probe = format!("set +e; echo __TF_SYSTEM__; ubus call system board 2>&1; {} echo __TF_WIREGUARD__; wg show all public-key 2>&1; echo __TF_PACKAGES__; opkg status zerotier wireguard-tools 2>&1; {}", network::PROBE, zt_probe);
@@ -407,7 +413,8 @@ fn get_zerotier_settings(state: State<'_, AppState>) -> Result<zerotier::Setting
 }
 
 #[tauri::command]
-fn save_zerotier_settings(settings: zerotier::Settings, state: State<'_, AppState>) -> Result<zerotier::Settings, String> {
+fn save_zerotier_settings(settings: zerotier::Settings, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<zerotier::Settings, String> {
+    notebooks::require_admin(&app)?;
     let settings = settings.normalize()?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.execute("INSERT INTO app_settings(name,value) VALUES('zerotier',?1) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
@@ -444,7 +451,8 @@ async fn check_notebook_zerotier(state: State<'_, AppState>) -> Result<zerotier:
 }
 
 #[tauri::command]
-async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_id: Option<String>, configure: bool, state: State<'_, AppState>) -> Result<zerotier::Status, String> {
+async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_id: Option<String>, configure: bool, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<zerotier::Status, String> {
+    notebooks::require_admin(&app)?;
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
     if network_id != settings.network_id { return Err("Network ID se změnilo. Znovu otevřete kontrolu ZeroTier.".into()); }
     let probe = zerotier::probe(network_id.as_deref(), configure)?;
@@ -458,7 +466,8 @@ async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_i
 }
 
 #[tauri::command]
-async fn open_zerotier_central(state: State<'_, AppState>) -> Result<String, String> {
+async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    notebooks::require_admin(&app)?;
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
     let url = settings.url();
     let mut child = tokio::process::Command::new("xdg-open").arg(url)

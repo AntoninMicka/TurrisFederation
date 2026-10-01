@@ -101,6 +101,12 @@ federaci a její kořenovou identitu pouze v explicitním toku **Vytvořit novou
 federaci**. Další administrátorský notebook se přidává pozváním a oboustranným
 ověřením otisků; uživatelský notebook nelze lokálně povýšit.
 
+Pro migraci existujícího řídicího notebooku UI nabízí samostatně potvrzenou
+akci pouze tehdy, když je lokálně přítomná kořenová privátní identita i platná
+publikovaná revize. Vydané pověření je podepsané touto kotvou a svázané s TLS
+otiskem notebooku a ID federace. Tento migrační krok není onboarding nového
+notebooku a nesmí být nabízen zařízení bez dosavadní řídicí identity.
+
 ## Aktualizace, odinstalace a obnova
 
 Aktualizace balíčku nejprve nahradí neměnné soubory, provede `daemon-reload`

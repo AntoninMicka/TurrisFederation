@@ -7,12 +7,15 @@ use std::{fs, process::Stdio, time::Duration};
 const CONTROLLER: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
 
 #[tauri::command]
-pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
     if !["overview", "refresh", "validate", "deploy", "publish", "diagnostics", "diagnostics_overview"].contains(&action.as_str()) {
         return Err("Neznámá operace deploye.".into());
     }
     if mode.as_deref().is_some_and(|value| !["full", "settings"].contains(&value)) {
         return Err("Neznámý režim aktualizace.".into());
+    }
+    if !["overview", "diagnostics", "diagnostics_overview"].contains(&action.as_str()) {
+        crate::notebooks::require_admin(&app)?;
     }
     let (nodes, settings) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;

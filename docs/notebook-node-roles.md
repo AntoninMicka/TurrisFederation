@@ -144,8 +144,18 @@ skutečnost musí před změnou upozornit.
 ## Dopad na současnou implementaci
 
 Současný kód modeluje v podepsané konfiguraci jen routery a místní notebook
-zobrazuje jako zvláštní řídicí položku pouze s kontrolou ZeroTier. Implementace
-tohoto návrhu proto vyžaduje verzovanou změnu protokolu, nikoli jen úpravu textů:
+zobrazuje jako zvláštní řídicí položku pouze s kontrolou ZeroTier. Dokončení
+návrhu proto vyžaduje verzovanou změnu protokolu, nikoli jen úpravu textů.
+
+První autorizační vrstva už ověřuje samostatné podepsané pověření svázané
+s TLS identitou notebooku a ID federace. Neplatné, cizí nebo prošlé pověření
+selže bez role; párování notebooků, změny routerů, audity a deploy vyžadují
+administrátorskou roli také v Tauri backendu. Stávající řídicí notebook může
+vydat vlastní administrátorské pověření jen explicitní jednorázovou migrací
+z existující kořenové identity a publikované revize. Pozvánky pro nové
+uživatelské notebooky a jejich sanitizované API ještě nejsou implementované.
+
+Zbývající kroky:
 
 1. Rozšířit společný model uzlu o typ `router | notebook` a u notebooku o roli
    `administrator | user`; staré routerové záznamy migrovat jako `router`.

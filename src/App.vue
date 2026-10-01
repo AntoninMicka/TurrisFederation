@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
@@ -16,20 +16,22 @@ const tabs = [
 ] as const;
 type TabId = typeof tabs[number]['id'];
 const activeTab = ref<TabId>('overview');
+const notebookSync = ref<NotebookSyncStatus | null>(null);
+const isAdministrator = computed(() => notebookSync.value?.access.role === "administrator" && notebookSync.value.access.state === "valid");
+const visibleTabs = computed(() => isAdministrator.value ? tabs : tabs.filter(tab => tab.id === "overview"));
 
 function navigateTabs(event: KeyboardEvent, index: number) {
   let target = index;
-  if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
-  else if (event.key === 'ArrowLeft') target = (index + tabs.length - 1) % tabs.length;
+  if (event.key === 'ArrowRight') target = (index + 1) % visibleTabs.value.length;
+  else if (event.key === 'ArrowLeft') target = (index + visibleTabs.value.length - 1) % visibleTabs.value.length;
   else if (event.key === 'Home') target = 0;
-  else if (event.key === 'End') target = tabs.length - 1;
+  else if (event.key === 'End') target = visibleTabs.value.length - 1;
   else return;
   event.preventDefault();
-  activeTab.value = tabs[target].id;
+  activeTab.value = visibleTabs.value[target].id;
   document.getElementById(`tab-${activeTab.value}`)?.focus();
 }
 
-const notebookSync = ref<NotebookSyncStatus | null>(null);
 const syncBusy = ref(false);
 const syncError = ref("");
 const syncDraft = reactive({ name: "", address: "" });
@@ -68,6 +70,11 @@ async function serviceOperation(action: "service_install" | "service_remove") {
     if (notebookSync.value) notebookSync.value = { ...notebookSync.value, service: result.service };
   } catch (error) { syncError.value = String(error); }
   finally { syncBusy.value = false; }
+}
+
+async function bootstrapAdministrator() {
+  if (!window.confirm("Vydat tomuto stávajícímu řídicímu notebooku administrátorské pověření podepsané kořenovou identitou federace? Tuto migraci nelze použít pro uživatelský notebook.")) return;
+  await notebookOperation({ action: "bootstrap_admin" });
 }
 
 async function loadSharedSettings() {
@@ -474,13 +481,22 @@ async function submitConnection() {
 <template>
   <main class="shell">
     <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Správa routerů, řídicích notebooků a společné sítě.</p></header>
+    <section v-if="notebookSync && !isAdministrator && notebookSync.access.role !== 'user'" class="panel access-gate" role="status">
+      <div><p class="kicker">Pověření notebooku</p><h2>Notebook není připojen k federaci</h2></div>
+      <p v-if="notebookSync.access.state === 'invalid'" class="error">{{ notebookSync.access.error }}</p>
+      <p v-else>Pro administrační funkce chybí platné podepsané pověření. Přehled zůstává pouze pro čtení.</p>
+      <button v-if="notebookSync.access.canBootstrapAdmin" :disabled="syncBusy" @click="bootstrapAdministrator">
+        Převést tento řídicí notebook na administrátorskou roli
+      </button>
+      <small v-else>Na tomto notebooku není dostupná bezpečná migrace. Připojení pozvánkou bude doplněno v instalačním průvodci.</small>
+    </section>
     <section class="summary"><article><strong>{{ nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
     <p v-if="sharedSettingsChanged && activeTab !== 'notebooks'" class="setup-preview" role="status">
       Sdílená konfigurace se změnila.
       <button class="secondary" @click="activeTab = 'notebooks'">Otevřít synchronizaci notebooků</button>
     </p>
     <nav class="tabs" role="tablist" aria-label="Správa federace">
-      <button v-for="(tab, index) in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button"
+      <button v-for="(tab, index) in visibleTabs" :id="`tab-${tab.id}`" :key="tab.id" type="button"
         role="tab" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`"
         :tabindex="activeTab === tab.id ? 0 : -1" :class="{ selected: activeTab === tab.id }"
         @click="activeTab = tab.id" @keydown="navigateTabs($event, index)">

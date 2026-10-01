@@ -70,6 +70,10 @@ class NotebookTests(unittest.TestCase):
         peers[peer.id] = {'name': peer.id[:8], 'cert': peer.cert, 'address': '127.0.0.1'}
         f.atomic(source.root / 'peers.json', peers)
 
+    def admin_command(self, store, request):
+        with patch.object(store, 'access_status', return_value={'state': 'valid', 'role': 'administrator'}):
+            return n.command(store, request)
+
     def node(self, store, name='Prague'):
         with store.db() as db:
             db.execute("INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",
@@ -82,6 +86,62 @@ class NotebookTests(unittest.TestCase):
 
     def root_identity(self, store):
         shutil.copy(store.root / 'key.pem', store.fleet / 'root.pem')
+
+    def published_federation(self, store):
+        self.node(store)
+        self.root_identity(store)
+        config = f.normalize([{'id': str(uuid.UUID(int=1)), 'name': 'Prague',
+                              'sshHost': '192.168.1.1', 'sshPort': 22, 'sshUser': 'root',
+                              'lanCidrs': ['192.168.1.0/24'], 'zeroTierAddress': '10.147.0.1',
+                              'wireguardAddress': '10.203.0.1', 'publicEndpoint': None}],
+                             'abcdef0123456789')
+        return f.snapshot(store.fleet, config, {})
+
+    def test_admin_credential_requires_explicit_bootstrap_and_verifies_identity(self):
+        self.assertEqual('unconnected', self.a.access_status()['state'])
+        self.assertFalse(self.a.access_status()['canBootstrapAdmin'])
+        self.published_federation(self.a)
+        self.assertTrue(self.a.access_status()['canBootstrapAdmin'])
+
+        # Recover a migration interrupted after pinning the verifier.
+        f.atomic(self.a.root / 'federation-root.pub', f.public_key(self.a.fleet / 'root.pem').encode())
+        status = n.command(self.a, {'action': 'bootstrap_admin'})['access']
+        self.assertEqual(('valid', 'administrator', self.a.id),
+                         (status['state'], status['role'], status['subject']))
+        self.assertEqual(0o600, (self.a.root / 'credential.json').stat().st_mode & 0o777)
+        self.assertEqual(0o600, (self.a.root / 'federation-root.pub').stat().st_mode & 0o777)
+        with self.assertRaisesRegex(ValueError, 'již existuje'):
+            self.a.bootstrap_admin_credential()
+
+        envelope = f.read(self.a.root / 'credential.json')
+        envelope['payload'] = envelope['payload'][:-2] + 'AA'
+        f.atomic(self.a.root / 'credential.json', envelope)
+        self.assertEqual({'state': 'invalid', 'role': None, 'canBootstrapAdmin': False,
+                          'error': 'Podepsané pověření notebooku není platné.'}, self.a.access_status())
+
+    def test_expired_or_wrong_subject_credential_fails_closed(self):
+        envelope = self.published_federation(self.a)
+        document = f.verify(f.public_key(self.a.fleet / 'root.pem'), envelope)
+        public = f.public_key(self.a.fleet / 'root.pem')
+        f.atomic(self.a.root / 'federation-root.pub', public.encode())
+        base = {'schema': n.CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
+                'subject': self.b.id, 'role': 'administrator', 'issuedAt': int(time.time()) - 10,
+                'expiresAt': None, 'serial': str(uuid.uuid4())}
+        f.atomic(self.a.root / 'credential.json', f.sign(self.a.fleet / 'root.pem', base))
+        self.assertEqual('invalid', self.a.access_status()['state'])
+        base.update(subject=self.a.id, expiresAt=time.time() - 1)
+        f.atomic(self.a.root / 'credential.json', f.sign(self.a.fleet / 'root.pem', base))
+        self.assertEqual('invalid', self.a.access_status()['state'])
+
+    def test_uncredentialed_notebook_cannot_call_admin_sync_actions(self):
+        for request in [
+            {'action': 'pair', 'peer': self.b.id},
+            {'action': 'unpair', 'peer': self.b.id},
+            {'action': 'manual', 'invitation': '{}'},
+            {'action': 'resolve', 'peer': self.b.id, 'choice': 'local', 'token': 'x'},
+        ]:
+            with self.subTest(action=request['action']), self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
+                n.command(self.a, request)
 
     def test_empty_notebook_adopts_configuration_and_management_identity(self):
         self.node(self.a)
@@ -118,7 +178,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot(self.a))
         peer = next(p for p in self.a.status()['peers'] if p['id'] == self.b.id)
         self.assertEqual(['B changed'], peer['remoteNodes'])
-        n.command(self.a, {'action': 'resolve', 'peer': self.b.id, 'choice': 'remote', 'token': peer['conflictToken']})
+        self.admin_command(self.a, {'action': 'resolve', 'peer': self.b.id, 'choice': 'remote', 'token': peer['conflictToken']})
         self.b.receive(self.a.id, self.snapshot(self.a))
         self.assertEqual(self.snapshot(self.a), self.snapshot(self.b))
         self.assertEqual('B changed', self.snapshot(self.a)['data']['nodes'][0]['name'])
@@ -131,7 +191,7 @@ class NotebookTests(unittest.TestCase):
         token = self.a.status()['peers'][0]['conflictToken']
         self.node(self.a, 'another edit')
         with self.assertRaisesRegex(ValueError, 'změnila'):
-            n.command(self.a, {'action': 'resolve', 'peer': self.b.id, 'choice': 'remote', 'token': token})
+            self.admin_command(self.a, {'action': 'resolve', 'peer': self.b.id, 'choice': 'remote', 'token': token})
 
     def test_foreign_root_is_never_overwritten(self):
         self.node(self.a)
@@ -141,7 +201,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual('conflict', self.b.receive(self.a.id, self.snapshot(self.a)))
         peer = self.b.status()['peers'][0]
         with self.assertRaisesRegex(ValueError, 'kotvě důvěry'):
-            n.command(self.b, {'action': 'resolve', 'peer': self.a.id, 'choice': 'remote', 'token': peer['conflictToken']})
+            self.admin_command(self.b, {'action': 'resolve', 'peer': self.a.id, 'choice': 'remote', 'token': peer['conflictToken']})
         self.assertEqual(original, (self.b.fleet / 'root.pem').read_bytes())
         self.assertFalse((self.b.fleet / 'notebook-sync-journal.json').exists())
 
@@ -181,7 +241,7 @@ class NotebookTests(unittest.TestCase):
 
     def test_unpair_prevents_late_incoming_update(self):
         self.node(self.a)
-        n.command(self.b, {'action': 'unpair', 'peer': self.a.id})
+        self.admin_command(self.b, {'action': 'unpair', 'peer': self.a.id})
         with self.assertRaisesRegex(ValueError, 'spárovaný'):
             self.b.receive(self.a.id, self.snapshot(self.a))
 
@@ -200,7 +260,7 @@ class NotebookTests(unittest.TestCase):
         peer = self.b.status()['peers'][0]
         self.assertFalse(peer['trusted'])
         self.assertEqual(self.a.id, peer['id'])
-        n.command(self.b, {'action': 'pair', 'peer': self.a.id})
+        self.admin_command(self.b, {'action': 'pair', 'peer': self.a.id})
         self.assertTrue(self.b.status()['peers'][0]['trusted'])
         self.assertNotIn('PRIVATE KEY', raw.decode())
 
@@ -216,7 +276,7 @@ class NotebookTests(unittest.TestCase):
             n.discover(self.b, f.encode(packet), '10.4.0.1', n.ipaddress.ip_network('10.4.0.0/24'))
 
     def test_manual_pairing_never_implicitly_trusts(self):
-        n.command(self.c, {'action': 'manual', 'invitation': json.dumps({'name': 'A', 'address': '10.4.0.1', 'cert': self.a.cert})})
+        self.admin_command(self.c, {'action': 'manual', 'invitation': json.dumps({'name': 'A', 'address': '10.4.0.1', 'cert': self.a.cert})})
         self.assertFalse(self.c.status()['peers'][0]['trusted'])
         self.assertFalse(self.c.peers())
 
@@ -234,7 +294,7 @@ class NotebookTests(unittest.TestCase):
                 # C trusts A, but A never authorized C.
                 with self.assertRaises((ssl.SSLError, OSError)):
                     n.fetch(self.c, self.b.peers()[self.a.id])
-                n.command(self.a, {'action': 'unpair', 'peer': self.b.id})
+                self.admin_command(self.a, {'action': 'unpair', 'peer': self.b.id})
                 with self.assertRaises((ssl.SSLError, OSError)):
                     n.fetch(self.b, self.b.peers()[self.a.id])
         finally:
