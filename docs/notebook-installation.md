@@ -149,6 +149,10 @@ zůstane zastavený, tray zobrazí chybu a UI nabídne export diagnostiky bez kl
 
 ## Akceptační test instalace
 
+Produkční balíček vznikne až po funkčním a end-to-end ověření vývojové
+instalace na skutečném routeru, administrátorském notebooku a uživatelském
+notebooku. Následující seznam je proto až druhá, balíčkovací fáze akceptace.
+
 Produkční instalace je přijatá až po ověření na čistém Ubuntu/Debian ARM64:
 
 - instalace a aktualizace podepsaného `.deb` bez vývojového toolchainu;

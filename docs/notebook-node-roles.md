@@ -195,8 +195,9 @@ Zbývající kroky:
    inventář, audit, publikování a deploy routerů.
 7. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
    roli a pověření, ale nikdy nepřenesly řídicí tajemství uživatelskému uzlu.
-8. Připravit podepsaný `.deb`, dodanou `systemd --user` jednotku, autostart tray
-   a průvodce přijetím notebooku podle
+8. Až po funkčním ověření předchozích kroků na skutečných zařízeních připravit
+   podepsaný `.deb`, dodanou `systemd --user` jednotku, autostart tray a
+   průvodce přijetím notebooku podle
    [instalačního návrhu](notebook-installation.md).
 
 ## Akceptační hranice

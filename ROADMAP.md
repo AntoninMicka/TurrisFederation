@@ -84,10 +84,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     polkit agentem ani VPN. Zbývá odvolání,
     aktualizace topologie bez řídicí synchronizace a fyzická akceptace. Místní
     diagnostika přijímá cíle jen z podepsané revize.
-  - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
-    Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
-    jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.
-    Návrh: [instalace notebooku](docs/notebook-installation.md).
+  - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
+    instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
+    dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
+    identitu a bezpečnou aktualizaci/odinstalaci. Balíčkování do dokončení
+    funkčních a end-to-end testů odkládáme. Návrh:
+    [instalace notebooku](docs/notebook-installation.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
