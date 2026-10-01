@@ -72,12 +72,19 @@ Při kontrole byla opravena záměna revizí během nepotvrzeného deploye:
 kontroluje shodu přijaté a rozpracované revize. Dva regresní testy pokrývají
 odmítnutí nové revize i odmítnutí nesprávného potvrzení.
 
-Notebook se zobrazuje automaticky jako místní řídicí uzel. Akce kontroly
+Notebook se v současné implementaci zobrazuje automaticky jako místní řídicí
+uzel. Akce kontroly
 čte místní ZeroTier službu a členství v uloženém Network ID. Nevytváří členství,
 neinstaluje software ani nemění síť. Notebook není položkou routerového seznamu
 `members`, proto se nedostane mezi WireGuard peery ani cíle deploye. Stav se
 načítá na vyžádání; nedostupná služba nebo chybějící oprávnění nejsou úspěchem.
 Kontrola členství sama neprokazuje dosažitelnost všech routerů.
+
+Navazující návrh rozděluje notebooky na administrátorské a uživatelské a oba
+z nich modeluje jako koncové VPN uzly bez routování fyzické sítě. Dostupnost se
+nadále zjišťuje jen lokálně na příslušném notebooku. Tato verzovaná změna
+protokolu zatím není implementovaná; viz
+[role notebooků](notebook-node-roles.md).
 
 HTTP obsluha běží v samostatném vlákně a odpovídá i během odchozí
 synchronizace. Předběžné kontroly `stage` a kontroly zdraví při potvrzení

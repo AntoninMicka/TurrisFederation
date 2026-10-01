@@ -1,5 +1,11 @@
 # Discovery a synchronizace mezi notebooky
 
+Tento dokument popisuje současnou synchronizaci **administrátorských
+notebooků**. Budoucí uživatelský notebook určený jen k síťovému připojení se do
+této synchronizace nezapojí a nesmí převzít kořenovou identitu federace. Návrh
+oddělení rolí a koncového VPN členství je v dokumentu
+[Role notebooků jako síťových uzlů](notebook-node-roles.md).
+
 Notebooky sdílejí návrh routerů, globální nastavení ZeroTier a řídicí identitu
 federace přímo přes síť. Přenos nepotřebuje centrální server. Funkce je ve
 výchozím stavu vypnutá a ovládá se v záložce **Notebooky**.

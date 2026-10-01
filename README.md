@@ -9,6 +9,12 @@ Rozhraní je rozdělené do záložek **Routery**, **Notebooky**, **Síť**,
 záložky; rozpracované formuláře zůstávají při přepínání zachované. Routery
 a místní řídicí notebook mají samostatné přehledy.
 
+Plánovaný model rozlišuje **administrátorské notebooky** pro správu, audit a
+deploy routerů a **uživatelské notebooky** určené jen k síťovému připojení.
+Oba jsou koncové VPN uzly bez routování mezi VPN a fyzickou sítí a svou
+dostupnost kontrolují pouze lokálně. Návrh, bezpečnostní hranice a stav
+implementace popisují [role notebooků](docs/notebook-node-roles.md).
+
 V záložce **Notebooky** lze zapnout discovery a šifrovanou synchronizaci
 konfigurace i řídicí identity mezi vzájemně spárovanými notebooky.
 Postup párování a řešení konfliktů: [synchronizace notebooků](docs/notebook-sync.md).
@@ -49,8 +55,10 @@ ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
 uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
 autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).
 
-V inventáři je automaticky uveden také **Tento notebook**, pouze jako řídicí
-uzel s ruční kontrolou místního ZeroTier členství. Nepřidává se do WireGuardu.
+V současné implementaci je v inventáři automaticky uveden také **Tento
+notebook**, pouze jako řídicí uzel s ruční kontrolou místního ZeroTier
+členství. Zatím se nepřidává do WireGuardu; rozdělení rolí a plnohodnotné
+koncové členství notebooků je navazující práce.
 Kontrola vyžaduje přístup místního uživatele k ZeroTier službě.
 
 **Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;

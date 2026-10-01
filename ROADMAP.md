@@ -1,6 +1,6 @@
 # Turris Federation — roadmapa a TODO
 
-Aktualizováno: 20. 9. 2026.
+Aktualizováno: 1. 10. 2026.
 
 ## Cíl a podklady
 
@@ -42,6 +42,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   počkat na potvrzení/rollback; potvrzení musí patřit právě aplikované revizi.
 - [x] Přidat tento notebook do přehledu jako místní řídicí uzel pouze pro kontrolu
   ZeroTier. Nemá WireGuard peery, tunelovou adresu ani routerový deploy.
+- [ ] **P1: Rozdělit notebooky na administrátorské a uživatelské síťové uzly.**
+  Oba typy budou plnohodnotné koncové uzly VPN, ale bez inzerovaných LAN prefixů,
+  forwardingu nebo masquerade mezi VPN a fyzickou sítí. Administrátorský notebook
+  navíc smí kontrolovat a nasazovat routery; uživatelský notebook získá pouze
+  síťové pověření a nikdy kořenovou řídicí identitu. Dostupnost každého notebooku
+  se ověřuje pouze lokálně na něm, ne z routerů. Návrh a akceptační hranice:
+  [role notebooků](docs/notebook-node-roles.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.
