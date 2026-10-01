@@ -76,8 +76,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     celý tray proces, proto životní cyklus blokuje implicitní exit a okno
     skryje; proces lze cíleně ukončit jen položkou v tray. Opakovaná zkouška
     potvrdila, že po zavření okna a odhlášení/přihlášení aplikace znovu naběhne
-    do stavové lišty. Restart po pádu, restart notebooku a odstranění služby
-    zůstávají k ověření.
+    do stavové lišty. Skutečná zkouška `SIGKILL` hlavního procesu backendu
+    potvrdila automatický restart služby (`NRestarts=1`), nový PID, obnovený
+    socket s oprávněním `0600`, zachované pověření a stále běžící tray klient.
+    Restart celého notebooku a odstranění služby zůstávají k ověření.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
     privátní uživatelský socket zobrazí existující okno; stav ikony vychází
@@ -119,6 +121,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     je jeho dosavadní členství platné, odpojí spravovaný VPN profil a potom už
     další aktualizace nepřijme. Tok je lokálně otestovaný; zbývá fyzická
     akceptace s reálným polkit agentem, NetworkManagerem, VPN a routerem.
+    Na administrátorském notebooku `gx10-efde` ji nyní blokuje chybějící
+    `wireguard-tools` a zapnutý IPv4 i IPv6 forwarding. Podepsaná revize 5 navíc
+    neobsahuje žádný uživatelský notebook. Jediný přijatý router `Cacke` má přes
+    ZeroTier trasu, ale při zkoušce neodpověděl na 5 pingů a TCP port agenta
+    `8844` spojení odmítl; nepřijatý `Palackeho` odpověděl 5/5 a port agenta má
+    otevřený, ale bez členství není autoritativním VPN protějškem.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
