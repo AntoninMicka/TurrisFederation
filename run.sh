@@ -17,6 +17,24 @@ for variable in LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GTK_PATH GTK_EXE_PREFIX \
     fi
 done
 if [[ $snap_environment == true ]]; then
+    stable_user_home=${SNAP_REAL_HOME:-$HOME}
+    inherited_data_home=${XDG_DATA_HOME:-}
+    stable_data_home=$stable_user_home/.local/share
+    if [[ $inherited_data_home == *'/snap/'* ]]; then
+        inherited_app_data=$inherited_data_home/cz.turris.federation
+        stable_app_data=$stable_data_home/cz.turris.federation
+        if [[ -d $inherited_app_data && ! -e $stable_app_data ]]; then
+            mkdir -p -- "$stable_data_home"
+            cp -a -- "$inherited_app_data" "$stable_app_data"
+            printf 'Přenáším data Turris Federation ze Snap cesty do %s.\n' "$stable_app_data"
+        elif [[ -e $inherited_app_data && -e $stable_app_data ]]; then
+            printf 'Stabilní data Turris Federation již existují v %s; Snap kopii nepřepisuji.\n' "$stable_app_data"
+        fi
+        export XDG_DATA_HOME=$stable_data_home
+    fi
+    if [[ ${XDG_CONFIG_HOME:-} == *'/snap/'* ]]; then
+        export XDG_CONFIG_HOME=$stable_user_home/.config
+    fi
     unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
     unset GTK_PATH GTK_EXE_PREFIX GTK_DATA_PREFIX GTK_MODULES
     unset GTK_IM_MODULE_FILE GIO_MODULE_DIR GIO_EXTRA_MODULES
@@ -33,7 +51,7 @@ if [[ $snap_environment == true ]]; then
     done
     printf 'Odstraňuji zděděné cesty ke knihovnám a modulům Snapu.\n'
 fi
-unset snap_environment variable
+unset snap_environment variable stable_user_home inherited_data_home stable_data_home inherited_app_data stable_app_data
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 

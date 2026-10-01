@@ -485,7 +485,8 @@ async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default().setup(|app| {
-        if matches!(single_instance::acquire(app.handle()).map_err(std::io::Error::other)?, single_instance::Instance::Secondary) {
+        let background = std::env::args_os().any(|argument| argument == "--background");
+        if matches!(single_instance::acquire(app.handle(), !background).map_err(std::io::Error::other)?, single_instance::Instance::Secondary) {
             app.handle().exit(0);
             return Ok(());
         }
@@ -509,6 +510,9 @@ pub fn run() {
         let mut tray = TrayIconBuilder::with_id("main").menu(&menu).tooltip("Turris Federation");
         tray = tray.icon(tray_icon(tray_state));
         tray.build(app)?;
+        if !background {
+            if let Some(window) = app.get_webview_window("main") { window.show()?; }
+        }
         let status_item = status.clone();
         let handle = app.handle().clone();
         std::thread::spawn(move || loop {

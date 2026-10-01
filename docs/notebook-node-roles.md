@@ -64,6 +64,11 @@ ukazuje alespoň tyto stavy:
 - odpojeno;
 - backend neběží nebo hlásí chybu.
 
+Vývojová instalace vytváří uživatelský XDG autostart
+`~/.config/autostart/cz.turris.federation-tray.desktop`, který spouští stejný
+klient s parametrem `--background`. V tomto režimu zůstane hlavní okno skryté;
+ruční spuštění aplikace nebo položka v menu ikony okno zobrazí.
+
 Kliknutí nebo položka **Otevřít Turris Federation** zobrazí existující UI a
 zaměří jeho okno; nespouští druhou instanci backendu. Nabídka smí obsahovat
 obnovení místní kontroly a kopírování stručné diagnostiky. Akce **Ukončit UI**

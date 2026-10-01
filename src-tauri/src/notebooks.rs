@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
-use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, fs, io::{Read, Write}, os::unix::net::UnixStream, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::Mutex, time::Duration};
+use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, fs, io::{Read, Write}, os::unix::{fs::PermissionsExt, net::UnixStream}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::Mutex, time::Duration};
 use tauri::Manager;
 
 const SERVICE: &str = include_str!("../../scripts/notebook_sync.py");
 const FEDERATION: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
 const UNIT_NAME: &str = "turris-federation-backend.service";
+const AUTOSTART_NAME: &str = "cz.turris.federation-tray.desktop";
 
 #[derive(Default)]
 pub struct NotebookService {
@@ -48,6 +49,36 @@ fn unit_contents(data: &Path, script: &Path) -> Result<String, String> {
 }
 
 fn unit_path(config: &Path) -> PathBuf { config.join("systemd/user").join(UNIT_NAME) }
+
+fn autostart_path(config: &Path) -> PathBuf { config.join("autostart").join(AUTOSTART_NAME) }
+
+fn quote_desktop_exec(path: &Path) -> Result<String, String> {
+    let value = path.to_str().ok_or("Cesta klienta stavové lišty není platné UTF-8.")?;
+    if value.chars().any(char::is_control) { return Err("Cesta klienta stavové lišty obsahuje řídicí znak.".into()); }
+    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"").replace('`', "\\`").replace('$', "\\$")))
+}
+
+fn autostart_contents(executable: &Path) -> Result<String, String> {
+    let executable = quote_desktop_exec(executable)?;
+    Ok(format!("[Desktop Entry]\nType=Application\nName=Turris Federation\nComment=Stav federovaného připojení\nExec={executable} --background\nTryExec={executable}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
+}
+
+fn install_tray_autostart(config: &Path) -> Result<(), String> {
+    let target = autostart_path(config);
+    let parent = target.parent().ok_or("Chybí adresář automatického spuštění.")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let executable = std::env::current_exe().map_err(|e| format!("Nelze zjistit cestu klienta stavové lišty: {e}"))?;
+    let temporary = parent.join(format!(".{AUTOSTART_NAME}.tmp-{}", std::process::id()));
+    fs::write(&temporary, autostart_contents(&executable)?).map_err(|e| e.to_string())?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+    fs::rename(&temporary, &target).map_err(|e| e.to_string())
+}
+
+fn remove_tray_autostart(config: &Path) -> Result<(), String> {
+    let target = autostart_path(config);
+    if target.exists() { fs::remove_file(target).map_err(|e| e.to_string())?; }
+    Ok(())
+}
 
 fn systemctl(args: &[&str]) -> Result<(), String> {
     let output = Command::new("systemctl").arg("--user").args(args).output()
@@ -260,6 +291,10 @@ pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
         config.as_ref(), access.as_ref(), unit_path(config_dir).exists(),
     );
     if !backend_desired { return; }
+    let mut startup_errors = Vec::new();
+    if let Err(error) = install_tray_autostart(config_dir) {
+        startup_errors.push(format!("Automatické spuštění ikony se nepodařilo nastavit: {error}"));
+    }
     let unit_matches = scripts(data).and_then(|script| unit_contents(data, &script))
         .ok().is_some_and(|expected| fs::read_to_string(unit_path(config_dir)).ok().as_deref() == Some(expected.as_str()));
     let state = service_state(config_dir);
@@ -271,15 +306,14 @@ pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
         // development launches can inherit a revision-specific Snap data path,
         // which must not remain in ExecStart after the application moves.
         if let Err(error) = install_service(data, config_dir) {
-            if let Ok(mut current) = service.startup_error.lock() {
-                *current = Some(format!("Trvalou uživatelskou službu se nepodařilo nainstalovat: {error}"));
-            }
+            startup_errors.push(format!("Trvalou uživatelskou službu se nepodařilo nainstalovat: {error}"));
             // Preserve the previous same-session behaviour; the UI exposes
             // that the persistent service still needs repair.
             if state["active"].as_bool() != Some(true) { let _ = start(data, service); }
-        } else if let Ok(mut current) = service.startup_error.lock() {
-            *current = None;
         }
+    }
+    if let Ok(mut current) = service.startup_error.lock() {
+        *current = if startup_errors.is_empty() { None } else { Some(startup_errors.join(" ")) };
     }
 }
 
@@ -305,11 +339,14 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                 if enabled { let _ = start(&data, &service); }
                 return Err(error);
             }
+            install_tray_autostart(&config_dir)
+                .map_err(|error| format!("Backendová služba běží, ale automatický start ikony se nepodařilo nastavit: {error}"))?;
             *service.startup_error.lock().map_err(|e| e.to_string())? = None;
             return Ok(json!({"service": service_state(&config_dir)}));
         }
         if action == "service_remove" {
             remove_service(&config_dir)?;
+            remove_tray_autostart(&config_dir)?;
             let enabled = fs::read(data.join("notebooks/config.json")).ok()
                 .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
                 .and_then(|config| config["enabled"].as_bool()).unwrap_or(false);
@@ -335,6 +372,10 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                 service_error = Some(format!(
                     "Členství bylo přijato, ale trvalou službu se nepodařilo nainstalovat: {error}"
                 ));
+            } else if let Err(error) = install_tray_autostart(&config_dir) {
+                service_error = Some(format!(
+                    "Backendová služba běží, ale automatický start ikony se nepodařilo nastavit: {error}"
+                ));
             }
         } else if action == "configure" {
             stop(&service)?;
@@ -344,6 +385,8 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                     "Nastavení bylo uloženo, ale automatický start backendu se nepodařilo zapnout: {error}"
                 ));
             }
+            install_tray_autostart(&config_dir)
+                .map_err(|error| format!("Backendová služba běží, ale automatický start ikony se nepodařilo nastavit: {error}"))?;
         } else if action == "stop" || action == "disconnect" {
             if unit_path(&config_dir).exists() {
                 if action == "disconnect" { systemctl(&["stop", UNIT_NAME])?; }
@@ -387,6 +430,15 @@ mod tests {
         assert!(!unit.contains("User=root"));
         assert_eq!(quote_unit_path(Path::new("/tmp/100% ready")).unwrap(), "\"/tmp/100%% ready\"");
         assert!(quote_unit_path(Path::new("/tmp/bad\nunit")).is_err());
+    }
+
+    #[test]
+    fn tray_autostart_uses_background_mode_and_quotes_executable() {
+        let entry = autostart_contents(Path::new("/home/test user/Turris $Federation")).unwrap();
+        assert!(entry.contains("Exec=\"/home/test user/Turris \\$Federation\" --background"));
+        assert!(entry.contains("TryExec=\"/home/test user/Turris \\$Federation\""));
+        assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
+        assert!(quote_desktop_exec(Path::new("/tmp/bad\nentry")).is_err());
     }
 
     #[test]

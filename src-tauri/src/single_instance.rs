@@ -18,13 +18,13 @@ fn socket_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(runtime).join("turris-federation").join("ui.sock"))
 }
 
-fn connect(path: &Path) -> bool {
+fn connect(path: &Path, show_existing: bool) -> bool {
     let Ok(mut stream) = UnixStream::connect(path) else { return false };
     stream.set_write_timeout(Some(Duration::from_secs(1))).ok();
-    stream.write_all(b"show\n").is_ok()
+    stream.write_all(if show_existing { b"show\n" } else { b"ping\n" }).is_ok()
 }
 
-pub fn acquire(app: &tauri::AppHandle) -> Result<Instance, String> {
+pub fn acquire(app: &tauri::AppHandle, show_existing: bool) -> Result<Instance, String> {
     let path = socket_path()?;
     let directory = path.parent().ok_or("Chybí adresář zámku UI.")?;
     if directory.is_symlink() {
@@ -35,7 +35,7 @@ pub fn acquire(app: &tauri::AppHandle) -> Result<Instance, String> {
 
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
-        Err(_) if connect(&path) => return Ok(Instance::Secondary),
+        Err(_) if connect(&path, show_existing) => return Ok(Instance::Secondary),
         Err(_) => {
             // The previous process may have crashed. Remove only our exact socket.
             if path.symlink_metadata().map(|m| m.file_type().is_socket()).unwrap_or(false) {

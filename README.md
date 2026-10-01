@@ -44,8 +44,11 @@ aplikaci a lze ho přepsat: `WEBKIT_DISABLE_DMABUF_RENDERER=0 ./run.sh`.
 
 Při spuštění z terminálu editoru instalovaného přes Snap wrapper odstraní
 zděděné cesty dynamických knihoven a GTK/GIO modulů a obnoví systémové datové
-cesty. Tím zabrání míchání knihoven Snapu se systémovým WebKitem; změna platí
-jen pro proces skriptu a jeho potomky.
+cesty. Revizně závislá Snap data aplikace při prvním běhu bez přepsání cíle
+zkopíruje do stabilního `~/.local/share/cz.turris.federation`, aby backend i
+klient spuštěný po přihlášení používaly stejnou identitu. Tím také zabrání
+míchání knihoven Snapu se systémovým WebKitem; změna prostředí platí jen pro
+proces skriptu a jeho potomky.
 
 U uloženého draftu zvolte **Připojit**, porovnejte zobrazené SHA256 otisky
 SSH klíčů s routerem a při prvním připojení potvrďte důvěru. Zadejte SSH heslo.
