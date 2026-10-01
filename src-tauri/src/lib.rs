@@ -8,7 +8,8 @@ mod network;
 mod zerotier;
 mod deployment;
 mod notebooks;
-use tauri::{Manager, State};
+mod single_instance;
+use tauri::{Emitter, Manager, State};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use uuid::Uuid;
@@ -484,6 +485,10 @@ async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default().setup(|app| {
+        if matches!(single_instance::acquire(app.handle()).map_err(std::io::Error::other)?, single_instance::Instance::Secondary) {
+            app.handle().exit(0);
+            return Ok(());
+        }
         let data_dir = app.path().app_data_dir()?; fs::create_dir_all(&data_dir)?;
         let config_dir = app.path().config_dir()?;
         let db = Connection::open(data_dir.join("federation.db"))?;
@@ -495,18 +500,25 @@ pub fn run() {
         app.manage(notebooks::NotebookCommandGate::default());
         app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") });
 
-        let status = MenuItem::with_id(app, "backend-status", notebooks::indicator(), false, None::<&str>)?;
+        let tray_state = notebooks::tray_state();
+        let status = MenuItem::with_id(app, "backend-status", tray_state.label(), false, None::<&str>)?;
         let open = MenuItem::with_id(app, "open-ui", "Otevřít Turris Federation", true, None::<&str>)?;
+        let disconnect = MenuItem::with_id(app, "disconnect-notebook", "Zastavit službu / odpojit tento notebook…", true, None::<&str>)?;
         let quit = MenuItem::with_id(app, "quit-ui", "Ukončit UI (backend zůstane běžet)", true, None::<&str>)?;
-        let menu = Menu::with_items(app, &[&status, &open, &quit])?;
+        let menu = Menu::with_items(app, &[&status, &open, &disconnect, &quit])?;
         let mut tray = TrayIconBuilder::with_id("main").menu(&menu).tooltip("Turris Federation");
-        if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+        tray = tray.icon(tray_icon(tray_state));
         tray.build(app)?;
         let status_item = status.clone();
+        let handle = app.handle().clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(10));
-            let label = notebooks::indicator();
-            let _ = status_item.set_text(label);
+            let state = notebooks::tray_state();
+            let _ = status_item.set_text(state.label());
+            if let Some(tray) = handle.tray_by_id("main") {
+                let _ = tray.set_icon(Some(tray_icon(state)));
+                let _ = tray.set_tooltip(Some(format!("Turris Federation · {}", state.label())));
+            }
         });
         Ok(())
     }).on_menu_event(|app, event| match event.id().as_ref() {
@@ -516,6 +528,14 @@ pub fn run() {
             let _ = window.set_focus();
         },
         "quit-ui" => app.exit(0),
+        "disconnect-notebook" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            let _ = app.emit("tray-disconnect-requested", ());
+        },
         _ => (),
     }).on_window_event(|window, event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -523,4 +543,23 @@ pub fn run() {
             let _ = window.hide();
         }
     }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
+}
+
+fn tray_icon(state: notebooks::TrayState) -> tauri::image::Image<'static> {
+    const SIZE: usize = 22;
+    let color = state.color();
+    let mut rgba = vec![0_u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as i32 - 10;
+            let dy = y as i32 - 10;
+            if dx * dx + dy * dy <= 81 {
+                let offset = (y * SIZE + x) * 4;
+                let border = dx * dx + dy * dy >= 64;
+                let pixel = if border { [35, 40, 45, 255] } else { [color[0], color[1], color[2], 255] };
+                rgba[offset..offset + 4].copy_from_slice(&pixel);
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, SIZE as u32, SIZE as u32)
 }

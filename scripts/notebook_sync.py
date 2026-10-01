@@ -932,6 +932,7 @@ class Store:
 
     def public_status(self):
         result = self.status()
+        result['vpn'] = self.vpn_status()
         if result['access'].get('role') != 'administrator':
             result['peers'] = []
             result['invitation'] = ''
@@ -1226,6 +1227,15 @@ def command(store, req):
         return {'vpn': store.vpn_status()}
     if action == 'vpn_diagnostics':
         return {'diagnostics': store.vpn_diagnostics(), 'vpn': store.vpn_status()}
+    if action == 'disconnect':
+        if req.get('confirm') is not True:
+            raise ValueError('Odpojení notebooku vyžaduje výslovné potvrzení.')
+        state = store.vpn_status()
+        if state.get('state') == 'installed':
+            store.vpn_rollback()
+        config = f.read(store.root / 'config.json', {})
+        f.atomic(store.root / 'config.json', dict(config, enabled=False))
+        return store.public_status()
     if action == 'configure':
         name, address = req['name'].strip(), req['address'].strip()
         if not 0 < len(name) <= 80:

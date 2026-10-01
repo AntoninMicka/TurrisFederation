@@ -105,13 +105,56 @@ fn backend_status() -> Result<Value, String> {
     Ok(response)
 }
 
-pub fn indicator() -> String {
-    match backend_status() {
-        Ok(response) if response["status"]["error"].is_string() => "Backend: omezený provoz".into(),
-        Ok(response) if response["status"]["config"]["enabled"].as_bool() == Some(true) => "Backend: běží a synchronizuje".into(),
-        Ok(_) => "Backend: běží, synchronizace vypnutá".into(),
-        Err(_) => "Backend: neběží".into(),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrayState { Connected, Limited, Disconnected, Error }
+
+impl TrayState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connected => "Připojeno · místní kontrola je v pořádku",
+            Self::Limited => "Připojeno s omezením nebo bez aktuální kontroly",
+            Self::Disconnected => "Notebook je odpojený",
+            Self::Error => "Backend neběží nebo hlásí chybu",
+        }
     }
+
+    pub fn color(self) -> [u8; 3] {
+        match self {
+            Self::Connected => [35, 166, 92],
+            Self::Limited => [230, 159, 0],
+            Self::Disconnected => [120, 130, 140],
+            Self::Error => [207, 61, 61],
+        }
+    }
+}
+
+fn tray_state_from(response: &Value, now: f64) -> TrayState {
+    let status = &response["status"];
+    if status["error"].is_string() || status["vpn"]["state"].as_str() == Some("error") {
+        return TrayState::Error;
+    }
+    if status["vpn"]["state"].as_str() != Some("installed") {
+        return TrayState::Disconnected;
+    }
+    let diagnostics = &status["vpn"]["diagnostics"];
+    let fresh = diagnostics["checkedAt"].as_f64().is_some_and(|checked| now - checked <= 120.0);
+    let healthy = diagnostics["state"].as_str() == Some("complete")
+        && diagnostics["profile"].as_str() == Some("active")
+        && diagnostics["interfacePresent"].as_bool() == Some(true)
+        && diagnostics["addressAssigned"].as_bool() == Some(true)
+        && diagnostics["routesExpected"].as_u64() == diagnostics["routesActive"].as_u64()
+        && diagnostics["forwarding"]["ipv4"].as_bool() == Some(false)
+        && diagnostics["forwarding"]["ipv6"].as_bool() == Some(false)
+        && diagnostics["nodes"].as_object().is_some_and(|nodes| nodes.values().all(|node| {
+            node["handshakeState"].as_str() == Some("recent")
+                && node["wireguard"]["successPercent"].as_f64() == Some(100.0)
+        }));
+    if fresh && healthy { TrayState::Connected } else { TrayState::Limited }
+}
+
+pub fn tray_state() -> TrayState {
+    backend_status().map(|response| tray_state_from(&response, chrono::Utc::now().timestamp_millis() as f64 / 1000.0))
+        .unwrap_or(TrayState::Error)
 }
 
 fn stop(service: &NotebookService) -> Result<(), String> {
@@ -176,7 +219,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let config_dir = app.path().config_dir().map_err(|e| e.to_string())?;
         let service = app.state::<NotebookService>();
         let action = request["action"].as_str().ok_or("Chybí operace.")?;
-        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_invitation", "accept_user_invitation", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
+        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_invitation", "accept_user_invitation", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "disconnect", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
             return Err("Neznámá operace notebooku.".into());
         }
         // Serialize commands, including config/status updates, without blocking the UI.
@@ -207,9 +250,10 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             return Ok(result);
         }
         let mut result = script_request(&data, &request)?;
-        if action == "configure" || action == "stop" {
+        if action == "configure" || action == "stop" || action == "disconnect" {
             if unit_path(&config_dir).exists() {
-                systemctl(&["restart", UNIT_NAME])?;
+                if action == "disconnect" { systemctl(&["stop", UNIT_NAME])?; }
+                else { systemctl(&["restart", UNIT_NAME])?; }
             } else if action == "configure" {
                 start(&data, &service)?;
             } else {
@@ -247,5 +291,22 @@ mod tests {
         assert!(!unit.contains("User=root"));
         assert_eq!(quote_unit_path(Path::new("/tmp/100% ready")).unwrap(), "\"/tmp/100%% ready\"");
         assert!(quote_unit_path(Path::new("/tmp/bad\nunit")).is_err());
+    }
+
+    #[test]
+    fn tray_state_requires_fresh_healthy_local_diagnostics() {
+        let healthy = json!({"status": {"vpn": {"state": "installed", "diagnostics": {
+            "state": "complete", "checkedAt": 950.0, "profile": "active",
+            "interfacePresent": true, "addressAssigned": true,
+            "routesExpected": 2, "routesActive": 2,
+            "forwarding": {"ipv4": false, "ipv6": false},
+            "nodes": {"router": {"handshakeState": "recent", "wireguard": {"successPercent": 100.0}}}
+        }}}});
+        assert_eq!(TrayState::Connected, tray_state_from(&healthy, 1000.0));
+        assert_eq!(TrayState::Limited, tray_state_from(&healthy, 1100.0));
+        let disconnected = json!({"status": {"vpn": {"state": "rolled_back"}}});
+        assert_eq!(TrayState::Disconnected, tray_state_from(&disconnected, 1000.0));
+        let error = json!({"status": {"error": "sync failed", "vpn": {"state": "installed"}}});
+        assert_eq!(TrayState::Error, tray_state_from(&error, 1000.0));
     }
 }

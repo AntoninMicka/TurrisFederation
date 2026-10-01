@@ -57,8 +57,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     socket, explicitní instalaci/odstranění, tray menu a skrytí UI při zavření.
   - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
     odstranění služby v reálné grafické uživatelské relaci.
-  - [ ] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
-    pro odpojení notebooku přímo ze stavové lišty.
+  - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
+    pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
+    privátní uživatelský socket zobrazí existující okno; stav ikony vychází
+    z lokálního backendu a čerstvé VPN diagnostiky. Odpojení po potvrzení vrátí
+    spravovaný VPN profil a zastaví synchronizační službu bez smazání identity.
   - [~] Uživatelské roli zobrazit read-only přehled odpovídající routerové
     stránce; administrátorské UI už obsahuje stejný read-only přehled jako
     samostatnou úvodní záložku. Backend ověřuje podepsané pověření svázané

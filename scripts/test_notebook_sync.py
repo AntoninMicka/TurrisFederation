@@ -311,6 +311,17 @@ class NotebookTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
             n.command(self.b, {'action': 'vpn_rollback'})
 
+    def test_disconnect_requires_confirmation_rolls_back_vpn_and_stops_sync(self):
+        (self.b.root / 'config.json').write_text(json.dumps({'enabled': True, 'name': 'User'}))
+        with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
+            n.command(self.b, {'action': 'disconnect'})
+        with patch.object(n.Store, 'vpn_status', return_value={'state': 'installed'}), \
+                patch.object(n.Store, 'vpn_rollback', return_value={'state': 'rolled_back'}) as rollback:
+            result = n.command(self.b, {'action': 'disconnect', 'confirm': True})
+        rollback.assert_called_once_with()
+        self.assertFalse(f.read(self.b.root / 'config.json')['enabled'])
+        self.assertFalse(result['config']['enabled'])
+
     def test_vpn_plan_requires_signed_zerotier_address_and_router_routes_on_underlay(self):
         self.onboard_user()
         document = f.validate_document(f.verify(

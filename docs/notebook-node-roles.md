@@ -75,7 +75,11 @@ První implementační řez používá jednotku
 v UI. Lokální socket přijímá pouze čtení sanitizovaného stavu, kontroluje UID
 klienta a má oprávnění `0600`. Zavření hlavního okna ho skryje; samostatná
 položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovaný
-backend. Aktivace a chování stavové lišty v reálné grafické relaci ještě
+backend. Druhé spuštění UI přes oddělený privátní socket pouze zobrazí a zaměří
+existující okno. Barevná ikona rozlišuje ověřené připojení, omezený nebo
+zastaralý stav, odpojení a chybu backendu. Potvrzené odpojení vrátí spravovaný
+VPN profil, vypne synchronizaci a zastaví službu, ale nemaže členství ani
+identitu. Aktivace a chování stavové lišty v reálné grafické relaci ještě
 vyžadují ruční přijetí.
 
 ## UI podle role
@@ -191,8 +195,9 @@ Zbývající kroky:
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
    služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH. VPN část
    je implementovaná; balíčkovaná aktualizace a rollback backendu ještě ne.
-5. Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance UI;
-   zavření okna nesmí ukončit backend ani VPN.
+5. [x] Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance
+   UI; zavření okna neukončí backend ani VPN. Reálná grafická relace zůstává
+   součástí fyzické akceptace.
 6. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
    připojení, místní diagnostiku a povolené cíle; administrátorská role navíc
    inventář, audit, publikování a deploy routerů.

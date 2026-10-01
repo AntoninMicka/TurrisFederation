@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
@@ -53,6 +54,7 @@ const vpnError = ref("");
 const vpnConfirmed = ref(false);
 const notebookLabels: Record<string, string> = { synced: "Synchronizováno", local_newer: "Místní změny čekají na převzetí", conflict: "Konflikt změn", error: "Přenos se nezdařil" };
 let notebookPoll: ReturnType<typeof setInterval> | undefined;
+let unlistenTrayDisconnect: UnlistenFn | undefined;
 
 async function notebookOperation(request: Record<string, unknown> = { action: "status" }) {
   if (syncBusy.value) return;
@@ -171,7 +173,7 @@ onMounted(() => {
     if ((activeTab.value === "notebooks" || notebookSync.value?.config.enabled) && !syncBusy.value) void notebookOperation();
   }, 5000);
 });
-onUnmounted(() => { if (notebookPoll) clearInterval(notebookPoll); });
+onUnmounted(() => { if (notebookPoll) clearInterval(notebookPoll); unlistenTrayDisconnect?.(); });
 
 const notebookStatus = ref<ZeroTierStatus | null>(null);
 const notebookChecking = ref(false);
@@ -301,6 +303,14 @@ const draft = reactive<FederationNode>({
 const lanCidrsText = ref("");
 
 onMounted(async () => {
+  if ("__TAURI_INTERNALS__" in window) {
+    unlistenTrayDisconnect = await listen("tray-disconnect-requested", async () => {
+      if (!window.confirm("Zastavit synchronizační službu a odpojit spravovaný VPN profil tohoto notebooku? Členství ani uložená identita se nesmažou.")) return;
+      await notebookOperation({ action: "disconnect", confirm: true });
+      vpnPlan.value = null;
+      await loadVpnStatus();
+    });
+  }
   try {
     if ("__TAURI_INTERNALS__" in window) await notebookOperation();
     if (notebookSync.value?.access.state === "valid") {
