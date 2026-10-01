@@ -471,7 +471,11 @@ PING_MAX_AGE = 120
 
 def ping_sample(address, interface):
     try:
-        result = subprocess.run(['ping', '-c', '1', '-W', '1', '-I', interface, address],
+        command = ['ping', '-c', '1', '-W', '1']
+        if interface:
+            command.extend(['-I', interface])
+        command.append(address)
+        result = subprocess.run(command,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
         return result.returncode == 0 if result.returncode in (0, 1) else None
     except subprocess.TimeoutExpired:
@@ -499,6 +503,37 @@ def ping_diagnostics(node, peers):
         for peer_id, transport, future in jobs:
             diagnostics.setdefault(peer_id, {})[transport] = future.result()
     return diagnostics
+
+
+def notebook_diagnostics(root):
+    """Ping only ZeroTier addresses from the signed, accepted router set."""
+    root = Path(root)
+    published = read(root / 'published.json')
+    if not published:
+        raise ValueError('Federace zatím nemá publikovanou konfiguraci.')
+    doc = validate_document(verify(public_key(root / 'root.pem'), published))
+    peers = [node for node in doc['config']['nodes'] if node['id'] in doc['members']]
+    if not peers:
+        raise ValueError('Federace nemá přijaté routery k měření.')
+    with ThreadPoolExecutor(max_workers=min(8, len(peers))) as pool:
+        jobs = {node['id']: pool.submit(ping_batch, node['zeroTierAddress'], None) for node in peers}
+        nodes = {node_id: {'zerotier': job.result()} for node_id, job in jobs.items()}
+    result = {'revision': doc['revision'], 'state': 'complete', 'nodes': nodes}
+    atomic(root / 'notebook-diagnostics.json', result)
+    return result
+
+
+def notebook_diagnostics_overview(root):
+    root = Path(root)
+    published = read(root / 'published.json')
+    if not published:
+        return {'revision': 0, 'state': 'idle', 'nodes': {}}
+    doc = validate_document(verify(public_key(root / 'root.pem'), published))
+    result = read(root / 'notebook-diagnostics.json', {})
+    if result.get('revision') != doc['revision']:
+        return {'revision': doc['revision'], 'state': 'idle', 'nodes': {}}
+    allowed = set(doc['members'])
+    return {**result, 'nodes': {node_id: value for node_id, value in result.get('nodes', {}).items() if node_id in allowed}}
 
 
 def start_diagnostics(root):
@@ -1392,6 +1427,10 @@ def controller(root, req):
     action = req['action']
     if action == 'overview':
         return overview(root, config)
+    if action == 'diagnostics_overview':
+        return notebook_diagnostics_overview(root)
+    if action == 'diagnostics':
+        return notebook_diagnostics(root)
     if action == 'refresh':
         published = read(root / 'published.json')
         if published:

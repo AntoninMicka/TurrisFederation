@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { DeploymentOverview, FederationNode, ZeroTierSettings } from "./domain";
+import type { DeploymentOverview, FederationNode, NotebookDiagnostics, ZeroTierSettings } from "./domain";
 
 const props = defineProps<{
   nodes: FederationNode[];
   deployment: DeploymentOverview | null;
   settings: ZeroTierSettings;
   notebook: NotebookSyncStatus | null;
+  diagnostics: NotebookDiagnostics | null;
   loading: boolean;
+  diagnosticsLoading: boolean;
 }>();
 
-defineEmits<{ refresh: [] }>();
+defineEmits<{ refresh: []; diagnose: [] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -44,6 +46,25 @@ function membership(node: FederationNode) {
   if (report.reachable === false) return "Nedostupný · poslední známý stav";
   return deploymentLabels[report.state ?? ""] ?? "Přijatý uzel";
 }
+
+function diagnostic(nodeId: string) {
+  return props.diagnostics?.nodes[nodeId]?.zerotier;
+}
+
+function diagnosticLabel(nodeId: string) {
+  const result = diagnostic(nodeId);
+  if (!result?.samples.length || Date.now() / 1000 - result.checkedAt > 120) return "● Bez aktuálního měření";
+  const replies = result.samples.filter(Boolean).length;
+  return `● ${result.successPercent?.toFixed(1)} % · ${replies}/${result.samples.length} odpovědí`;
+}
+
+function diagnosticClass(nodeId: string) {
+  const result = diagnostic(nodeId);
+  if (!result?.samples.length || Date.now() / 1000 - result.checkedAt > 120 || result.successPercent === null) return "unknown";
+  if (result.successPercent >= 95) return "green";
+  if (result.successPercent >= 80) return "yellow";
+  return "red";
+}
 </script>
 
 <template>
@@ -67,7 +88,12 @@ function membership(node: FederationNode) {
     <p class="muted">Poslední kontrola routeru: {{ lastChecked }}</p>
 
     <section class="overview-section">
-      <h3>Uzly federace</h3>
+      <div class="overview-section-heading">
+        <h3>Uzly federace</h3>
+        <button type="button" class="secondary" :disabled="diagnosticsLoading || !deployment?.revision" @click="$emit('diagnose')">
+          {{ diagnosticsLoading ? "Měřím…" : "Spustit ping · 5 paketů" }}
+        </button>
+      </div>
       <p v-if="!nodes.length" class="muted">Federace zatím neobsahuje žádné routery.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">
@@ -85,13 +111,13 @@ function membership(node: FederationNode) {
                 <span v-else>—</span>
               </td>
               <td><span class="overview-badge">{{ membership(node) }}</span></td>
-              <td><span class="overview-signal unknown">Neměřeno</span></td>
-              <td><span class="overview-signal unknown">Neměřeno</span></td>
+              <td><span :class="['overview-signal', diagnosticClass(node.id)]">{{ diagnosticLabel(node.id) }}</span></td>
+              <td><span class="overview-signal unknown">Notebook nepoužívá WireGuard</span></td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z přijaté konfigurace. Dostupnost z notebooku se bude měřit pouze na vyžádání; dokud není notebooková diagnostika implementovaná, přehled ji neodhaduje z jiných stavů.</p>
+      <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z přijaté konfigurace. Ping se spouští pouze tlačítkem a míří výhradně na ZeroTier adresy přijatých routerů z podepsané revize. Notebook WireGuard v této verzi nepoužívá a dostupnost neodhaduje z jiných stavů.</p>
     </section>
 
     <section class="overview-section">

@@ -607,6 +607,38 @@ class FederationTests(unittest.TestCase):
             with patch.object(f.subprocess, 'run', side_effect=error):
                 self.assertIs(expected, f.ping_sample('10.147.0.2', 'tf_wg'))
 
+    def test_notebook_diagnostics_only_ping_signed_enrolled_zerotier_targets(self):
+        members = {node(1)['id']: self.member(1)}
+        envelope = f.snapshot(self.root, self.config, members)
+        with patch.object(f, 'ping_sample', return_value=True) as ping:
+            result = f.notebook_diagnostics(self.root)
+        self.assertEqual('complete', result['state'])
+        self.assertEqual({node(1)['id']}, set(result['nodes']))
+        self.assertEqual([True] * 5, result['nodes'][node(1)['id']]['zerotier']['samples'])
+        self.assertEqual([('10.147.0.1', None)] * 5, [call.args for call in ping.call_args_list])
+        self.assertEqual(1, f.verify(self.public, envelope)['revision'])
+
+        with patch.object(f, 'ping_sample', return_value=True) as ping:
+            f.controller(self.root, {'action': 'diagnostics', 'nodes': self.nodes,
+                         'networkId': self.config['networkId'], 'target': '8.8.8.8'})
+        self.assertEqual({('10.147.0.1', None)}, {call.args for call in ping.call_args_list})
+
+        saved = f.read(self.root / 'notebook-diagnostics.json')
+        saved['nodes'][node(2)['id']] = {'zerotier': {'address': '8.8.8.8', 'samples': [True]}}
+        f.atomic(self.root / 'notebook-diagnostics.json', saved)
+        self.assertEqual({node(1)['id']}, set(f.notebook_diagnostics_overview(self.root)['nodes']))
+
+    def test_notebook_diagnostics_reject_missing_membership_and_stale_results(self):
+        with self.assertRaisesRegex(ValueError, 'publikovanou'):
+            f.notebook_diagnostics(self.root)
+        f.snapshot(self.root, self.config, {})
+        with self.assertRaisesRegex(ValueError, 'přijaté routery'):
+            f.notebook_diagnostics(self.root)
+        members = {node(1)['id']: self.member(1)}
+        f.snapshot(self.root, self.config, members)
+        f.atomic(self.root / 'notebook-diagnostics.json', {'revision': 0, 'state': 'complete', 'nodes': {node(1)['id']: {}}})
+        self.assertEqual('idle', f.notebook_diagnostics_overview(self.root)['state'])
+
     def prepare_diagnostics(self):
         config = f.normalize(self.nodes + [node(3)], self.config['networkId'])
         doc = self.document(config=config, members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})

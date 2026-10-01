@@ -83,6 +83,17 @@ export interface DeploymentOverview {
   fingerprint: string | null;
   nodes: Record<string, DeploymentReport>;
 }
+export interface DiagnosticMeasurement {
+  address: string;
+  samples: boolean[];
+  checkedAt: number;
+  successPercent: number | null;
+}
+export interface NotebookDiagnostics {
+  revision: number;
+  state: "idle" | "complete";
+  nodes: Record<string, { zerotier?: DiagnosticMeasurement }>;
+}
 export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {
   operation: "install" | "update";

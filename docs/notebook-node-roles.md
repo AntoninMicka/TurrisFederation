@@ -120,6 +120,13 @@ ukázat členství a poslední sdílenou konfiguraci, ne tvrdit jejich aktuáln�
 dostupnost. Výsledek místní kontroly se nepoužívá jako autorita pro změnu
 členství nebo přístupových práv.
 
+První implementace read-only přehledu spouští místní ping pouze explicitním
+tlačítkem. Backend sám vybere ZeroTier adresy přijatých routerů z ověřené
+publikované revize; UI mu nepředává libovolný cíl. Výsledek platí jen pro
+konkrétní revizi a po 120 sekundách se zobrazuje jako zastaralý. WireGuard
+dostupnost se na notebooku v této fázi neměří, protože notebook vlastní
+WireGuard spojení nemá.
+
 ## Důvěra a změna role
 
 Uživatelský notebook dostane samostatné podepsané pověření člena s minimálními

@@ -61,7 +61,8 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   - [~] Uživatelské roli zobrazit read-only přehled odpovídající routerové
     stránce; administrátorské UI už obsahuje stejný read-only přehled jako
     samostatnou úvodní záložku. Zbývá načíst roli jen z podepsaného pověření,
-    vynutit ji v backendu a doplnit místní diagnostiku na vyžádání.
+    vynutit ji v backendu. Místní diagnostika ZeroTier je pouze na vyžádání,
+    přijímá cíle výhradně z podepsané revize a WireGuard notebook nepoužívá.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

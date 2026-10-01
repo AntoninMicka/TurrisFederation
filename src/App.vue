@@ -3,7 +3,7 @@ import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, NotebookDiagnostics } from "./domain";
 
 const tabs = [
   { id: 'overview', label: 'Přehled' },
@@ -132,6 +132,8 @@ const deployMode = ref<"full" | "settings">("full");
 const publishing = ref(false);
 const deploymentError = ref("");
 const overviewLoading = ref(false);
+const notebookDiagnostics = ref<NotebookDiagnostics | null>(null);
+const diagnosticsLoading = ref(false);
 const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
 
 async function refreshDeployment(live = false) {
@@ -148,12 +150,29 @@ async function refreshReadOnlyOverview() {
     const [freshNodes, freshSettings] = await Promise.all([listNodes(), getZeroTierSettings()]);
     nodes.value = freshNodes;
     ztSettings.value = freshSettings;
-    await Promise.all([refreshDeployment(), notebookOperation()]);
+    await Promise.all([refreshDeployment(), notebookOperation(), refreshNotebookDiagnostics()]);
     message.value = "Read-only přehled byl obnoven z místně uloženého stavu.";
   } catch (error) {
     message.value = `Přehled nelze obnovit: ${String(error)}`;
   } finally {
     overviewLoading.value = false;
+  }
+}
+
+async function refreshNotebookDiagnostics() {
+  if (!ztSettings.value.networkId) { notebookDiagnostics.value = null; return; }
+  notebookDiagnostics.value = await deploymentAction<NotebookDiagnostics>("diagnostics_overview");
+}
+
+async function runNotebookDiagnostics() {
+  diagnosticsLoading.value = true;
+  try {
+    notebookDiagnostics.value = await deploymentAction<NotebookDiagnostics>("diagnostics");
+    message.value = "Místní měření dostupnosti přijatých routerů bylo dokončeno.";
+  } catch (error) {
+    message.value = `Měření dostupnosti selhalo: ${String(error)}`;
+  } finally {
+    diagnosticsLoading.value = false;
   }
 }
 
@@ -202,6 +221,7 @@ onMounted(async () => {
     });
     await refreshZeroTierStatus();
     await refreshDeployment();
+    await refreshNotebookDiagnostics();
   }
   catch (error) { message.value = String(error); }
 });
@@ -472,7 +492,8 @@ async function submitConnection() {
     </nav>
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <FederationOverview :nodes="nodes" :deployment="deployment" :settings="ztSettings" :notebook="notebookSync"
-        :loading="overviewLoading" @refresh="refreshReadOnlyOverview" />
+        :diagnostics="notebookDiagnostics" :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
+        @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics" />
     </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">
     <section class="panel">
