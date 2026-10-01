@@ -294,11 +294,10 @@ class Store:
                 document = f.validate_document(f.verify(public_path.read_text(), published))
                 if document['federationId'] != credential['federationId']:
                     raise ValueError('Pověření patří jiné federaci.')
-                if credential['role'] == 'user':
-                    notebook = next((item for item in document['config'].get('notebooks', [])
-                                     if item['id'] == credential['subject']), None)
-                    if not notebook or notebook['role'] != 'user':
-                        raise ValueError('Uživatelský notebook není členem podepsané topologie.')
+                notebook = next((item for item in document['config'].get('notebooks', [])
+                                 if item['id'] == credential['subject']), None)
+                if not notebook or notebook['role'] != credential['role']:
+                    raise ValueError('Notebook není členem podepsané topologie se svou vydanou rolí.')
             return {'state': 'valid', 'role': credential['role'], 'canBootstrapAdmin': False,
                     'federationId': credential['federationId'], 'subject': credential['subject'],
                     'issuedAt': credential['issuedAt'], 'expiresAt': expires}
@@ -426,6 +425,33 @@ class Store:
         published = f.snapshot(self.fleet, config, document['members'])
         public = f.public_key(private)
         return published, f.validate_document(f.verify(public, published))
+
+    def revoke_user_notebook(self, notebook_id):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Odvolání notebooku vyžaduje administrátorské pověření.')
+        if not isinstance(notebook_id, str) or not re.fullmatch('[a-f0-9]{64}', notebook_id):
+            raise ValueError('Neplatné ID notebooku.')
+        private = self.fleet / 'root.pem'
+        if not private.exists():
+            raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+        with f.locked(self.fleet):
+            public = f.public_key(private)
+            document = f.validate_document(f.verify(public, f.read(self.fleet / 'published.json')))
+            target = next((item for item in document['config'].get('notebooks', [])
+                           if item['id'] == notebook_id), None)
+            if not target:
+                raise ValueError('Notebook už není členem podepsané topologie.')
+            if target['role'] != 'user':
+                raise ValueError('Administrátorský notebook nelze bezpečně odvolat touto operací.')
+            notebooks = [item for item in document['config']['notebooks'] if item['id'] != notebook_id]
+            config = f.normalize_with_notebook_endpoints(
+                document['config']['nodes'], document['config']['networkId'], notebooks)
+            published = f.snapshot(self.fleet, config, document['members'])
+            updated = f.validate_document(f.verify(public, published))
+            # The administrator remains an endpoint; regenerate its local source
+            # configuration so it is bound to the same signed revision.
+            self.write_wireguard_config(updated)
+            return {'id': notebook_id, 'name': target['name'], 'revision': updated['revision']}
 
     def write_wireguard_config(self, document):
         notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
@@ -1201,7 +1227,7 @@ def serve(store):
 
 def command(store, req):
     action = req['action']
-    if action in ['pair', 'unpair', 'resolve', 'manual'] and store.access_status().get('role') != 'administrator':
+    if action in ['pair', 'unpair', 'resolve', 'manual', 'revoke_user_notebook'] and store.access_status().get('role') != 'administrator':
         raise ValueError('Operace vyžaduje platné administrátorské pověření notebooku.')
     if action == 'status':
         return store.public_status()
@@ -1217,6 +1243,13 @@ def command(store, req):
     if action == 'accept_user_invitation':
         store.accept_user_invitation(req['invitation'])
         return store.public_status()
+    if action == 'revoke_user_notebook':
+        if req.get('confirm') is not True:
+            raise ValueError('Odvolání notebooku vyžaduje výslovné potvrzení.')
+        revoked = store.revoke_user_notebook(req.get('notebookId'))
+        result = store.public_status()
+        result['revoked'] = revoked
+        return result
     if action == 'vpn_plan':
         return {'plan': store.vpn_plan(), 'vpn': store.vpn_status()}
     if action == 'vpn_install':

@@ -114,6 +114,12 @@ async function enrollmentOperation(action: "request" | "accept" | "issue") {
   finally { enrollmentBusy.value = false; }
 }
 
+async function revokeUserNotebook(id: string, name: string) {
+  if (!window.confirm(`Odvolat členství notebooku „${name}“? Nová podepsaná revize jej odebere z routerových WireGuard peerů. Jeho místní identita ani data se nesmažou.`)) return;
+  await notebookOperation({ action: "revoke_user_notebook", notebookId: id, confirm: true });
+  await refreshReadOnlyOverview();
+}
+
 async function loadVpnStatus() {
   if (notebookSync.value?.access.state !== "valid") return;
   try {
@@ -621,6 +627,7 @@ async function submitConnection() {
         :vpn-confirmed="vpnConfirmed" @update:vpn-confirmed="vpnConfirmed = $event"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
         @service-install="serviceOperation('service_install')" @service-remove="serviceOperation('service_remove')"
+        @revoke-notebook="revokeUserNotebook"
         @vpn-preview="previewVpnInstall" @vpn-install="installVpn" @vpn-rollback="rollbackVpn" />
     </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">

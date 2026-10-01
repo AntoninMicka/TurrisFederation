@@ -164,6 +164,7 @@ class NotebookTests(unittest.TestCase):
             {'action': 'unpair', 'peer': self.b.id},
             {'action': 'manual', 'invitation': '{}'},
             {'action': 'resolve', 'peer': self.b.id, 'choice': 'local', 'token': 'x'},
+            {'action': 'revoke_user_notebook', 'notebookId': self.b.id, 'confirm': True},
         ]:
             with self.subTest(action=request['action']), self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
                 n.command(self.a, request)
@@ -227,6 +228,41 @@ class NotebookTests(unittest.TestCase):
             self.b.accept_user_invitation(raw)
         with self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
             n.command(self.b, {'action': 'pair', 'peer': self.a.id})
+
+    def test_admin_revokes_user_in_new_revision_without_deleting_local_identity(self):
+        invitation = self.onboard_user()
+        before = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
+        credential = (self.b.root / 'credential.json').read_bytes()
+        identity = (self.b.root / 'key.pem').read_bytes()
+        wireguard = (self.b.root / 'wireguard.key').read_bytes()
+
+        with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
+            n.command(self.a, {'action': 'revoke_user_notebook', 'notebookId': self.b.id})
+        result = n.command(self.a, {'action': 'revoke_user_notebook',
+                                    'notebookId': self.b.id, 'confirm': True})
+        published = f.read(self.a.fleet / 'published.json')
+        document = f.validate_document(f.verify(invitation['rootPublic'], published))
+        self.assertEqual(before['revision'] + 1, document['revision'])
+        self.assertEqual((self.b.id, 'User notebook', document['revision']),
+                         (result['revoked']['id'], result['revoked']['name'], result['revoked']['revision']))
+        self.assertNotIn(self.b.id, [item['id'] for item in document['config']['notebooks']])
+        self.assertIn(self.a.id, [item['id'] for item in document['config']['notebooks']])
+
+        # Receiving the signed revocation invalidates access, while local
+        # credentials and private identities remain available for recovery.
+        f.atomic(self.b.fleet / 'published.json', published)
+        self.assertEqual('invalid', self.b.access_status()['state'])
+        self.assertEqual(credential, (self.b.root / 'credential.json').read_bytes())
+        self.assertEqual(identity, (self.b.root / 'key.pem').read_bytes())
+        self.assertEqual(wireguard, (self.b.root / 'wireguard.key').read_bytes())
+        with self.assertRaisesRegex(ValueError, 'už není členem'):
+            self.a.revoke_user_notebook(self.b.id)
+
+    def test_user_revocation_cannot_claim_to_revoke_administrator_root_holder(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        with self.assertRaisesRegex(ValueError, 'Administrátorský notebook'):
+            self.a.revoke_user_notebook(self.a.id)
 
     def test_user_credential_fails_if_signed_topology_does_not_contain_notebook(self):
         self.published_federation(self.a)

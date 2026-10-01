@@ -18,7 +18,7 @@ const props = defineProps<{
   vpnConfirmed: boolean;
 }>();
 
-defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
+defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; revokeNotebook: [id: string, name: string]; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -186,7 +186,7 @@ function presenceLabel(value: boolean | null, positive: string) {
       <p v-if="!overview?.notebooks.length" class="muted">V podepsané topologii zatím není žádný notebook.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">
-          <thead><tr><th>Notebook</th><th>Role</th><th>ZeroTier</th><th>WireGuard</th><th>Dostupnost</th></tr></thead>
+          <thead><tr><th>Notebook</th><th>Role</th><th>ZeroTier</th><th>WireGuard</th><th>Dostupnost</th><th v-if="notebook?.access.role === 'administrator'">Správa</th></tr></thead>
           <tbody>
             <tr v-for="item in overview?.notebooks ?? []" :key="item.id">
               <td><strong>{{ item.name }}</strong><small v-if="item.id === notebook?.id" class="overview-line">Tento notebook</small></td>
@@ -194,6 +194,10 @@ function presenceLabel(value: boolean | null, positive: string) {
               <td><code>{{ item.zeroTierAddress || "čeká na přidělení" }}</code></td>
               <td><code>{{ item.wireguardAddress || "čeká na přidělení" }}</code></td>
               <td><span class="overview-signal unknown">Ověřuje se pouze místně</span></td>
+              <td v-if="notebook?.access.role === 'administrator'">
+                <button v-if="item.role === 'user' && item.id !== notebook.id" type="button" class="secondary" :disabled="loading" @click="$emit('revokeNotebook', item.id, item.name)">Odvolat členství</button>
+                <span v-else>—</span>
+              </td>
             </tr>
           </tbody>
         </table>

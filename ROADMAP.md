@@ -75,7 +75,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     testovací build s vloženým frontendem. Pokus o zavření okna navíc ukončil
     celý tray proces, proto životní cyklus blokuje implicitní exit a okno
     skryje; proces lze cíleně ukončit jen položkou v tray. Opakovaná zkouška
-    zavření okna a odhlášení/přihlášení po novém sestavení zůstává otevřená.
+    potvrdila, že po zavření okna a odhlášení/přihlášení aplikace znovu naběhne
+    do stavové lišty. Restart po pádu, restart notebooku a odstranění služby
+    zůstávají k ověření.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
     privátní uživatelský socket zobrazí existující okno; stav ikony vychází
@@ -107,7 +109,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     aktualizace topologie bez řídicí synchronizace a fyzická akceptace. Místní
     diagnostika nyní kontroluje profil, rozhraní, adresu, forwarding, routy,
     handshake a pět WG pingů; cíle přijímá jen z podepsané revize a výsledek
-    označí po 120 sekundách jako zastaralý.
+    označí po 120 sekundách jako zastaralý. Administrátor může uživatelskému
+    notebooku po potvrzení odvolat členství novou podepsanou revizí; tím zmizí
+    jeho `/32` peer z příštího routerového deploye, ale místní identita ani data
+    notebooku se nemažou. Bezpečný přenos této revize na odvolaný notebook a
+    automatická obnova jeho VPN profilu ještě zbývají.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
