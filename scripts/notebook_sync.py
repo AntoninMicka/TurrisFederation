@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in notebook discovery and mutual-TLS configuration sync (stdlib only)."""
 import contextlib
+import base64
 import hashlib
 import http.client
 import http.server
@@ -37,7 +38,7 @@ FLEET_FILES = ['root.pem', 'members.json', 'published.json', 'revision-floor.jso
 LOCAL_LIMIT = 16 * 1024
 CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
 USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
-ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-1'
+ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-2'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 ENROLLMENT_TTL = 15 * 60
 
@@ -197,12 +198,14 @@ class Store:
         public = f.public_key(private)
         if public_path.exists() and public_path.read_text() != public:
             raise ValueError('Existující kotva notebooku patří jiné federaci.')
+        wg_public = self.wireguard_identity()
+        subnets = self.network_subnets()
         with f.locked(self.fleet):
             document = f.validate_document(f.verify(public, f.read(self.fleet / 'published.json')))
-            published, document = self.publish_notebooks(private, document, [{
-                'id': self.id, 'name': self.local_name(), 'role': 'administrator',
-                'zeroTierAddress': None, 'wireguardAddress': None,
-            }])
+            administrator = self.endpoint_notebook(
+                document, self.id, self.local_name(), 'administrator', wg_public, subnets)
+            published, document = self.publish_notebooks(private, document, [administrator])
+            self.write_wireguard_config(document)
         now = int(time.time())
         credential = {'schema': CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
                       'subject': self.id, 'role': 'administrator', 'issuedAt': now,
@@ -223,19 +226,100 @@ class Store:
         name = name.strip() if isinstance(name, str) else ''
         return name[:80] if name else 'Notebook ' + self.id[:8]
 
+    def wireguard_identity(self):
+        path = self.root / 'wireguard.key'
+        if not path.exists():
+            private = bytearray(secrets.token_bytes(32))
+            private[0] &= 248
+            private[31] = (private[31] & 127) | 64
+            f.atomic(path, (base64.b64encode(private).decode() + '\n').encode())
+        try:
+            private = base64.b64decode(path.read_text().strip(), validate=True)
+        except (ValueError, OSError) as exc:
+            raise ValueError('Privátní WireGuard klíč notebooku je poškozený.') from exc
+        if len(private) != 32:
+            raise ValueError('Privátní WireGuard klíč notebooku je poškozený.')
+        der = bytes.fromhex('302e020100300506032b656e04220420') + private
+        public_der = f.run(['openssl', 'pkey', '-inform', 'DER', '-pubout', '-outform', 'DER'], der)
+        prefix = bytes.fromhex('302a300506032b656e032100')
+        if len(public_der) != len(prefix) + 32 or not public_der.startswith(prefix):
+            raise ValueError('Nelze odvodit veřejný WireGuard klíč notebooku.')
+        return base64.b64encode(public_der[len(prefix):]).decode()
+
+    def network_subnets(self):
+        with sqlite3.connect(self.data_dir / 'federation.db', timeout=10) as db:
+            row = db.execute("SELECT value FROM app_settings WHERE name='zerotier'").fetchone()
+        settings = json.loads(row[0]) if row else {}
+        try:
+            zero_tier = ipaddress.ip_network(settings['zeroTierSubnet'], strict=True)
+            wireguard = ipaddress.ip_network(settings['wireguardSubnet'], strict=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError('Před přijetím notebooku nastavte IPv4 subnet ZeroTier i WireGuard.') from exc
+        if (zero_tier.version != 4 or wireguard.version != 4
+                or not 16 <= zero_tier.prefixlen <= 30 or not 16 <= wireguard.prefixlen <= 30
+                or zero_tier.overlaps(wireguard)):
+            raise ValueError('Notebooky vyžadují IPv4 subnet ZeroTier a WireGuard o velikosti /16 až /30.')
+        return zero_tier, wireguard
+
+    @staticmethod
+    def free_address(network, used):
+        for candidate in network.hosts():
+            if str(candidate) not in used:
+                return str(candidate)
+        raise ValueError('V adresním plánu už není volná adresa pro notebook.')
+
+    def endpoint_notebook(self, document, notebook_id, name, role, wireguard_key, subnets):
+        existing = next((item for item in document['config'].get('notebooks', [])
+                         if item['id'] == notebook_id), None)
+        if existing and (existing['name'] != name or existing['role'] != role):
+            raise ValueError('Notebook je již evidovaný s jiným názvem nebo rolí.')
+        if existing and existing.get('wireguardKey') not in [None, wireguard_key]:
+            raise ValueError('Notebook je již evidovaný s jiným WireGuard klíčem.')
+        used_zt = {node['zeroTierAddress'] for node in document['config']['nodes'] if node['zeroTierAddress']}
+        used_wg = {node['wireguardAddress'] for node in document['config']['nodes'] if node['wireguardAddress']}
+        for item in document['config'].get('notebooks', []):
+            if item['id'] != notebook_id:
+                if item['zeroTierAddress']:
+                    used_zt.add(item['zeroTierAddress'])
+                if item['wireguardAddress']:
+                    used_wg.add(item['wireguardAddress'])
+        zero_tier = existing.get('zeroTierAddress') if existing else None
+        wireguard = existing.get('wireguardAddress') if existing else None
+        return {'id': notebook_id, 'name': name, 'role': role,
+                'zeroTierAddress': zero_tier or self.free_address(subnets[0], used_zt),
+                'wireguardAddress': wireguard or self.free_address(subnets[1], used_wg),
+                'wireguardKey': wireguard_key}
+
     def publish_notebooks(self, private, document, requested):
-        notebooks = list(document['config'].get('notebooks', []))
+        notebooks = [dict(item, wireguardKey=item.get('wireguardKey'))
+                     for item in document['config'].get('notebooks', [])]
         for item in requested:
             existing = next((current for current in notebooks if current['id'] == item['id']), None)
-            if existing and existing != item:
-                raise ValueError('Notebook je již evidovaný s jiným názvem, rolí nebo adresou.')
-            if not existing:
+            if existing:
+                notebooks[notebooks.index(existing)] = item
+            else:
                 notebooks.append(item)
-        config = f.normalize_with_notebooks(document['config']['nodes'],
-                                            document['config']['networkId'], notebooks)
+        config = f.normalize_with_notebook_endpoints(document['config']['nodes'],
+                                                     document['config']['networkId'], notebooks)
         published = f.snapshot(self.fleet, config, document['members'])
         public = f.public_key(private)
         return published, f.validate_document(f.verify(public, published))
+
+    def write_wireguard_config(self, document):
+        notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
+        if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
+            raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
+        lines = ['[Interface]', 'PrivateKey = ' + (self.root / 'wireguard.key').read_text().strip(),
+                 'Address = ' + notebook['wireguardAddress'] + '/32']
+        for router in document['config']['nodes']:
+            member = document['members'].get(router['id'])
+            if not member:
+                continue
+            allowed = [router['wireguardAddress'] + '/32'] + router['lanCidrs']
+            lines.extend(['', '[Peer]', 'PublicKey = ' + member['wireguardKey'],
+                          'Endpoint = ' + router['zeroTierAddress'] + ':' + str(f.WG_PORT),
+                          'AllowedIPs = ' + ', '.join(allowed), 'PersistentKeepalive = 25'])
+        f.atomic(self.root / 'wireguard.conf', ('\n'.join(lines) + '\n').encode())
 
     def enrollment_request(self, name):
         if self.access_status()['state'] == 'valid':
@@ -246,7 +330,8 @@ class Store:
         pending = {'nonce': secrets.token_hex(32), 'createdAt': int(time.time())}
         f.atomic(self.root / 'pending-enrollment.json', pending)
         payload = {'schema': ENROLLMENT_SCHEMA, 'subject': self.id, 'name': name,
-                   'nonce': pending['nonce'], 'createdAt': pending['createdAt']}
+                   'nonce': pending['nonce'], 'createdAt': pending['createdAt'],
+                   'wireguardKey': self.wireguard_identity()}
         return {'cert': self.cert, 'signed': f.sign(self.root / 'key.pem', payload)}
 
     def issue_user_invitation(self, raw):
@@ -257,25 +342,35 @@ class Store:
             raise ValueError('Neplatná žádost notebooku.')
         public = f.run(['openssl', 'x509', '-pubkey', '-noout'], request['cert'].encode()).decode()
         payload = f.verify(public, request['signed'])
-        if (set(payload) != {'schema', 'subject', 'name', 'nonce', 'createdAt'} or payload['schema'] != ENROLLMENT_SCHEMA
+        if (set(payload) != {'schema', 'subject', 'name', 'nonce', 'createdAt', 'wireguardKey'} or payload['schema'] != ENROLLMENT_SCHEMA
                 or payload['subject'] != fingerprint(request['cert']) or not re.fullmatch('[a-f0-9]{64}', payload['nonce'])
                 or not isinstance(payload['name'], str) or not 0 < len(payload['name']) <= 80
+                or not isinstance(payload['wireguardKey'], str)
+                or len(base64.b64decode(payload['wireguardKey'], validate=True)) != 32
                 or type(payload['createdAt']) not in [int, float] or not 0 <= time.time() - payload['createdAt'] <= ENROLLMENT_TTL):
             raise ValueError('Žádost notebooku je neplatná nebo vypršela.')
         private = self.fleet / 'root.pem'
         if not private.exists():
             raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+        subnets = self.network_subnets()
+        administrator_key = self.wireguard_identity()
         with f.locked(self.fleet):
             published = f.read(self.fleet / 'published.json')
             if not published:
                 raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
             root_public = f.public_key(private)
             document = f.validate_document(f.verify(root_public, published))
-            requested = {'id': payload['subject'], 'name': payload['name'], 'role': 'user',
-                         'zeroTierAddress': None, 'wireguardAddress': None}
-            administrator = {'id': self.id, 'name': self.local_name(), 'role': 'administrator',
-                             'zeroTierAddress': None, 'wireguardAddress': None}
+            administrator = self.endpoint_notebook(document, self.id, self.local_name(), 'administrator',
+                                                   administrator_key, subnets)
+            allocation_document = json.loads(f.encode(document))
+            allocation_notebooks = [item for item in allocation_document['config'].get('notebooks', [])
+                                    if item['id'] != self.id]
+            allocation_notebooks.append(administrator)
+            allocation_document['config']['notebooks'] = allocation_notebooks
+            requested = self.endpoint_notebook(allocation_document, payload['subject'], payload['name'], 'user',
+                                               payload['wireguardKey'], subnets)
             published, document = self.publish_notebooks(private, document, [administrator, requested])
+            self.write_wireguard_config(document)
             now = int(time.time())
             credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
                           'subject': payload['subject'], 'role': 'user', 'issuedAt': now,
@@ -300,6 +395,9 @@ class Store:
                 or credential.get('enrollmentNonce') != pending.get('nonce') or time.time() > credential.get('acceptBy', 0)
                 or not notebook or notebook['role'] != 'user'):
             raise ValueError('Pozvánka neodpovídá této platné žádosti notebooku.')
+        if notebook.get('wireguardKey') != self.wireguard_identity():
+            raise ValueError('Pozvánka obsahuje jiný WireGuard klíč notebooku.')
+        self.write_wireguard_config(document)
         # All signatures and bindings are checked before publishing any file.
         for path, value in [(self.root / 'federation-root.pub', invitation['rootPublic'].encode()),
                             (self.fleet / 'root.pub', invitation['rootPublic'].encode())]:

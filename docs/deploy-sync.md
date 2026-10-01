@@ -301,6 +301,11 @@ Agent před změnami ověřuje existenci zařízení i očekávanou IP v jádře
 UDP/51830, TCP/8844 a diagnostický ping (IPv4 ICMP echo-request) povoluje
 pouze z jednotlivých ZeroTier IP přijatých peerů na ZeroTier IP routeru.
 Ping přes WireGuard je také povolený v zóně `tf_fed`.
+Podepsaný notebookový endpoint dostává na routeru samostatného WireGuard peeru
+jen s vlastní host route `/32`. Na podkladové zóně se z jeho konkrétní ZeroTier
+IP povolí pouze UDP/51830; nedostane TCP synchronizaci ani diagnostický ping.
+Router notebooku nenastavuje endpoint, takže koncový notebook musí handshake
+iniciovat sám a jeho výpadek nevstupuje do routerového health stavu.
 Dřívější `tf_control` pro celý subnet se při
 aplikování odstraní spolu s ostatními spravovanými sekcemi `tf_*`.
 

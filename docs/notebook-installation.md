@@ -102,6 +102,12 @@ a vydá uživatelskou pozvánku platnou 15 minut. Pozvánka je svázaná s TLS
 otiskem a jednorázovým nonce a obsahuje pouze veřejnou kotvu, podepsanou
 topologii a uživatelské pověření. Přijetí nejprve ověří všechny podpisy a vazby
 a teprve potom zapíše data; `root.pem` se uživatelskému notebooku nepředává.
+Žádost obsahuje také pouze veřejný WireGuard klíč vytvořený na cílovém
+notebooku. Administrátor přidělí volné adresy z uložených ZeroTier a WireGuard
+subnetů. Po přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
+routerovými peery a jejich federovanými LAN prefixy. Soubor zatím není automaticky
+instalovaný do systému; tento krok musí projít samostatným plánem a polkit
+potvrzením podle bodu 6.
 
 První administrátor představuje zvláštní bootstrap: může vytvořit novou
 federaci a její kořenovou identitu pouze v explicitním toku **Vytvořit novou

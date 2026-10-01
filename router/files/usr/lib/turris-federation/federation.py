@@ -26,6 +26,7 @@ from urllib.parse import parse_qs
 
 VERSION = 1
 NOTEBOOK_VERSION = 2
+NOTEBOOK_WG_VERSION = 3
 LIMIT = 1024 * 1024
 PORT = 8844
 WG_PORT = 51830
@@ -200,15 +201,18 @@ def normalize(nodes, network_id):
     return {'networkId': network_id, 'nodes': result}
 
 
-def normalize_notebooks(notebooks, router_config):
+def normalize_notebooks(notebooks, router_config, endpoints=False):
     if not isinstance(notebooks, list) or len(notebooks) > 128:
         raise ValueError('Federace podporuje nejvýše 128 notebooků.')
-    result, seen, zt_ips, wg_ips = [], set(), set(), set()
+    result, seen, zt_ips, wg_ips, wg_keys = [], set(), set(), set(), set()
     router_zt = {node['zeroTierAddress'] for node in router_config['nodes'] if node['zeroTierAddress']}
     router_wg = {node['wireguardAddress'] for node in router_config['nodes'] if node['wireguardAddress']}
     router_lans = [ipaddress.ip_network(cidr) for node in router_config['nodes'] for cidr in node['lanCidrs']]
     for item in sorted(notebooks, key=lambda notebook: notebook['id']):
-        if set(item) != {'id', 'name', 'role', 'zeroTierAddress', 'wireguardAddress'}:
+        fields = {'id', 'name', 'role', 'zeroTierAddress', 'wireguardAddress'}
+        if endpoints:
+            fields.add('wireguardKey')
+        if set(item) != fields:
             raise ValueError('Notebook obsahuje nepodporovaná pole.')
         notebook_id = item['id']
         if not isinstance(notebook_id, str) or not re.fullmatch('[a-f0-9]{64}', notebook_id):
@@ -223,14 +227,27 @@ def normalize_notebooks(notebooks, router_config):
             raise ValueError('Neplatná role notebooku.')
         zt = address(item['zeroTierAddress']) if item['zeroTierAddress'] else None
         wg = address(item['wireguardAddress']) if item['wireguardAddress'] else None
+        wg_key = item['wireguardKey'] if endpoints else None
+        if endpoints and wg_key is not None:
+            if not isinstance(wg_key, str) or len(base64.b64decode(wg_key, validate=True)) != 32:
+                raise ValueError('Neplatný veřejný WireGuard klíč notebooku.')
+            if wg_key in wg_keys:
+                raise ValueError('Dva notebooky používají stejný WireGuard klíč.')
+            wg_keys.add(wg_key)
+        if endpoints and any(value is not None for value in [zt, wg, wg_key]) and not all(
+                value is not None for value in [zt, wg, wg_key]):
+            raise ValueError('Síťový endpoint notebooku musí mít obě adresy a WireGuard klíč.')
         if zt and (zt in zt_ips or zt in router_zt) or wg and (wg in wg_ips or wg in router_wg):
             raise ValueError('Duplicitní adresa ZeroTier nebo WireGuard.')
         if zt:
             zt_ips.add(zt)
         if wg:
             wg_ips.add(wg)
-        result.append({'id': notebook_id, 'name': name, 'role': item['role'],
-                       'zeroTierAddress': zt, 'wireguardAddress': wg})
+        normalized = {'id': notebook_id, 'name': name, 'role': item['role'],
+                      'zeroTierAddress': zt, 'wireguardAddress': wg}
+        if endpoints:
+            normalized['wireguardKey'] = wg_key
+        result.append(normalized)
     if (zt_ips | router_zt) & (wg_ips | router_wg):
         raise ValueError('Adresy ZeroTier a WireGuard se nesmí shodovat.')
     for ip in zt_ips | wg_ips:
@@ -245,20 +262,28 @@ def normalize_with_notebooks(nodes, network_id, notebooks):
     return config
 
 
+def normalize_with_notebook_endpoints(nodes, network_id, notebooks):
+    config = normalize(nodes, network_id)
+    config['notebooks'] = normalize_notebooks(notebooks, config, endpoints=True)
+    return config
+
+
 def validate_document(doc):
     if set(doc) != {'schema', 'federationId', 'revision', 'previous', 'config', 'members'}:
         raise ValueError('Synchronizace přijímá pouze síťové nastavení, nikoli software nebo příkazy.')
-    if doc.get('schema') not in [VERSION, NOTEBOOK_VERSION] or type(doc.get('revision')) is not int or doc['revision'] < 1:
+    if doc.get('schema') not in [VERSION, NOTEBOOK_VERSION, NOTEBOOK_WG_VERSION] or type(doc.get('revision')) is not int or doc['revision'] < 1:
         raise ValueError('Nepodporované schéma nebo revize.')
     str(uuid.UUID(doc['federationId']))
     normalized = normalize(doc['config']['nodes'], doc['config']['networkId'])
-    if doc['schema'] == NOTEBOOK_VERSION:
+    if doc['schema'] in [NOTEBOOK_VERSION, NOTEBOOK_WG_VERSION]:
         if set(doc['config']) != {'networkId', 'nodes', 'notebooks'}:
             raise ValueError('Konfigurace obsahuje nepodporovaná pole.')
-        normalized['notebooks'] = normalize_notebooks(doc['config']['notebooks'], normalized)
+        normalized['notebooks'] = normalize_notebooks(
+            doc['config']['notebooks'], normalized, endpoints=doc['schema'] == NOTEBOOK_WG_VERSION)
     if normalized != doc['config']:
         raise ValueError('Konfigurace není normalizovaná.')
-    keys = set()
+    keys = {notebook['wireguardKey'] for notebook in normalized.get('notebooks', [])
+            if notebook.get('wireguardKey')}
     for node_id, member in doc['members'].items():
         if set(member) != {'nodeId', 'identity', 'wireguardKey'}:
             raise ValueError('Nepodporovaná pole člena síťové konfigurace.')
@@ -354,6 +379,12 @@ def owned_sections(package):
             if re.fullmatch(package + r'\.tf_[a-zA-Z0-9_]+=[a-zA-Z0-9_]+', line)]
 
 
+def notebook_endpoints(doc):
+    return [notebook for notebook in doc['config'].get('notebooks', [])
+            if notebook.get('zeroTierAddress') and notebook.get('wireguardAddress')
+            and notebook.get('wireguardKey')]
+
+
 def render_apply(root, doc):
     node = self_node(root, doc)
     own_id = read(Path(root) / 'node.json')['nodeId']
@@ -379,6 +410,11 @@ def render_apply(root, doc):
             'endpoint_host': peer['zeroTierAddress'], 'endpoint_port': str(WG_PORT),
             'persistent_keepalive': '25', 'route_allowed_ips': '1', 'nohostroute': '1',
             'allowed_ips': [peer['wireguardAddress'] + '/32'] + peer['lanCidrs']})
+    notebooks = notebook_endpoints(doc)
+    for peer in notebooks:
+        uci_section('network', 'tf_n_' + peer['id'][:24], 'wireguard_tf_wg', {
+            'public_key': peer['wireguardKey'], 'route_allowed_ips': '1', 'nohostroute': '1',
+            'allowed_ips': [peer['wireguardAddress'] + '/32']})
     uci_section('firewall', 'tf_zone', 'zone', {'name': 'tf_fed', 'network': ['tf_wg'],
                 'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
     uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [local['zeroTierDevice']],
@@ -393,6 +429,10 @@ def render_apply(root, doc):
         for suffix, protocol, port in [('wg', 'udp', WG_PORT), ('sync', 'tcp', PORT)]:
             uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
                         'dest_ip': node['zeroTierAddress'], 'proto': protocol, 'dest_port': str(port), 'target': 'ACCEPT', 'family': 'ipv4'})
+    for index, peer in enumerate(notebooks):
+        uci_section('firewall', 'tf_wg_notebook_%s' % index, 'rule', {
+            'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+            'proto': 'udp', 'dest_port': str(WG_PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
     for package in ['network', 'firewall']:
         run(['uci', 'commit', package])
     run(['ifup', 'tf_wg'])
@@ -438,6 +478,8 @@ def check_routes(root, doc):
     remote_networks = [ipaddress.ip_network(cidr) for n in doc['config']['nodes']
                        if n['id'] != own_id and n['id'] in doc['members']
                        for cidr in n['lanCidrs'] + [n['wireguardAddress'] + '/32']]
+    remote_networks.extend(ipaddress.ip_network(n['wireguardAddress'] + '/32')
+                           for n in notebook_endpoints(doc))
     versions = {net.version for net in remote_networks}
     for version in versions:
         output = run(['ip', '-%s' % version, 'route', 'show']).decode()
@@ -760,8 +802,11 @@ def health(root, doc):
     if expected_key != actual_key:
         raise ValueError('WireGuard nemá očekávanou identitu.')
     peers = [n for n in doc['config']['nodes'] if n['id'] in doc['members'] and n['id'] != own_id]
+    notebooks = notebook_endpoints(doc)
     actual_peers = set(run(['wg', 'show', 'tf_wg', 'peers']).decode().split())
-    if actual_peers != {doc['members'][n['id']]['wireguardKey'] for n in peers}:
+    expected_peers = {doc['members'][n['id']]['wireguardKey'] for n in peers}
+    expected_peers.update(n['wireguardKey'] for n in notebooks)
+    if actual_peers != expected_peers:
         raise ValueError('WireGuard nemá očekávaný seznam peerů.')
     allowed = {}
     for line in run(['wg', 'show', 'tf_wg', 'allowed-ips']).decode().splitlines():
@@ -771,6 +816,9 @@ def health(root, doc):
     for peer in peers:
         if allowed.get(doc['members'][peer['id']]['wireguardKey']) != set(peer['lanCidrs'] + [peer['wireguardAddress'] + '/32']):
             raise ValueError('WireGuard AllowedIPs neodpovídají plánu.')
+    for peer in notebooks:
+        if allowed.get(peer['wireguardKey']) != {peer['wireguardAddress'] + '/32'}:
+            raise ValueError('Notebook má jiné WireGuard AllowedIPs než svou host route.')
     missing = []
     for peer in peers:
         for cidr in peer['lanCidrs'] + [peer['wireguardAddress'] + '/32']:
@@ -779,6 +827,11 @@ def health(root, doc):
             route = run(['ip', '-%s' % net.version, 'route', 'get', str(destination)]).decode()
             if not re.search(r'\bdev tf_wg\b', route):
                 raise ValueError('Po deployi chybí WireGuard trasa: ' + cidr)
+    for peer in notebooks:
+        cidr = peer['wireguardAddress'] + '/32'
+        route = run(['ip', '-4', 'route', 'get', peer['wireguardAddress']]).decode()
+        if not re.search(r'\bdev tf_wg\b', route):
+            raise ValueError('Po deployi chybí WireGuard trasa notebooku: ' + cidr)
     # Passive health check: only explicit web diagnostics may send ICMP probes.
     handshakes = {}
     for line in run(['wg', 'show', 'tf_wg', 'latest-handshakes']).decode().splitlines():
@@ -1460,7 +1513,12 @@ def snapshot(root, config, members):
     floor = read(root / 'revision-floor.json', 0)
     if old and old['revision'] >= floor and old['config'] == config and old['members'] == members:
         return old_envelope
-    schema = NOTEBOOK_VERSION if 'notebooks' in config else VERSION
+    if 'notebooks' not in config:
+        schema = VERSION
+    elif any('wireguardKey' in notebook for notebook in config['notebooks']):
+        schema = NOTEBOOK_WG_VERSION
+    else:
+        schema = NOTEBOOK_VERSION
     doc = {'schema': schema, 'federationId': old['federationId'] if old else str(uuid.uuid4()),
            'revision': max(old['revision'] + 1 if old else 1, floor), 'previous': digest(old) if old else None,
            'config': config, 'members': members}
@@ -1512,6 +1570,20 @@ def distribute_bundle(root, envelope, exclude=None):
     atomic(root / 'reports.json', results)
 
 
+def preserve_notebooks(root, config):
+    root = Path(root)
+    published = read(root / 'published.json')
+    if not published:
+        return config
+    document = validate_document(verify(public_key(root / 'root.pem'), published))
+    notebooks = document['config'].get('notebooks')
+    if notebooks is None:
+        return config
+    if document['schema'] == NOTEBOOK_WG_VERSION:
+        return normalize_with_notebook_endpoints(config['nodes'], config['networkId'], notebooks)
+    return normalize_with_notebooks(config['nodes'], config['networkId'], notebooks)
+
+
 def controller(root, req):
     root = Path(root)
     if (root / 'notebook-sync-journal.json').exists():
@@ -1524,7 +1596,7 @@ def controller(root, req):
     if action == 'diagnostics':
         return notebook_diagnostics(root)
     nodes = req['nodes']
-    config = normalize(nodes, req['networkId'])
+    config = preserve_notebooks(root, normalize(nodes, req['networkId']))
     if action == 'overview':
         return overview(root, config)
     if action == 'refresh':
@@ -1556,9 +1628,12 @@ def controller(root, req):
         updating = node['id'] in read(root / 'members.json', {})
         installed = installed_artifact_hash(node, credentials)
         available = artifact_hash()
+        requires_endpoint_agent = any(notebook.get('wireguardKey')
+                                      for notebook in config.get('notebooks', []))
+        settings_supported = updating and installed and (installed == available or not requires_endpoint_agent)
         plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': available,
                 'installedArtifactHash': installed, 'versionMismatch': installed != available,
-                'availableModes': ['full', 'settings'] if updating and installed else ['full'],
+                'availableModes': ['full', 'settings'] if settings_supported else ['full'],
                 'recommendedMode': 'settings' if updating and installed == available else 'full',
                 'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),

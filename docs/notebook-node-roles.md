@@ -150,6 +150,12 @@ ZeroTier/WireGuard adresy; formát pro něj vůbec nepřijímá LAN prefixy. Sta
 routerové dokumenty schématu 1 zůstávají validní. Jednorázový bootstrap
 administrátora jej zapíše do nové revize a vydání uživatelské pozvánky nejprve
 idempotentně publikuje oba notebooky, potom vydá pověření svázané s členstvím.
+Schéma 3 doplňuje veřejný WireGuard klíč a vyžaduje endpoint buď celý
+(ZeroTier adresa, WireGuard adresa a klíč), nebo dosud nepřidělený. Privátní
+klíč vzniká a zůstává na cílovém notebooku. Router vytvoří notebookovému peeru
+jen host route `/32`, bez endpointu, LAN prefixů a přístupu k synchronizačnímu
+API; notebook spojení iniciuje přes ZeroTier. Handshake notebooku se nekontroluje
+v routerovém health stavu.
 
 První autorizační vrstva už ověřuje samostatné podepsané pověření svázané
 s TLS identitou notebooku a ID federace. Neplatné, cizí nebo prošlé pověření
@@ -173,8 +179,10 @@ Zbývající kroky:
 2. [x] Oddělit členství a podepsané uživatelské pověření notebooku od
    administrátorského párování. Uživatelský notebook nevstupuje do stávající
    synchronizace řídicí identity a nedostane kořenový privátní klíč.
-3. Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
+3. [~] Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
+   Generování, podepsané adresy a routerová konfigurace jsou hotové; zbývá
+   potvrzovaná systémová instalace a end-to-end ověření tunelu.
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
    služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH.
 5. Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance UI;

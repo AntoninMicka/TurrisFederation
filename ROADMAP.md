@@ -70,9 +70,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     Podepsané schéma 2 eviduje routery a zvlášť koncové notebooky s rolí, bez
     možnosti inzerovat notebookovou LAN. Bootstrap zapíše administrátorský
     notebook a vydání pozvánky atomicky publikuje uživatelský notebook v nové
-    revizi; staré routerové schéma 1 zůstává přijímané. Zbývá přidělení adres,
-    konfigurace koncového VPN připojení, odvolání a aktualizace topologie bez
-    řídicí synchronizace. Místní diagnostika přijímá cíle jen z podepsané revize.
+    revizi; staré routerové schéma 1 zůstává přijímané. Schéma 3 navíc váže
+    notebook na lokálně vytvořený veřejný WireGuard klíč a přidělené ZeroTier/WG
+    adresy. Pozvánka vytvoří privátní koncovou konfiguraci; router pro notebook
+    přijme jen jeho `/32` a jeho handshake nehodnotí jako dostupnost federace.
+    Zbývá privilegovaná instalace této konfigurace, odvolání a aktualizace
+    topologie bez řídicí synchronizace. Místní diagnostika přijímá cíle jen
+    z podepsané revize.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

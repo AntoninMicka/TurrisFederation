@@ -157,6 +157,23 @@ class FederationTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, 'Duplicitní|koliduje'):
                 f.normalize_with_notebooks(self.nodes, 'abcdef0123456789', [item])
 
+    def test_notebook_endpoint_requires_complete_unique_wireguard_identity(self):
+        endpoint = {'id': 'd' * 64, 'name': 'User notebook', 'role': 'user',
+                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
+        config = f.normalize_with_notebook_endpoints(self.nodes, 'abcdef0123456789', [endpoint])
+        doc = self.document(config=config)
+        doc['schema'] = f.NOTEBOOK_WG_VERSION
+        f.validate_document(doc)
+        incomplete = copy.deepcopy(endpoint)
+        incomplete['wireguardAddress'] = None
+        with self.assertRaisesRegex(ValueError, 'obě adresy'):
+            f.normalize_with_notebook_endpoints(self.nodes, 'abcdef0123456789', [incomplete])
+        duplicate = copy.deepcopy(doc)
+        duplicate['config']['notebooks'][0]['wireguardKey'] = self.member(1)['wireguardKey']
+        with self.assertRaisesRegex(ValueError, 'stejný WireGuard klíč'):
+            f.validate_document(duplicate)
+
     def test_drafts_cannot_enroll_through_publish(self):
         f.atomic(self.root / 'members.json', {node(1)['id']: self.member(1)})
         with patch.object(f, 'request_http', side_effect=ValueError('offline')):
@@ -165,6 +182,19 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('appliedRevision', result['nodes'][node(1)['id']])
         self.assertFalse(result['nodes'][node(1)['id']]['reachable'])
         self.assertEqual(1, result['revision'])
+
+    def test_router_publish_preserves_signed_notebook_endpoints(self):
+        endpoint = {'id': '1' * 64, 'name': 'User notebook', 'role': 'user',
+                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
+        config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], [endpoint])
+        f.snapshot(self.root, config, {})
+        with patch.object(f, 'distribute_bundle'):
+            f.controller(self.root, {'action': 'publish', 'nodes': self.nodes,
+                                     'networkId': self.config['networkId']})
+        document = f.validate_document(f.verify(self.public, f.read(self.root / 'published.json')))
+        self.assertEqual(f.NOTEBOOK_WG_VERSION, document['schema'])
+        self.assertEqual([endpoint], document['config']['notebooks'])
 
     def test_uci_private_key_uses_stdin_not_arguments(self):
         with patch.object(f, 'run') as command:
@@ -417,6 +447,16 @@ class FederationTests(unittest.TestCase):
                 self.assertEqual(installed, plan['installedArtifactHash'])
                 self.assertEqual(installed != f.artifact_hash(), plan['versionMismatch'])
                 self.assertNotEqual(plan['stepsByMode']['full'], plan['stepsByMode']['settings'])
+
+    def test_notebook_endpoint_protocol_requires_current_router_agent(self):
+        endpoint = {'id': '2' * 64, 'name': 'User notebook', 'role': 'user',
+                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
+        config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], [endpoint])
+        f.snapshot(self.root, config, {})
+        _, plan, _ = self.validation_fixture('a' * 64)
+        self.assertEqual(['full'], plan['availableModes'])
+        self.assertEqual('full', plan['recommendedMode'])
 
     def test_settings_update_preserves_software_and_uses_apply_confirm(self):
         # A version mismatch recommends full update but an explicit settings-only choice remains valid.
@@ -783,6 +823,31 @@ class FederationTests(unittest.TestCase):
                 ping.assert_not_called()
         self.assertFalse((self.root / 'diagnostics.json').exists())
 
+    def test_router_validates_notebook_host_route_without_monitoring_its_handshake(self):
+        doc = self.prepare_diagnostics()
+        endpoint = {'id': 'f' * 64, 'name': 'User notebook', 'role': 'user',
+                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
+        doc['schema'] = f.NOTEBOOK_WG_VERSION
+        doc['config'] = f.normalize_with_notebook_endpoints(doc['config']['nodes'],
+                                                            doc['config']['networkId'], [endpoint])
+        router_key = self.member(2)['wireguardKey']
+        def run(args):
+            if args[-1] == 'public-key':
+                return self.member(1)['wireguardKey'].encode()
+            if args[-1] == 'peers':
+                return (router_key + '\n' + endpoint['wireguardKey']).encode()
+            if args[-1] == 'allowed-ips':
+                return (router_key + ' 10.203.0.2/32 192.168.2.0/24\n' +
+                        endpoint['wireguardKey'] + ' 10.203.0.20/32').encode()
+            if args[-1] == 'latest-handshakes':
+                return (router_key + ' 1000\n' + endpoint['wireguardKey'] + ' 0').encode()
+            return b'dev tf_wg'
+        with patch.object(f, 'run', side_effect=run), patch.object(f.time, 'time', return_value=1000):
+            result = f.health(self.root, doc)
+        self.assertEqual('active', result['state'])
+        self.assertEqual([], result['pendingPeers'])
+
     def test_web_only_explicit_token_protected_post_starts_diagnostics(self):
         self.prepare_diagnostics()
         handler = f.web_handler(self.root)
@@ -921,6 +986,29 @@ class FederationTests(unittest.TestCase):
         self.assertIn("set network.tf_wg.nohostroute='1'", config)
         self.assertNotIn('0.0.0.0/0', config)
         self.assertNotIn('masq', config)
+
+    def test_notebook_renders_only_host_route_and_underlay_wireguard_rule(self):
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'wireguard.key', b'private-test-only')
+        endpoint = {'id': 'e' * 64, 'name': 'User notebook', 'role': 'user',
+                    'zeroTierAddress': '10.147.0.20', 'wireguardAddress': '10.203.0.20',
+                    'wireguardKey': base64.b64encode(b'n' * 32).decode()}
+        config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], [endpoint])
+        doc = self.document(config=config, members={node(1)['id']: self.member(1)})
+        doc['schema'] = f.NOTEBOOK_WG_VERSION
+        with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
+                patch.object(f, 'run', return_value=b''), patch.object(f, 'owned_sections', return_value=[]), \
+                patch.object(f, 'uci_section') as section:
+            f.render_apply(self.root, doc)
+        network = {call.args[1]: call.args[3] for call in section.call_args_list
+                   if call.args[0] == 'network' and call.args[2] == 'wireguard_tf_wg'}
+        notebook_peer = next(value for name, value in network.items() if name.startswith('tf_n_'))
+        self.assertEqual(['10.203.0.20/32'], notebook_peer['allowed_ips'])
+        self.assertNotIn('endpoint_host', notebook_peer)
+        firewall = [call.args[3] for call in section.call_args_list
+                    if call.args[0] == 'firewall' and call.args[1].startswith('tf_wg_notebook_')]
+        self.assertEqual([{'src': 'tf_zt', 'src_ip': '10.147.0.20', 'dest_ip': '10.147.0.1',
+                           'proto': 'udp', 'dest_port': '51830', 'target': 'ACCEPT', 'family': 'ipv4'}], firewall)
 
     def test_zerotier_device_must_exist_and_have_expected_address(self):
         network = {'nwid': self.config['networkId'], 'status': 'OK',

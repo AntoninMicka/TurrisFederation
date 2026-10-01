@@ -89,13 +89,21 @@ class NotebookTests(unittest.TestCase):
 
     def published_federation(self, store):
         self.node(store)
+        with store.db() as db:
+            settings = {'networkId': 'abcdef0123456789', 'central': 'new',
+                        'zeroTierSubnet': '10.147.0.0/24', 'wireguardSubnet': '10.203.0.0/24'}
+            db.execute("INSERT INTO app_settings(name,value) VALUES('zerotier',?) "
+                       "ON CONFLICT(name) DO UPDATE SET value=excluded.value", (json.dumps(settings),))
         self.root_identity(store)
         config = f.normalize([{'id': str(uuid.UUID(int=1)), 'name': 'Prague',
                               'sshHost': '192.168.1.1', 'sshPort': 22, 'sshUser': 'root',
                               'lanCidrs': ['192.168.1.0/24'], 'zeroTierAddress': '10.147.0.1',
                               'wireguardAddress': '10.203.0.1', 'publicEndpoint': None}],
                              'abcdef0123456789')
-        return f.snapshot(store.fleet, config, {})
+        member = {'nodeId': str(uuid.UUID(int=1)), 'identity': f.public_key(store.fleet / 'root.pem'),
+                  'wireguardKey': __import__('base64').b64encode(b'r' * 32).decode()}
+        f.atomic(store.fleet / 'members.json', {member['nodeId']: member})
+        return f.snapshot(store.fleet, config, {member['nodeId']: member})
 
     def test_admin_credential_requires_explicit_bootstrap_and_verifies_identity(self):
         self.assertEqual('unconnected', self.a.access_status()['state'])
@@ -109,9 +117,13 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(('valid', 'administrator', self.a.id),
                          (status['state'], status['role'], status['subject']))
         document = f.verify(f.public_key(self.a.fleet / 'root.pem'), f.read(self.a.fleet / 'published.json'))
-        self.assertEqual(f.NOTEBOOK_VERSION, document['schema'])
+        self.assertEqual(f.NOTEBOOK_WG_VERSION, document['schema'])
         self.assertEqual([self.a.id], [item['id'] for item in document['config']['notebooks']])
         self.assertEqual('administrator', document['config']['notebooks'][0]['role'])
+        self.assertEqual(('10.147.0.2', '10.203.0.2'),
+                         (document['config']['notebooks'][0]['zeroTierAddress'],
+                          document['config']['notebooks'][0]['wireguardAddress']))
+        self.assertTrue((self.a.root / 'wireguard.conf').exists())
         self.assertEqual(0o600, (self.a.root / 'credential.json').stat().st_mode & 0o777)
         self.assertEqual(0o600, (self.a.root / 'federation-root.pub').stat().st_mode & 0o777)
         with self.assertRaisesRegex(ValueError, 'již existuje'):
@@ -167,12 +179,13 @@ class NotebookTests(unittest.TestCase):
         self.assertNotIn('PRIVATE KEY', raw)
         self.assertEqual(n.INVITATION_SCHEMA, invitation['schema'])
         published = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
-        self.assertEqual(f.NOTEBOOK_VERSION, published['schema'])
+        self.assertEqual(f.NOTEBOOK_WG_VERSION, published['schema'])
         self.assertEqual({self.a.id: 'administrator', self.b.id: 'user'},
                          {item['id']: item['role'] for item in published['config']['notebooks']})
         user = next(item for item in published['config']['notebooks'] if item['id'] == self.b.id)
-        self.assertEqual({'id': self.b.id, 'name': 'User notebook', 'role': 'user',
-                          'zeroTierAddress': None, 'wireguardAddress': None}, user)
+        self.assertEqual(('User notebook', 'user', '10.147.0.3', '10.203.0.3'),
+                         (user['name'], user['role'], user['zeroTierAddress'], user['wireguardAddress']))
+        self.assertEqual(32, len(__import__('base64').b64decode(user['wireguardKey'])))
         self.assertEqual(invitation['published'], f.read(self.a.fleet / 'published.json'))
         self.assertNotIn(self.b.id, published['members'])
 
@@ -181,6 +194,14 @@ class NotebookTests(unittest.TestCase):
         self.assertFalse((self.b.fleet / 'root.pem').exists())
         self.assertTrue((self.b.fleet / 'root.pub').exists())
         self.assertTrue((self.b.fleet / 'published.json').exists())
+        config = (self.b.root / 'wireguard.conf').read_text()
+        self.assertEqual(0o600, (self.b.root / 'wireguard.conf').stat().st_mode & 0o777)
+        self.assertEqual(0o600, (self.b.root / 'wireguard.key').stat().st_mode & 0o777)
+        self.assertIn('Address = 10.203.0.3/32', config)
+        self.assertIn('Endpoint = 10.147.0.1:51830', config)
+        self.assertIn('AllowedIPs = 10.203.0.1/32, 192.168.1.0/24', config)
+        self.assertNotIn('PostUp', config)
+        self.assertNotIn('forward', config.lower())
         self.assertFalse((self.b.root / 'pending-enrollment.json').exists())
         with self.assertRaisesRegex(ValueError, 'již má'):
             self.b.accept_user_invitation(raw)
