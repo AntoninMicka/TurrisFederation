@@ -34,7 +34,8 @@ const notebookState = computed(() => {
   if (props.notebook?.service?.active && props.notebook?.service?.enabled) return "Backend běží a má autostart";
   if (props.notebook?.service?.active) return "Backend běží bez autostartu";
   if (props.notebook?.service?.installed) return "Služba neběží";
-  if (props.notebook) return "Backend běží pouze s UI";
+  if (props.notebook?.running) return "Dočasný backend běží pouze s UI";
+  if (props.notebook) return "Trvalá služba není nainstalovaná";
   return "Stav není načtený";
 });
 

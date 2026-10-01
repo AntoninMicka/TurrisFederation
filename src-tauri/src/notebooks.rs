@@ -7,10 +7,13 @@ const FEDERATION: &str = include_str!("../../router/files/usr/lib/turris-federat
 const UNIT_NAME: &str = "turris-federation-backend.service";
 
 #[derive(Default)]
-pub struct NotebookService(pub Mutex<Option<Child>>);
+pub struct NotebookService {
+    child: Mutex<Option<Child>>,
+    startup_error: Mutex<Option<String>>,
+}
 impl Drop for NotebookService {
     fn drop(&mut self) {
-        if let Ok(child) = self.0.get_mut() {
+        if let Ok(child) = self.child.get_mut() {
             if let Some(mut process) = child.take() { let _ = process.kill(); let _ = process.wait(); }
         }
     }
@@ -185,7 +188,7 @@ pub fn tray_state() -> TrayState {
 }
 
 fn stop(service: &NotebookService) -> Result<(), String> {
-    if let Some(mut child) = service.0.lock().map_err(|e| e.to_string())?.take() {
+    if let Some(mut child) = service.child.lock().map_err(|e| e.to_string())?.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -198,7 +201,7 @@ fn start(data: &Path, service: &NotebookService) -> Result<(), String> {
     let child = Command::new("python3").arg(script).arg("serve").arg(data)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().map_err(|e| format!("Nelze spustit synchronizaci: {e}"))?;
-    *service.0.lock().map_err(|e| e.to_string())? = Some(child);
+    *service.child.lock().map_err(|e| e.to_string())? = Some(child);
     Ok(())
 }
 
@@ -236,6 +239,15 @@ fn persistent_backend_requires_reconcile(
     backend_desired && (!unit_matches || !unit_enabled || !unit_active)
 }
 
+fn persistent_backend_desired(config: Option<&Value>, access: Option<&Value>, unit_exists: bool) -> bool {
+    unit_exists
+        || config.and_then(|value| value["enabled"].as_bool()) == Some(true)
+        || matches!(
+            access.map(|value| (value["state"].as_str(), value["role"].as_str())),
+            Some((Some("valid"), Some("administrator" | "user")))
+        )
+}
+
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     let config = fs::read(data.join("notebooks/config.json")).ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
@@ -243,8 +255,10 @@ pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     // enables administrator-to-administrator discovery. Once installed, the
     // unit itself records that intent; legacy administrators additionally use
     // config.enabled as the migration signal.
-    let backend_desired = unit_path(config_dir).exists()
-        || config.as_ref().and_then(|value| value["enabled"].as_bool()) == Some(true);
+    let access = script_request(data, &json!({"action": "access_status"})).ok();
+    let backend_desired = persistent_backend_desired(
+        config.as_ref(), access.as_ref(), unit_path(config_dir).exists(),
+    );
     if !backend_desired { return; }
     let unit_matches = scripts(data).and_then(|script| unit_contents(data, &script))
         .ok().is_some_and(|expected| fs::read_to_string(unit_path(config_dir)).ok().as_deref() == Some(expected.as_str()));
@@ -256,10 +270,15 @@ pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
         // Reconcile missing, disabled, stopped and stale units. In particular,
         // development launches can inherit a revision-specific Snap data path,
         // which must not remain in ExecStart after the application moves.
-        if install_service(data, config_dir).is_err() && state["active"].as_bool() != Some(true) {
+        if let Err(error) = install_service(data, config_dir) {
+            if let Ok(mut current) = service.startup_error.lock() {
+                *current = Some(format!("Trvalou uživatelskou službu se nepodařilo nainstalovat: {error}"));
+            }
             // Preserve the previous same-session behaviour; the UI exposes
             // that the persistent service still needs repair.
-            let _ = start(data, service);
+            if state["active"].as_bool() != Some(true) { let _ = start(data, service); }
+        } else if let Ok(mut current) = service.startup_error.lock() {
+            *current = None;
         }
     }
 }
@@ -286,6 +305,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                 if enabled { let _ = start(&data, &service); }
                 return Err(error);
             }
+            *service.startup_error.lock().map_err(|e| e.to_string())? = None;
             return Ok(json!({"service": service_state(&config_dir)}));
         }
         if action == "service_remove" {
@@ -294,6 +314,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                 .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
                 .and_then(|config| config["enabled"].as_bool()).unwrap_or(false);
             if enabled { start(&data, &service)?; }
+            *service.startup_error.lock().map_err(|e| e.to_string())? = None;
             return Ok(json!({"service": service_state(&config_dir)}));
         }
         if action == "backend_status" {
@@ -331,13 +352,15 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
                 stop(&service)?;
             }
         }
-        let child_running = service.0.lock().map_err(|e| e.to_string())?.as_mut()
+        let child_running = service.child.lock().map_err(|e| e.to_string())?.as_mut()
             .map(|child| child.try_wait().map(|status| status.is_none()).unwrap_or(false)).unwrap_or(false);
         let configured = result["config"]["enabled"].as_bool() == Some(true);
         let running = configured && (child_running || service_state(&config_dir)["active"].as_bool() == Some(true));
         result["running"] = json!(running);
         result["service"] = service_state(&config_dir);
-        if let Some(error) = service_error { result["serviceError"] = json!(error); }
+        if let Some(error) = service_error.or_else(|| service.startup_error.lock().ok().and_then(|value| value.clone())) {
+            result["serviceError"] = json!(error);
+        }
         Ok(result)
     }).await.map_err(|e| e.to_string())?
 }
@@ -373,6 +396,18 @@ mod tests {
         assert!(persistent_backend_requires_reconcile(true, true, true, false));
         assert!(!persistent_backend_requires_reconcile(true, true, true, true));
         assert!(!persistent_backend_requires_reconcile(false, false, false, false));
+    }
+
+    #[test]
+    fn valid_existing_member_requires_service_even_without_admin_sync_config() {
+        let disabled = json!({"enabled": false});
+        let user = json!({"state": "valid", "role": "user"});
+        let administrator = json!({"state": "valid", "role": "administrator"});
+        let invalid = json!({"state": "invalid", "role": "user"});
+        assert!(persistent_backend_desired(Some(&disabled), Some(&user), false));
+        assert!(persistent_backend_desired(Some(&disabled), Some(&administrator), false));
+        assert!(!persistent_backend_desired(Some(&disabled), Some(&invalid), false));
+        assert!(persistent_backend_desired(Some(&disabled), None, true));
     }
 
     #[test]

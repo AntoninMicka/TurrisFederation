@@ -739,7 +739,7 @@ async function submitConnection() {
         <div class="setup-preview">
           <strong>Trvalý backend notebooku</strong>
           <p v-if="notebookSync.service?.installed">{{ notebookSync.service.active && notebookSync.service.enabled ? 'Uživatelská služba běží a spustí se po přihlášení.' : notebookSync.service.active ? 'Uživatelská služba běží, ale automatický start není povolený.' : 'Uživatelská služba je nainstalovaná, ale neběží.' }}</p>
-          <p v-else>Backend je zatím svázaný s otevřenou aplikací.</p>
+          <p v-else>{{ notebookSync.running ? 'Dočasný backend běží jen s otevřenou aplikací; trvalá služba není nainstalovaná.' : 'Trvalá služba není nainstalovaná.' }}</p>
           <div class="node-actions">
             <button v-if="!notebookSync.service?.installed" :disabled="syncBusy" @click="serviceOperation('service_install')">Nainstalovat a spustit uživatelskou službu</button>
             <button v-else-if="!notebookSync.service.active || !notebookSync.service.enabled" :disabled="syncBusy" @click="serviceOperation('service_install')">Opravit a spustit službu</button>

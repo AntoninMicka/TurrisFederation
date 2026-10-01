@@ -61,7 +61,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     existující vypnutá, zastavená nebo na starou vývojovou cestu odkazující
     jednotka se znovu nastaví, povolí a spustí. Přijetí uživatelské pozvánky
     službu instaluje bez požadavku na adresu místní LAN; administrátorská přímá
-    synchronizace přijímá jen stabilní adresu rozhraní ZeroTier.
+    synchronizace přijímá jen stabilní adresu rozhraní ZeroTier. Migrace podle
+    platného členství pokrývá i uživatelské notebooky přijaté před zavedením
+    automatické instalace a případnou chybu služby ukáže v UI.
   - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
     odstranění služby v reálné grafické uživatelské relaci.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci

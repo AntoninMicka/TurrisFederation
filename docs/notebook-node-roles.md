@@ -82,7 +82,10 @@ nainstaluje a povolí; samostatné ovládání v UI zůstává pro opravu instal
 výslovné odstranění. Při prvním spuštění nové verze se dříve zapnutý backend,
 který byl svázaný jen s během UI, převede na uživatelskou službu. Při každém
 dalším spuštění UI opraví také existující, ale vypnutou, zastavenou nebo na
-starou vývojovou cestu odkazující jednotku. Lokální socket přijímá pouze čtení
+starou vývojovou cestu odkazující jednotku. Stejná migrace nainstaluje službu
+i již dříve přijatému uživatelskému notebooku, který nemá zapnutou
+administrátorskou synchronizaci. Selhání instalace se zobrazí v UI; dočasný
+proces svázaný s UI se nesmí vydávat za nainstalovanou službu. Lokální socket přijímá pouze čtení
 sanitizovaného stavu, kontroluje UID
 klienta a má oprávnění `0600`. Zavření hlavního okna ho skryje; samostatná
 položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovaný
