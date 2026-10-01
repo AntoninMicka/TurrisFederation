@@ -71,8 +71,11 @@ v uživatelském úložišti s oprávněním `0600` nebo v systémovém úloži�
 stavová lišta ani běžné logy je nesmí zobrazit.
 
 První implementační řez používá jednotku
-`turris-federation-backend.service`. Instalace i odstranění jsou výslovné akce
-v UI. Lokální socket přijímá pouze čtení sanitizovaného stavu, kontroluje UID
+`turris-federation-backend.service`. Zapnutí synchronizace jednotku atomicky
+nainstaluje a povolí; samostatné ovládání v UI zůstává pro opravu instalace a
+výslovné odstranění. Při prvním spuštění nové verze se dříve zapnutý backend,
+který byl svázaný jen s během UI, převede na uživatelskou službu. Lokální socket
+přijímá pouze čtení sanitizovaného stavu, kontroluje UID
 klienta a má oprávnění `0600`. Zavření hlavního okna ho skryje; samostatná
 položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovaný
 backend. Druhé spuštění UI přes oddělený privátní socket pouze zobrazí a zaměří

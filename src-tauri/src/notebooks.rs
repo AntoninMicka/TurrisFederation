@@ -203,12 +203,22 @@ pub fn require_member(app: &tauri::AppHandle) -> Result<String, String> {
     }
 }
 
+fn persistent_backend_required(config: Option<&Value>, unit_exists: bool) -> bool {
+    !unit_exists && config.and_then(|value| value["enabled"].as_bool()) == Some(true)
+}
+
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
-    if unit_path(config_dir).exists() { return; }
     let config = fs::read(data.join("notebooks/config.json")).ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-    if config.as_ref().and_then(|c| c["enabled"].as_bool()) == Some(true) {
-        let _ = start(data, service);
+    if persistent_backend_required(config.as_ref(), unit_path(config_dir).exists()) {
+        // Older versions only kept an embedded child alive while the UI was
+        // open. Promote that configured backend to an enabled user service so
+        // the next login starts it without launching the UI.
+        if install_service(data, config_dir).is_err() {
+            // Preserve the previous same-session behaviour; the UI exposes
+            // that the persistent service is still not installed.
+            let _ = start(data, service);
+        }
     }
 }
 
@@ -250,12 +260,18 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             return Ok(result);
         }
         let mut result = script_request(&data, &request)?;
-        if action == "configure" || action == "stop" || action == "disconnect" {
+        if action == "configure" {
+            stop(&service)?;
+            if let Err(error) = install_service(&data, &config_dir) {
+                let _ = start(&data, &service);
+                return Err(format!(
+                    "Nastavení bylo uloženo, ale automatický start backendu se nepodařilo zapnout: {error}"
+                ));
+            }
+        } else if action == "stop" || action == "disconnect" {
             if unit_path(&config_dir).exists() {
                 if action == "disconnect" { systemctl(&["stop", UNIT_NAME])?; }
                 else { systemctl(&["restart", UNIT_NAME])?; }
-            } else if action == "configure" {
-                start(&data, &service)?;
             } else {
                 stop(&service)?;
             }
@@ -288,9 +304,18 @@ mod tests {
         assert!(unit.contains("NoNewPrivileges=true"));
         assert!(unit.contains("ProtectSystem=strict"));
         assert!(unit.contains("TF_BACKEND_SOCKET=%t/turris-federation/backend.sock"));
+        assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("User=root"));
         assert_eq!(quote_unit_path(Path::new("/tmp/100% ready")).unwrap(), "\"/tmp/100%% ready\"");
         assert!(quote_unit_path(Path::new("/tmp/bad\nunit")).is_err());
+    }
+
+    #[test]
+    fn configured_legacy_backend_requires_persistent_service_installation() {
+        assert!(persistent_backend_required(Some(&json!({"enabled": true})), false));
+        assert!(!persistent_backend_required(Some(&json!({"enabled": false})), false));
+        assert!(!persistent_backend_required(Some(&json!({"enabled": true})), true));
+        assert!(!persistent_backend_required(None, false));
     }
 
     #[test]

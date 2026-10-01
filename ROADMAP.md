@@ -54,7 +54,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   akceptační hranice:
   [role notebooků](docs/notebook-node-roles.md).
   - [x] Implementovat základ `systemd --user` backendu, privátní read-only Unix
-    socket, explicitní instalaci/odstranění, tray menu a skrytí UI při zavření.
+    socket, instalaci/odstranění, tray menu a skrytí UI při zavření. Zapnutí
+    synchronizace nyní službu automaticky nainstaluje a povolí; dříve pouze
+    spustilo proces svázaný s UI, takže po přihlášení backend nenaběhl. Při
+    prvním spuštění nové verze se již zapnutý starší backend na službu převede.
   - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
     odstranění služby v reálné grafické uživatelské relaci.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
