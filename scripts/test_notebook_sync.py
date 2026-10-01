@@ -179,6 +179,17 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue(administrator['peers'])
         self.assertTrue(administrator['invitation'])
 
+    def test_admin_sync_rejects_local_lan_and_accepts_stable_zerotier_address(self):
+        lan = json.dumps([{'ifname': 'wlan0', 'addr_info': [
+            {'family': 'inet', 'local': '192.168.1.20', 'prefixlen': 24, 'scope': 'global'}]}])
+        with patch.object(f, 'run', return_value=lan.encode()), \
+                self.assertRaisesRegex(ValueError, 'nikoli adresu místní LAN'):
+            n.zerotier_interface('192.168.1.20')
+        zerotier = json.dumps([{'ifname': 'zt1234', 'addr_info': [
+            {'family': 'inet', 'local': '10.147.0.2', 'prefixlen': 24, 'scope': 'global'}]}])
+        with patch.object(f, 'run', return_value=zerotier.encode()):
+            self.assertEqual('10.147.0.0/24', str(n.zerotier_interface('10.147.0.2')))
+
     def test_admin_issues_one_time_user_invitation_without_private_root(self):
         self.published_federation(self.a)
         self.a.bootstrap_admin_credential()
@@ -648,7 +659,9 @@ class NotebookTests(unittest.TestCase):
         service_dir.mkdir()
         shutil.copy(ROOT / 'scripts/notebook_sync.py', service_dir / 'notebook_sync.py')
         shutil.copy(ROOT / 'router/files/usr/lib/turris-federation/federation.py', service_dir / 'federation.py')
-        links = [{'addr_info': [{'local': ip, 'prefixlen': 8, 'scope': 'global'}]} for ip in ['127.0.0.2', '127.0.0.3']]
+        links = [{'ifname': 'zt' + ip.replace('.', ''),
+                  'addr_info': [{'local': ip, 'prefixlen': 8, 'scope': 'global'}]}
+                 for ip in ['127.0.0.2', '127.0.0.3']]
         fake_ip = service_dir / 'ip'
         fake_ip.write_text('#!' + sys.executable + '\nprint(' + repr(json.dumps(links)) + ')\n')
         fake_ip.chmod(0o755)

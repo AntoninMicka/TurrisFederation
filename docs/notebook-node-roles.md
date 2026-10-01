@@ -44,6 +44,12 @@ diagnostiku a stav připojení. U administrátorského notebooku navíc obsluhuj
 řídicí funkce povolené jeho rolí. Samotná instalace nebo spuštění backendu ale
 žádné administrátorské oprávnění nevytváří.
 
+Uživatelský notebook neukládá adresu aktuální Wi-Fi ani fyzické LAN jako svou
+identitu a pro běh backendu ji nezadává. Stabilní adresy ZeroTier a WireGuard
+dostane v podepsané topologii. Původní přímá synchronizace mezi
+administrátorskými notebooky se smí vázat pouze na stabilní adresu rozhraní
+ZeroTier, nikdy na adresu právě navštívené LAN.
+
 Grafická aplikace je klient backendu. Může se zavřít bez zastavení služby,
 odpojení VPN nebo ztráty diagnostického stavu. S backendem komunikuje pouze
 přes lokální rozhraní svázané s uživatelskou relací, přednostně Unix socket

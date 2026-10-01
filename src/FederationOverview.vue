@@ -13,10 +13,12 @@ const props = defineProps<{
   vpnDiagnostics: NotebookVpnDiagnostics | null;
   vpnBusy: boolean;
   vpnError: string;
+  serviceBusy: boolean;
+  serviceError: string;
   vpnConfirmed: boolean;
 }>();
 
-defineEmits<{ refresh: []; diagnose: []; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
+defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -128,6 +130,19 @@ function presenceLabel(value: boolean | null, positive: string) {
       <article><span>Notebooky</span><strong>{{ overview?.notebooks.length ?? 0 }}</strong></article>
     </div>
     <p class="muted">Poslední kontrola routeru: {{ lastChecked }}</p>
+
+    <section class="overview-section">
+      <div class="overview-section-heading">
+        <h3>Backend tohoto notebooku</h3>
+        <div class="node-actions">
+          <button v-if="!notebook?.service?.installed" type="button" :disabled="serviceBusy" @click="$emit('serviceInstall')">Nainstalovat službu</button>
+          <button v-else-if="!notebook.service.active || !notebook.service.enabled" type="button" :disabled="serviceBusy" @click="$emit('serviceInstall')">Opravit a spustit službu</button>
+          <button v-if="notebook?.service?.installed" type="button" class="secondary" :disabled="serviceBusy" @click="$emit('serviceRemove')">Zastavit a odstranit službu</button>
+        </div>
+      </div>
+      <p v-if="serviceError || notebook?.serviceError" class="error">{{ serviceError || notebook?.serviceError }}</p>
+      <p class="muted">Uživatelský notebook nepotřebuje adresu místní LAN. Jeho stabilní ZeroTier a WireGuard adresy pocházejí z podepsané topologie; změna Wi‑Fi ani fyzické sítě jeho identitu nemění.</p>
+    </section>
 
     <section class="overview-section">
       <div class="overview-section-heading">

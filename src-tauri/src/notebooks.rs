@@ -231,21 +231,26 @@ pub fn require_member(app: &tauri::AppHandle) -> Result<String, String> {
 }
 
 fn persistent_backend_requires_reconcile(
-    config: Option<&Value>, unit_matches: bool, unit_enabled: bool, unit_active: bool,
+    backend_desired: bool, unit_matches: bool, unit_enabled: bool, unit_active: bool,
 ) -> bool {
-    config.and_then(|value| value["enabled"].as_bool()) == Some(true)
-        && (!unit_matches || !unit_enabled || !unit_active)
+    backend_desired && (!unit_matches || !unit_enabled || !unit_active)
 }
 
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     let config = fs::read(data.join("notebooks/config.json")).ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-    if config.as_ref().and_then(|value| value["enabled"].as_bool()) != Some(true) { return; }
+    // A user notebook needs the persistent local backend even though it never
+    // enables administrator-to-administrator discovery. Once installed, the
+    // unit itself records that intent; legacy administrators additionally use
+    // config.enabled as the migration signal.
+    let backend_desired = unit_path(config_dir).exists()
+        || config.as_ref().and_then(|value| value["enabled"].as_bool()) == Some(true);
+    if !backend_desired { return; }
     let unit_matches = scripts(data).and_then(|script| unit_contents(data, &script))
         .ok().is_some_and(|expected| fs::read_to_string(unit_path(config_dir)).ok().as_deref() == Some(expected.as_str()));
     let state = service_state(config_dir);
     if persistent_backend_requires_reconcile(
-        config.as_ref(), unit_matches,
+        backend_desired, unit_matches,
         state["enabled"].as_bool() == Some(true), state["active"].as_bool() == Some(true),
     ) {
         // Reconcile missing, disabled, stopped and stale units. In particular,
@@ -297,7 +302,20 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             return Ok(result);
         }
         let mut result = script_request(&data, &request)?;
-        if action == "configure" {
+        let mut service_error = None;
+        if action == "accept_user_invitation" {
+            stop(&service)?;
+            if let Err(error) = install_service(&data, &config_dir) {
+                // Enrollment and credential persistence have already
+                // succeeded. Keep the UI usable and report the independently
+                // repairable service failure instead of making the one-time
+                // invitation appear reusable.
+                let _ = start(&data, &service);
+                service_error = Some(format!(
+                    "Členství bylo přijato, ale trvalou službu se nepodařilo nainstalovat: {error}"
+                ));
+            }
+        } else if action == "configure" {
             stop(&service)?;
             if let Err(error) = install_service(&data, &config_dir) {
                 let _ = start(&data, &service);
@@ -319,6 +337,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let running = configured && (child_running || service_state(&config_dir)["active"].as_bool() == Some(true));
         result["running"] = json!(running);
         result["service"] = service_state(&config_dir);
+        if let Some(error) = service_error { result["serviceError"] = json!(error); }
         Ok(result)
     }).await.map_err(|e| e.to_string())?
 }
@@ -349,13 +368,11 @@ mod tests {
 
     #[test]
     fn configured_legacy_backend_requires_persistent_service_installation() {
-        let configured = json!({"enabled": true});
-        assert!(persistent_backend_requires_reconcile(Some(&configured), false, false, false));
-        assert!(persistent_backend_requires_reconcile(Some(&configured), true, false, false));
-        assert!(persistent_backend_requires_reconcile(Some(&configured), true, true, false));
-        assert!(!persistent_backend_requires_reconcile(Some(&configured), true, true, true));
-        assert!(!persistent_backend_requires_reconcile(Some(&json!({"enabled": false})), false, false, false));
-        assert!(!persistent_backend_requires_reconcile(None, false, false, false));
+        assert!(persistent_backend_requires_reconcile(true, false, false, false));
+        assert!(persistent_backend_requires_reconcile(true, true, false, false));
+        assert!(persistent_backend_requires_reconcile(true, true, true, false));
+        assert!(!persistent_backend_requires_reconcile(true, true, true, true));
+        assert!(!persistent_backend_requires_reconcile(false, false, false, false));
     }
 
     #[test]

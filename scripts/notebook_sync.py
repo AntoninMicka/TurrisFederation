@@ -1010,13 +1010,15 @@ def make_server(store, address):
     return Server((address, PORT), Handler)
 
 
-def interface(address):
+def zerotier_interface(address):
     ipaddress.IPv4Address(address)
     for link in json.loads(f.run(['ip', '-j', '-4', 'address', 'show'])):
         for entry in link.get('addr_info', []):
             if entry.get('local') == address and entry.get('scope') != 'host':
+                if not isinstance(link.get('ifname'), str) or not re.fullmatch(r'zt[a-zA-Z0-9]+', link['ifname']):
+                    raise ValueError('Synchronizace notebooků vyžaduje stabilní IPv4 adresu rozhraní ZeroTier, nikoli adresu místní LAN.')
                 return ipaddress.ip_network('%s/%s' % (address, entry['prefixlen']), strict=False)
-    raise ValueError('Vyberte IPv4 adresu aktivního LAN nebo ZeroTier rozhraní notebooku.')
+    raise ValueError('Vyberte IPv4 adresu aktivního rozhraní ZeroTier notebooku.')
 
 
 def beacon(store, name, address):
@@ -1106,7 +1108,7 @@ def make_local_server(store, path=None):
 def serve_sync(store, stopped):
     config = f.read(store.root / 'config.json')
     address = config['address']
-    network = interface(address)
+    network = zerotier_interface(address)
     parent = os.getppid()
     server = make_server(store, address)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1240,7 +1242,7 @@ def command(store, req):
         name, address = req['name'].strip(), req['address'].strip()
         if not 0 < len(name) <= 80:
             raise ValueError('Vyplňte název notebooku (nejvýše 80 znaků).')
-        interface(address)
+        zerotier_interface(address)
         f.atomic(store.root / 'config.json', {'enabled': True, 'name': name, 'address': address})
     elif action == 'stop':
         config = f.read(store.root / 'config.json', {})

@@ -79,6 +79,7 @@ export interface NotebookSyncStatus {
   id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
+  serviceError?: string;
   service?: { installed: boolean; enabled: boolean; active: boolean; unit: string };
   access: { state: "unconnected" | "valid" | "invalid"; role: "administrator" | "user" | null; canBootstrapAdmin: boolean; error?: string; federationId?: string; subject?: string; issuedAt?: number; expiresAt?: number | null };
 }

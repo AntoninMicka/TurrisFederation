@@ -82,7 +82,7 @@ async function serviceOperation(action: "service_install" | "service_remove") {
   syncError.value = "";
   try {
     const result = await manageNotebookService(action);
-    if (notebookSync.value) notebookSync.value = { ...notebookSync.value, service: result.service };
+    if (notebookSync.value) notebookSync.value = { ...notebookSync.value, service: result.service, serviceError: undefined };
   } catch (error) { syncError.value = String(error); }
   finally { syncBusy.value = false; }
 }
@@ -616,9 +616,11 @@ async function submitConnection() {
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <FederationOverview :overview="readOnlyOverview" :notebook="notebookSync"
         :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
+        :service-busy="syncBusy" :service-error="syncError"
         :vpn-plan="vpnPlan" :vpn-status="vpnStatus" :vpn-diagnostics="vpnDiagnostics" :vpn-busy="vpnBusy" :vpn-error="vpnError"
         :vpn-confirmed="vpnConfirmed" @update:vpn-confirmed="vpnConfirmed = $event"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
+        @service-install="serviceOperation('service_install')" @service-remove="serviceOperation('service_remove')"
         @vpn-preview="previewVpnInstall" @vpn-install="installVpn" @vpn-rollback="rollbackVpn" />
     </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">
@@ -749,8 +751,8 @@ async function submitConnection() {
         <p v-if="notebookSync.error" class="error">{{ notebookSync.error }}</p>
         <form class="form" @submit.prevent="notebookOperation({ action: 'configure', ...syncDraft })">
           <label>Název tohoto notebooku<input v-model="syncDraft.name" required maxlength="80" :disabled="syncBusy" /></label>
-          <label>Místní IPv4 adresa pro spojení<input v-model="syncDraft.address" placeholder="LAN nebo ZeroTier IPv4 tohoto notebooku" required :disabled="syncBusy" /></label>
-          <small>Použijte rozhraní dosažitelné z ostatních notebooků. Při změně místní adresy zde službu znovu spusťte. Discovery se opakuje každých 30 sekund.</small>
+          <label>ZeroTier IPv4 adresa pro synchronizaci<input v-model="syncDraft.address" placeholder="Stabilní ZeroTier IPv4 tohoto notebooku" required :disabled="syncBusy" /></label>
+          <small>Použijte adresu aktivního rozhraní ZeroTier, která zůstává stejná při změně Wi‑Fi nebo LAN. Fyzická LAN adresa není podporovaná. Discovery se opakuje každých 30 sekund.</small>
           <button :disabled="syncBusy">{{ notebookSync.running ? 'Použít nastavení a restartovat' : 'Zapnout discovery a synchronizaci' }}</button>
           <button type="button" class="secondary" :disabled="syncBusy || !notebookSync.config.enabled" @click="notebookOperation({ action: 'stop' })">Vypnout synchronizaci</button>
         </form>
