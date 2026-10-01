@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import socketserver
 import sqlite3
@@ -35,6 +36,10 @@ COLUMNS = ['id', 'name', 'ssh_host', 'ssh_port', 'ssh_user', 'lan_cidrs',
 FLEET_FILES = ['root.pem', 'members.json', 'published.json', 'revision-floor.json']
 LOCAL_LIMIT = 16 * 1024
 CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
+USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
+ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-1'
+INVITATION_SCHEMA = 'tf-notebook-invitation-1'
+ENROLLMENT_TTL = 15 * 60
 
 
 def fingerprint(cert):
@@ -147,10 +152,16 @@ class Store:
         try:
             envelope = f.read(credential_path)
             credential = f.verify(public_path.read_text(), envelope)
-            if set(credential) != {'schema', 'federationId', 'subject', 'role', 'issuedAt', 'expiresAt', 'serial'}:
+            common = {'schema', 'federationId', 'subject', 'role', 'issuedAt', 'expiresAt', 'serial'}
+            expected = common if credential.get('schema') == CREDENTIAL_SCHEMA else common | {'enrollmentNonce', 'acceptBy'}
+            if set(credential) != expected:
                 raise ValueError('Neplatná pole pověření.')
-            if credential['schema'] != CREDENTIAL_SCHEMA or credential['role'] not in ['administrator', 'user']:
+            if credential['schema'] not in [CREDENTIAL_SCHEMA, USER_CREDENTIAL_SCHEMA] or credential['role'] not in ['administrator', 'user']:
                 raise ValueError('Neplatný typ pověření.')
+            if credential['role'] == 'user' and (credential['schema'] != USER_CREDENTIAL_SCHEMA
+                    or not re.fullmatch('[a-f0-9]{64}', credential['enrollmentNonce'])
+                    or type(credential['acceptBy']) not in [int, float]):
+                raise ValueError('Neplatné uživatelské pověření.')
             if credential['subject'] != self.id or str(uuid.UUID(credential['serial'])) != credential['serial']:
                 raise ValueError('Pověření patří jinému notebooku.')
             if type(credential['issuedAt']) not in [int, float] or credential['issuedAt'] > time.time() + 300:
@@ -195,6 +206,73 @@ class Store:
         status = self.access_status()
         if status['state'] != 'valid' or status['role'] != 'administrator':
             raise ValueError('Vydané pověření nelze ověřit.')
+        return status
+
+    def enrollment_request(self, name):
+        if self.access_status()['state'] == 'valid':
+            raise ValueError('Notebook již má platné pověření.')
+        name = name.strip()
+        if not 0 < len(name) <= 80:
+            raise ValueError('Vyplňte název notebooku (nejvýše 80 znaků).')
+        pending = {'nonce': secrets.token_hex(32), 'createdAt': int(time.time())}
+        f.atomic(self.root / 'pending-enrollment.json', pending)
+        payload = {'schema': ENROLLMENT_SCHEMA, 'subject': self.id, 'name': name,
+                   'nonce': pending['nonce'], 'createdAt': pending['createdAt']}
+        return {'cert': self.cert, 'signed': f.sign(self.root / 'key.pem', payload)}
+
+    def issue_user_invitation(self, raw):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Vydání pozvánky vyžaduje administrátorské pověření.')
+        request = json.loads(raw)
+        if set(request) != {'cert', 'signed'} or fingerprint(request['cert']) == self.id:
+            raise ValueError('Neplatná žádost notebooku.')
+        public = f.run(['openssl', 'x509', '-pubkey', '-noout'], request['cert'].encode()).decode()
+        payload = f.verify(public, request['signed'])
+        if (set(payload) != {'schema', 'subject', 'name', 'nonce', 'createdAt'} or payload['schema'] != ENROLLMENT_SCHEMA
+                or payload['subject'] != fingerprint(request['cert']) or not re.fullmatch('[a-f0-9]{64}', payload['nonce'])
+                or not isinstance(payload['name'], str) or not 0 < len(payload['name']) <= 80
+                or type(payload['createdAt']) not in [int, float] or not 0 <= time.time() - payload['createdAt'] <= ENROLLMENT_TTL):
+            raise ValueError('Žádost notebooku je neplatná nebo vypršela.')
+        private = self.fleet / 'root.pem'
+        published = f.read(self.fleet / 'published.json')
+        if not private.exists() or not published:
+            raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+        root_public = f.public_key(private)
+        document = f.validate_document(f.verify(root_public, published))
+        now = int(time.time())
+        credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
+                      'subject': payload['subject'], 'role': 'user', 'issuedAt': now,
+                      'expiresAt': now + 365 * 24 * 3600, 'serial': str(uuid.uuid4()),
+                      'enrollmentNonce': payload['nonce'], 'acceptBy': now + ENROLLMENT_TTL}
+        return {'schema': INVITATION_SCHEMA, 'rootPublic': root_public, 'published': published,
+                'credential': f.sign(private, credential)}
+
+    def accept_user_invitation(self, raw):
+        if self.access_status()['state'] == 'valid' or (self.fleet / 'root.pem').exists():
+            raise ValueError('Notebook již má pověření nebo řídicí identitu.')
+        invitation = json.loads(raw)
+        if set(invitation) != {'schema', 'rootPublic', 'published', 'credential'} or invitation['schema'] != INVITATION_SCHEMA:
+            raise ValueError('Neplatná pozvánka notebooku.')
+        credential = f.verify(invitation['rootPublic'], invitation['credential'])
+        document = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
+        pending = f.read(self.root / 'pending-enrollment.json')
+        if (not pending or credential.get('schema') != USER_CREDENTIAL_SCHEMA or credential.get('role') != 'user'
+                or credential.get('subject') != self.id or credential.get('federationId') != document['federationId']
+                or credential.get('enrollmentNonce') != pending.get('nonce') or time.time() > credential.get('acceptBy', 0)):
+            raise ValueError('Pozvánka neodpovídá této platné žádosti notebooku.')
+        # All signatures and bindings are checked before publishing any file.
+        for path, value in [(self.root / 'federation-root.pub', invitation['rootPublic'].encode()),
+                            (self.fleet / 'root.pub', invitation['rootPublic'].encode())]:
+            if path.exists() and path.read_bytes() != value:
+                raise ValueError('Notebook již používá jinou kotvu federace.')
+        f.atomic(self.root / 'federation-root.pub', invitation['rootPublic'].encode())
+        f.atomic(self.fleet / 'root.pub', invitation['rootPublic'].encode())
+        f.atomic(self.fleet / 'published.json', invitation['published'])
+        f.atomic(self.root / 'credential.json', invitation['credential'])
+        status = self.access_status()
+        if status.get('role') != 'user':
+            raise ValueError('Přijaté uživatelské pověření nelze ověřit.')
+        (self.root / 'pending-enrollment.json').unlink(missing_ok=True)
         return status
 
     @contextlib.contextmanager
@@ -637,6 +715,13 @@ def command(store, req):
     if action == 'bootstrap_admin':
         store.bootstrap_admin_credential()
         return store.status()
+    if action == 'enrollment_request':
+        return {'request': json.dumps(store.enrollment_request(req['name']))}
+    if action == 'issue_user_invitation':
+        return {'invitation': json.dumps(store.issue_user_invitation(req['request']))}
+    if action == 'accept_user_invitation':
+        store.accept_user_invitation(req['invitation'])
+        return store.public_status()
     if action == 'configure':
         name, address = req['name'].strip(), req['address'].strip()
         if not 0 < len(name) <= 80:
@@ -703,7 +788,10 @@ if __name__ == '__main__':
         if sys.argv[1] == 'serve':
             serve(store)
         else:
-            request = json.loads(sys.stdin.buffer.read(16384))
+            raw = sys.stdin.buffer.read(MAX + 1)
+            if len(raw) > MAX:
+                raise ValueError('Požadavek je příliš velký.')
+            request = json.loads(raw)
             print(json.dumps(command(store, request)))
     except Exception as error:
         if len(sys.argv) > 1 and sys.argv[1] == 'serve':

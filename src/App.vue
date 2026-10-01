@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
-import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import { notebookAction, notebookEnrollmentAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview } from "./domain";
 
@@ -38,6 +38,13 @@ const syncDraft = reactive({ name: "", address: "" });
 const manualInvitation = ref("");
 const verifiedPeers = reactive<Record<string, boolean>>({});
 const sharedSettingsChanged = ref(false);
+const enrollmentBusy = ref(false);
+const enrollmentError = ref("");
+const enrollmentName = ref("");
+const enrollmentRequest = ref("");
+const receivedInvitation = ref("");
+const requestedUser = ref("");
+const issuedInvitation = ref("");
 const notebookLabels: Record<string, string> = { synced: "Synchronizováno", local_newer: "Místní změny čekají na převzetí", conflict: "Konflikt změn", error: "Přenos se nezdařil" };
 let notebookPoll: ReturnType<typeof setInterval> | undefined;
 
@@ -76,6 +83,26 @@ async function bootstrapAdministrator() {
   if (!window.confirm("Vydat tomuto stávajícímu řídicímu notebooku administrátorské pověření podepsané kořenovou identitou federace? Tuto migraci nelze použít pro uživatelský notebook.")) return;
   await notebookOperation({ action: "bootstrap_admin" });
   if (isAdministrator.value) await refreshReadOnlyOverview();
+}
+
+async function enrollmentOperation(action: "request" | "accept" | "issue") {
+  enrollmentBusy.value = true;
+  enrollmentError.value = "";
+  try {
+    if (action === "request") {
+      const result = await notebookEnrollmentAction<{ request: string }>({ action: "enrollment_request", name: enrollmentName.value });
+      enrollmentRequest.value = result.request;
+    } else if (action === "issue") {
+      const result = await notebookEnrollmentAction<{ invitation: string }>({ action: "issue_user_invitation", request: requestedUser.value });
+      issuedInvitation.value = result.invitation;
+    } else {
+      notebookSync.value = await notebookEnrollmentAction<NotebookSyncStatus>({ action: "accept_user_invitation", invitation: receivedInvitation.value });
+      receivedInvitation.value = "";
+      enrollmentRequest.value = "";
+      await refreshReadOnlyOverview();
+    }
+  } catch (error) { enrollmentError.value = String(error); }
+  finally { enrollmentBusy.value = false; }
 }
 
 async function loadSharedSettings() {
@@ -489,7 +516,15 @@ async function submitConnection() {
       <button v-if="notebookSync.access.canBootstrapAdmin" :disabled="syncBusy" @click="bootstrapAdministrator">
         Převést tento řídicí notebook na administrátorskou roli
       </button>
-      <small v-else>Na tomto notebooku není dostupná bezpečná migrace. Připojení pozvánkou bude doplněno v instalačním průvodci.</small>
+      <div v-else class="connection-form">
+        <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
+        <label>Název uživatelského notebooku<input v-model="enrollmentName" maxlength="80" placeholder="Notebook uživatele" /></label>
+        <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="enrollmentOperation('request')">Vytvořit podepsanou žádost</button>
+        <label v-if="enrollmentRequest">Žádost pro administrátora<textarea class="pairing-data" readonly :value="enrollmentRequest"></textarea></label>
+        <label>Pozvánka vydaná administrátorem<textarea v-model="receivedInvitation" class="pairing-data" placeholder="Vložte celou pozvánku"></textarea></label>
+        <button :disabled="enrollmentBusy || !receivedInvitation.trim()" @click="enrollmentOperation('accept')">Ověřit a přijmout uživatelské pověření</button>
+        <small>Žádost ani pozvánka neobsahují privátní klíč notebooku nebo federace. Pozvánka je platná 15 minut a pouze pro tuto žádost.</small>
+      </div>
     </section>
     <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
     <p v-if="sharedSettingsChanged && activeTab !== 'notebooks'" class="setup-preview" role="status">
@@ -609,6 +644,17 @@ async function submitConnection() {
     <section class="panel">
       <div><p class="kicker">Discovery a synchronizace</p><h2>Správa federace z více notebooků</h2></div>
       <p>Spárované notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Změny se přenášejí přímo a šifrovaně při spuštěné aplikaci.</p>
+      <details>
+        <summary>Vydat pozvánku uživatelskému notebooku</summary>
+        <div class="connection-form">
+          <p>Vložte podepsanou žádost z cílového notebooku. Vydaná pozvánka mu předá pouze veřejnou kotvu, podepsanou topologii a časově omezené uživatelské pověření.</p>
+          <label>Žádost notebooku<textarea v-model="requestedUser" class="pairing-data"></textarea></label>
+          <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue')">Ověřit žádost a vydat pozvánku</button>
+          <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
+          <label v-if="issuedInvitation">Pozvánka pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
+          <small>Před předáním porovnejte otisk notebooku z žádosti s údajem zobrazeným přímo na cílovém zařízení.</small>
+        </div>
+      </details>
       <p v-if="syncError" class="error" role="alert">{{ syncError }}</p>
       <p v-if="sharedSettingsChanged" class="warning">Sdílená konfigurace se změnila. Načtení aktualizuje seznam routerů a formulář sítě.</p>
       <button v-if="sharedSettingsChanged" class="secondary" :disabled="!!connectionNode || saving || ztSaving" @click="loadSharedSettings">Načíst sdílené nastavení</button>

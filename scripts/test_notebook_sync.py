@@ -154,6 +154,43 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue(administrator['peers'])
         self.assertTrue(administrator['invitation'])
 
+    def test_admin_issues_one_time_user_invitation_without_private_root(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('User notebook')
+        invitation = self.a.issue_user_invitation(json.dumps(request))
+        raw = json.dumps(invitation)
+        self.assertNotIn('PRIVATE KEY', raw)
+        self.assertEqual(n.INVITATION_SCHEMA, invitation['schema'])
+
+        status = self.b.accept_user_invitation(raw)
+        self.assertEqual(('valid', 'user', self.b.id), (status['state'], status['role'], status['subject']))
+        self.assertFalse((self.b.fleet / 'root.pem').exists())
+        self.assertTrue((self.b.fleet / 'root.pub').exists())
+        self.assertTrue((self.b.fleet / 'published.json').exists())
+        self.assertFalse((self.b.root / 'pending-enrollment.json').exists())
+        with self.assertRaisesRegex(ValueError, 'již má'):
+            self.b.accept_user_invitation(raw)
+        with self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
+            n.command(self.b, {'action': 'pair', 'peer': self.a.id})
+
+    def test_user_invitation_rejects_wrong_notebook_tampering_and_expiry(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('User notebook')
+        invitation = self.a.issue_user_invitation(json.dumps(request))
+        self.c.enrollment_request('Other notebook')
+        with self.assertRaisesRegex(ValueError, 'neodpovídá'):
+            self.c.accept_user_invitation(json.dumps(invitation))
+        tampered = copy.deepcopy(invitation)
+        tampered['published']['payload'] = tampered['published']['payload'][:-2] + 'AA'
+        with self.assertRaises(ValueError):
+            self.b.accept_user_invitation(json.dumps(tampered))
+        credential = f.verify(invitation['rootPublic'], invitation['credential'])
+        with patch.object(n.time, 'time', return_value=credential['acceptBy'] + 1):
+            with self.assertRaisesRegex(ValueError, 'neodpovídá'):
+                self.b.accept_user_invitation(json.dumps(invitation))
+
     def test_empty_notebook_adopts_configuration_and_management_identity(self):
         self.node(self.a)
         self.root_identity(self.a)

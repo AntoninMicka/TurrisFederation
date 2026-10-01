@@ -64,8 +64,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     s TLS identitou a federací, administrátorské mutace bez něj odmítá a UI
     skryje správní záložky. Read-only přehled používá samostatné sanitizované
     API sestavené jen z podepsané revize a nevrací SSH ani deploy metadata.
-    Zbývá vydávání uživatelského pověření pozvánkou a úplné oddělení řídicí
-    identity. Místní diagnostika ZeroTier přijímá cíle výhradně z podepsané revize.
+    Uživatelský notebook vytvoří podepsanou žádost a administrátor mu vydá
+    patnáct minut platnou pozvánku svázanou s TLS identitou a nonce; přenese se
+    jen veřejná kotva, topologie a uživatelské pověření, nikdy `root.pem`.
+    Zbývá konfigurace koncového VPN připojení, odvolání a aktualizace topologie
+    bez řídicí synchronizace. Místní diagnostika přijímá cíle jen z podepsané revize.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

@@ -96,6 +96,13 @@ Průvodce prvním spuštěním provede tyto oddělené kroky:
    Úspěch instalace a úspěch připojení zobrazí jako dva oddělené výsledky.
 8. Spustí klienta stavové lišty a otevře UI odpovídající podepsané roli.
 
+První implementace kroků 2 až 5 používá přenositelný JSON: cílový notebook
+vytvoří žádost podepsanou svým TLS klíčem, administrátor ji vloží do svého UI
+a vydá uživatelskou pozvánku platnou 15 minut. Pozvánka je svázaná s TLS
+otiskem a jednorázovým nonce a obsahuje pouze veřejnou kotvu, podepsanou
+topologii a uživatelské pověření. Přijetí nejprve ověří všechny podpisy a vazby
+a teprve potom zapíše data; `root.pem` se uživatelskému notebooku nepředává.
+
 První administrátor představuje zvláštní bootstrap: může vytvořit novou
 federaci a její kořenovou identitu pouze v explicitním toku **Vytvořit novou
 federaci**. Další administrátorský notebook se přidává pozváním a oboustranným

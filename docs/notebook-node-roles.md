@@ -156,7 +156,11 @@ z existující kořenové identity a publikované revize. Read-only UI už použ
 samostatné členské API sestavené pouze z podepsané revize; neobsahuje SSH cíle,
 uživatele, veřejné endpointy, plány, fingerprint kotvy ani interní chyby agenta.
 Bez platného členského pověření je odmítnuté. Pozvánky pro nové uživatelské
-notebooky ještě nejsou implementované.
+notebooky používají podepsanou žádost cílového TLS klíče a administrátorem
+vydaný balíček s veřejnou kotvou, podepsanou topologií a uživatelským pověřením.
+Balíček je svázaný s jednorázovým nonce a lze jej přijmout do 15 minut; nikdy
+neobsahuje kořenový privátní klíč. Zbývá síťové zprovoznění uživatelského uzlu,
+odvolání a následné bezpečné obnovování topologie.
 
 Zbývající kroky:
 

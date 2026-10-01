@@ -86,6 +86,10 @@ export async function notebookAction(request: Record<string, unknown>): Promise<
   if (browserMode) throw new Error("Synchronizace notebooků je dostupná v desktopové aplikaci.");
   return invoke("notebook_action", { request });
 }
+export async function notebookEnrollmentAction<T>(request: Record<string, unknown>): Promise<T> {
+  if (browserMode) throw new Error("Přijetí notebooku je dostupné v desktopové aplikaci.");
+  return invoke("notebook_action", { request });
+}
 
 export async function manageNotebookService(action: "service_install" | "service_remove"): Promise<{ service: { installed: boolean; active: boolean; unit: string } }> {
   if (browserMode) throw new Error("Uživatelskou službu lze spravovat v desktopové aplikaci.");
