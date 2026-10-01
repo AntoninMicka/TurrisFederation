@@ -511,7 +511,7 @@ def notebook_diagnostics(root):
     published = read(root / 'published.json')
     if not published:
         raise ValueError('Federace zatím nemá publikovanou konfiguraci.')
-    doc = validate_document(verify(public_key(root / 'root.pem'), published))
+    doc = validate_document(verify(notebook_public_key(root), published))
     peers = [node for node in doc['config']['nodes'] if node['id'] in doc['members']]
     if not peers:
         raise ValueError('Federace nemá přijaté routery k měření.')
@@ -528,12 +528,51 @@ def notebook_diagnostics_overview(root):
     published = read(root / 'published.json')
     if not published:
         return {'revision': 0, 'state': 'idle', 'nodes': {}}
-    doc = validate_document(verify(public_key(root / 'root.pem'), published))
+    doc = validate_document(verify(notebook_public_key(root), published))
     result = read(root / 'notebook-diagnostics.json', {})
     if result.get('revision') != doc['revision']:
         return {'revision': doc['revision'], 'state': 'idle', 'nodes': {}}
     allowed = set(doc['members'])
     return {**result, 'nodes': {node_id: value for node_id, value in result.get('nodes', {}).items() if node_id in allowed}}
+
+
+def read_only_notebook_overview(root):
+    """Return only reviewed fields from the signed revision and reports."""
+    root = Path(root)
+    published = read(root / 'published.json')
+    if not published:
+        raise ValueError('Federace zatím nemá publikovanou konfiguraci.')
+    doc = validate_document(verify(notebook_public_key(root), published))
+    reports = read(root / 'reports.json', {})
+    nodes = []
+    for node in doc['config']['nodes']:
+        report = reports.get(node['id'], {}) if isinstance(reports, dict) else {}
+        hosts, observed = [], None
+        if node['id'] in doc['members']:
+            try:
+                catalog = validate_hosts(node, report)
+                if catalog:
+                    hosts, observed = catalog['hosts'], catalog['hostsObservedAt']
+            except (TypeError, ValueError):
+                pass
+        state = report.get('state') if report.get('state') in WEB_LABELS else None
+        checked = report.get('checkedAt') if isinstance(report.get('checkedAt'), (int, float)) else None
+        reachable = report.get('reachable') if type(report.get('reachable')) is bool else None
+        nodes.append({'id': node['id'], 'name': node['name'], 'lanCidrs': node['lanCidrs'],
+                      'zeroTierAddress': node['zeroTierAddress'], 'wireguardAddress': node['wireguardAddress'],
+                      'enrolled': node['id'] in doc['members'], 'state': state, 'reachable': reachable,
+                      'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed})
+    return {'revision': doc['revision'], 'networkId': doc['config']['networkId'], 'nodes': nodes,
+            'diagnostics': notebook_diagnostics_overview(root)}
+
+
+def notebook_public_key(root):
+    root = Path(root)
+    if (root / 'root.pub').exists():
+        return (root / 'root.pub').read_text()
+    if (root / 'root.pem').exists():
+        return public_key(root / 'root.pem')
+    raise ValueError('Chybí veřejná kotva federace.')
 
 
 def start_diagnostics(root):
@@ -1422,15 +1461,17 @@ def controller(root, req):
     root = Path(root)
     if (root / 'notebook-sync-journal.json').exists():
         raise ValueError('Nejdřív dokončete obnovu synchronizace v záložce Notebooky.')
-    nodes = req['nodes']
-    config = normalize(nodes, req['networkId'])
     action = req['action']
-    if action == 'overview':
-        return overview(root, config)
+    if action == 'read_only_overview':
+        return read_only_notebook_overview(root)
     if action == 'diagnostics_overview':
         return notebook_diagnostics_overview(root)
     if action == 'diagnostics':
         return notebook_diagnostics(root)
+    nodes = req['nodes']
+    config = normalize(nodes, req['networkId'])
+    if action == 'overview':
+        return overview(root, config)
     if action == 'refresh':
         published = read(root / 'published.json')
         if published:

@@ -639,6 +639,29 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'notebook-diagnostics.json', {'revision': 0, 'state': 'complete', 'nodes': {node(1)['id']: {}}})
         self.assertEqual('idle', f.notebook_diagnostics_overview(self.root)['state'])
 
+    def test_read_only_notebook_overview_uses_signed_revision_and_omits_admin_fields(self):
+        members = {node(1)['id']: self.member(1)}
+        f.snapshot(self.root, self.config, members)
+        f.atomic(self.root / 'reports.json', {node(1)['id']: {
+            'state': 'active', 'reachable': True, 'checkedAt': 100,
+            'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100,
+            'error': 'INTERNAL', 'privateKey': 'SECRET'},
+            node(2)['id']: {'hosts': [{'address': '192.168.2.20', 'name': 'draft-host'}], 'hostsObservedAt': 100}})
+        f.atomic(self.root / 'root.pub', self.public.encode())
+        (self.root / 'root.pem').unlink()
+
+        result = f.read_only_notebook_overview(self.root)
+        self.assertEqual((1, 'abcdef0123456789'), (result['revision'], result['networkId']))
+        self.assertEqual(2, len(result['nodes']))
+        enrolled, draft = result['nodes']
+        self.assertTrue(enrolled['enrolled'])
+        self.assertEqual([{'address': '192.168.1.20', 'name': 'printer'}], enrolled['hosts'])
+        self.assertFalse(draft['enrolled'])
+        self.assertEqual([], draft['hosts'])
+        raw = json.dumps(result)
+        for secret in ['sshHost', 'sshUser', 'sshPort', 'publicEndpoint', 'privateKey', 'SECRET', 'INTERNAL', 'fingerprint']:
+            self.assertNotIn(secret, raw)
+
     def prepare_diagnostics(self):
         config = f.normalize(self.nodes + [node(3)], self.config['networkId'])
         doc = self.document(config=config, members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})

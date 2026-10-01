@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, NotebookDiagnostics } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview } from "./domain";
 
 const tabs = [
   { id: 'overview', label: 'Přehled' },
@@ -75,6 +75,7 @@ async function serviceOperation(action: "service_install" | "service_remove") {
 async function bootstrapAdministrator() {
   if (!window.confirm("Vydat tomuto stávajícímu řídicímu notebooku administrátorské pověření podepsané kořenovou identitou federace? Tuto migraci nelze použít pro uživatelský notebook.")) return;
   await notebookOperation({ action: "bootstrap_admin" });
+  if (isAdministrator.value) await refreshReadOnlyOverview();
 }
 
 async function loadSharedSettings() {
@@ -86,7 +87,6 @@ async function loadSharedSettings() {
 }
 
 onMounted(() => {
-  if ("__TAURI_INTERNALS__" in window) void notebookOperation();
   notebookPoll = setInterval(() => {
     if ((activeTab.value === "notebooks" || notebookSync.value?.config.enabled) && !syncBusy.value) void notebookOperation();
   }, 5000);
@@ -139,7 +139,7 @@ const deployMode = ref<"full" | "settings">("full");
 const publishing = ref(false);
 const deploymentError = ref("");
 const overviewLoading = ref(false);
-const notebookDiagnostics = ref<NotebookDiagnostics | null>(null);
+const readOnlyOverview = ref<ReadOnlyOverview | null>(null);
 const diagnosticsLoading = ref(false);
 const deploymentLabels: Record<string, string> = { pending: "Přijato · čeká na aplikování", error: "Kontrola nebo aplikování selhalo", confirming: "Čeká na potvrzení", waiting_peers: "Nasazeno · čeká na protějšky", active: "Spojení ověřeno", rollback: "Obnovena záloha", revoked: "Členství odvoláno" };
 
@@ -154,11 +154,14 @@ async function refreshDeployment(live = false) {
 async function refreshReadOnlyOverview() {
   overviewLoading.value = true;
   try {
-    const [freshNodes, freshSettings] = await Promise.all([listNodes(), getZeroTierSettings()]);
-    nodes.value = freshNodes;
-    ztSettings.value = freshSettings;
-    await Promise.all([refreshDeployment(), notebookOperation(), refreshNotebookDiagnostics()]);
-    message.value = "Read-only přehled byl obnoven z místně uloženého stavu.";
+    readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
+    if (isAdministrator.value) {
+      const [freshNodes, freshSettings] = await Promise.all([listNodes(), getZeroTierSettings()]);
+      nodes.value = freshNodes;
+      ztSettings.value = freshSettings;
+      await refreshDeployment();
+    }
+    message.value = "Read-only přehled byl obnoven z ověřené publikované revize.";
   } catch (error) {
     message.value = `Přehled nelze obnovit: ${String(error)}`;
   } finally {
@@ -166,15 +169,11 @@ async function refreshReadOnlyOverview() {
   }
 }
 
-async function refreshNotebookDiagnostics() {
-  if (!ztSettings.value.networkId) { notebookDiagnostics.value = null; return; }
-  notebookDiagnostics.value = await deploymentAction<NotebookDiagnostics>("diagnostics_overview");
-}
-
 async function runNotebookDiagnostics() {
   diagnosticsLoading.value = true;
   try {
-    notebookDiagnostics.value = await deploymentAction<NotebookDiagnostics>("diagnostics");
+    await deploymentAction("diagnostics");
+    readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
     message.value = "Místní měření dostupnosti přijatých routerů bylo dokončeno.";
   } catch (error) {
     message.value = `Měření dostupnosti selhalo: ${String(error)}`;
@@ -218,6 +217,9 @@ const lanCidrsText = ref("");
 
 onMounted(async () => {
   try {
+    if ("__TAURI_INTERNALS__" in window) await notebookOperation();
+    if (notebookSync.value?.access.state === "valid") await refreshReadOnlyOverview();
+    if (!isAdministrator.value) return;
     nodes.value = await listNodes();
     ztSettings.value = await getZeroTierSettings();
     Object.assign(ztDraft, {
@@ -228,7 +230,6 @@ onMounted(async () => {
     });
     await refreshZeroTierStatus();
     await refreshDeployment();
-    await refreshNotebookDiagnostics();
   }
   catch (error) { message.value = String(error); }
 });
@@ -490,7 +491,7 @@ async function submitConnection() {
       </button>
       <small v-else>Na tomto notebooku není dostupná bezpečná migrace. Připojení pozvánkou bude doplněno v instalačním průvodci.</small>
     </section>
-    <section class="summary"><article><strong>{{ nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
+    <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
     <p v-if="sharedSettingsChanged && activeTab !== 'notebooks'" class="setup-preview" role="status">
       Sdílená konfigurace se změnila.
       <button class="secondary" @click="activeTab = 'notebooks'">Otevřít synchronizaci notebooků</button>
@@ -507,8 +508,8 @@ async function submitConnection() {
       </button>
     </nav>
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
-      <FederationOverview :nodes="nodes" :deployment="deployment" :settings="ztSettings" :notebook="notebookSync"
-        :diagnostics="notebookDiagnostics" :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
+      <FederationOverview :overview="readOnlyOverview" :notebook="notebookSync"
+        :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics" />
     </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">

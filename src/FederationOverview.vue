@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { DeploymentOverview, FederationNode, NotebookDiagnostics, ZeroTierSettings } from "./domain";
+import type { ReadOnlyNode, ReadOnlyOverview } from "./domain";
 
 const props = defineProps<{
-  nodes: FederationNode[];
-  deployment: DeploymentOverview | null;
-  settings: ZeroTierSettings;
+  overview: ReadOnlyOverview | null;
   notebook: NotebookSyncStatus | null;
-  diagnostics: NotebookDiagnostics | null;
   loading: boolean;
   diagnosticsLoading: boolean;
 }>();
@@ -33,22 +30,21 @@ const notebookState = computed(() => {
 });
 
 const lastChecked = computed(() => {
-  const timestamps = Object.values(props.deployment?.nodes ?? {})
-    .map(report => report.checkedAt)
+  const timestamps = (props.overview?.nodes ?? [])
+    .map(node => node.checkedAt)
     .filter((value): value is number => typeof value === "number");
   if (!timestamps.length) return "Dosud neověřeno";
   return new Date(Math.max(...timestamps) * 1000).toLocaleString("cs-CZ");
 });
 
-function membership(node: FederationNode) {
-  const report = props.deployment?.nodes[node.id];
-  if (!report?.enrolled) return "Draft";
-  if (report.reachable === false) return "Nedostupný · poslední známý stav";
-  return deploymentLabels[report.state ?? ""] ?? "Přijatý uzel";
+function membership(node: ReadOnlyNode) {
+  if (!node.enrolled) return "Draft";
+  if (node.reachable === false) return "Nedostupný · poslední známý stav";
+  return deploymentLabels[node.state ?? ""] ?? "Přijatý uzel";
 }
 
 function diagnostic(nodeId: string) {
-  return props.diagnostics?.nodes[nodeId]?.zerotier;
+  return props.overview?.diagnostics.nodes[nodeId]?.zerotier;
 }
 
 function diagnosticLabel(nodeId: string) {
@@ -82,31 +78,31 @@ function diagnosticClass(nodeId: string) {
 
     <div class="overview-cards">
       <article><span>Stav tohoto notebooku</span><strong>{{ notebookState }}</strong></article>
-      <article><span>Přijatá revize</span><strong>{{ deployment?.revision || "—" }}</strong></article>
-      <article><span>Spravované uzly</span><strong>{{ nodes.length }}</strong></article>
+      <article><span>Přijatá revize</span><strong>{{ overview?.revision || "—" }}</strong></article>
+      <article><span>Spravované uzly</span><strong>{{ overview?.nodes.length ?? 0 }}</strong></article>
     </div>
     <p class="muted">Poslední kontrola routeru: {{ lastChecked }}</p>
 
     <section class="overview-section">
       <div class="overview-section-heading">
         <h3>Uzly federace</h3>
-        <button type="button" class="secondary" :disabled="diagnosticsLoading || !deployment?.revision" @click="$emit('diagnose')">
+        <button type="button" class="secondary" :disabled="diagnosticsLoading || !overview?.revision" @click="$emit('diagnose')">
           {{ diagnosticsLoading ? "Měřím…" : "Spustit ping · 5 paketů" }}
         </button>
       </div>
-      <p v-if="!nodes.length" class="muted">Federace zatím neobsahuje žádné routery.</p>
+      <p v-if="!overview?.nodes.length" class="muted">Federace zatím neobsahuje žádné routery.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">
           <thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead>
           <tbody>
-            <tr v-for="node in nodes" :key="node.id">
+            <tr v-for="node in overview?.nodes ?? []" :key="node.id">
               <td><strong>{{ node.name }}</strong></td>
               <td><code>{{ node.zeroTierAddress || "—" }}</code></td>
               <td><code>{{ node.wireguardAddress || "—" }}</code></td>
               <td><span v-for="cidr in node.lanCidrs" :key="cidr" class="overview-line">{{ cidr }}</span><span v-if="!node.lanCidrs.length">—</span></td>
               <td>
-                <ul v-if="deployment?.nodes[node.id]?.hosts?.length" class="overview-hosts">
-                  <li v-for="host in deployment.nodes[node.id].hosts" :key="host.address"><code>{{ host.address }}</code><small v-if="host.name">{{ host.name }}</small></li>
+                <ul v-if="node.hosts.length" class="overview-hosts">
+                  <li v-for="host in node.hosts" :key="host.address"><code>{{ host.address }}</code><small v-if="host.name">{{ host.name }}</small></li>
                 </ul>
                 <span v-else>—</span>
               </td>
@@ -122,7 +118,7 @@ function diagnosticClass(nodeId: string) {
 
     <section class="overview-section">
       <h3>Síť a správa</h3>
-      <p>ZeroTier Network ID: <code>{{ settings.networkId || "—" }}</code></p>
+      <p>ZeroTier Network ID: <code>{{ overview?.networkId || "—" }}</code></p>
       <p>Notebook je koncový uzel v ZeroTier. Neroutuje provoz mezi VPN a fyzickou sítí a neinzeruje svou LAN.</p>
       <p class="muted">Změny konfigurace, audity a nasazení jsou oddělené v administračních záložkách.</p>
     </section>

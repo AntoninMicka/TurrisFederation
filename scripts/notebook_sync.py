@@ -360,6 +360,15 @@ class Store:
                 'invitation': json.dumps({'name': f.read(self.root / 'config.json', {}).get('name', socket.gethostname()),
                                           'address': f.read(self.root / 'config.json', {}).get('address', ''), 'cert': self.cert})}
 
+    def public_status(self):
+        result = self.status()
+        if result['access'].get('role') != 'administrator':
+            result['peers'] = []
+            result['invitation'] = ''
+            result['configurationVersion'] = ''
+            result['config'] = {'enabled': bool(result['config'].get('enabled'))}
+        return result
+
 
 def server_context(store):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -509,7 +518,7 @@ def make_local_server(store, path=None):
                 request = json.loads(raw)
                 if request != {'action': 'status'}:
                     raise ValueError('Lokální rozhraní je pouze pro čtení stavu.')
-                response = {'ok': True, 'status': store.status(), 'backend': {'running': True, 'pid': os.getpid()}}
+                response = {'ok': True, 'status': store.public_status(), 'backend': {'running': True, 'pid': os.getpid()}}
             except Exception as error:
                 response = {'ok': False, 'error': str(error) if type(error) is ValueError else 'Neplatný místní požadavek.'}
             self.wfile.write(f.encode(response) + b'\n')
@@ -622,7 +631,7 @@ def command(store, req):
     if action in ['pair', 'unpair', 'resolve', 'manual'] and store.access_status().get('role') != 'administrator':
         raise ValueError('Operace vyžaduje platné administrátorské pověření notebooku.')
     if action == 'status':
-        return store.status()
+        return store.public_status()
     if action == 'access_status':
         return store.access_status()
     if action == 'bootstrap_admin':

@@ -62,9 +62,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     stránce; administrátorské UI už obsahuje stejný read-only přehled jako
     samostatnou úvodní záložku. Backend ověřuje podepsané pověření svázané
     s TLS identitou a federací, administrátorské mutace bez něj odmítá a UI
-    skryje správní záložky. Zbývá vydávání uživatelského pověření pozvánkou,
-    sanitizované read-only API a úplné oddělení řídicí identity. Místní
-    diagnostika ZeroTier přijímá cíle výhradně z podepsané revize.
+    skryje správní záložky. Read-only přehled používá samostatné sanitizované
+    API sestavené jen z podepsané revize a nevrací SSH ani deploy metadata.
+    Zbývá vydávání uživatelského pověření pozvánkou a úplné oddělení řídicí
+    identity. Místní diagnostika ZeroTier přijímá cíle výhradně z podepsané revize.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

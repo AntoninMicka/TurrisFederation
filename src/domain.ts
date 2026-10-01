@@ -94,6 +94,25 @@ export interface NotebookDiagnostics {
   state: "idle" | "complete";
   nodes: Record<string, { zerotier?: DiagnosticMeasurement }>;
 }
+export interface ReadOnlyNode {
+  id: string;
+  name: string;
+  lanCidrs: string[];
+  zeroTierAddress: string | null;
+  wireguardAddress: string | null;
+  enrolled: boolean;
+  state?: DeploymentReport["state"];
+  reachable?: boolean;
+  checkedAt?: number;
+  hosts: { address: string; name: string | null }[];
+  hostsObservedAt?: number;
+}
+export interface ReadOnlyOverview {
+  revision: number;
+  networkId: string;
+  nodes: ReadOnlyNode[];
+  diagnostics: NotebookDiagnostics;
+}
 export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {
   operation: "install" | "update";

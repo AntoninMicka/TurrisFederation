@@ -152,8 +152,11 @@ s TLS identitou notebooku a ID federace. Neplatné, cizí nebo prošlé pověře
 selže bez role; párování notebooků, změny routerů, audity a deploy vyžadují
 administrátorskou roli také v Tauri backendu. Stávající řídicí notebook může
 vydat vlastní administrátorské pověření jen explicitní jednorázovou migrací
-z existující kořenové identity a publikované revize. Pozvánky pro nové
-uživatelské notebooky a jejich sanitizované API ještě nejsou implementované.
+z existující kořenové identity a publikované revize. Read-only UI už používá
+samostatné členské API sestavené pouze z podepsané revize; neobsahuje SSH cíle,
+uživatele, veřejné endpointy, plány, fingerprint kotvy ani interní chyby agenta.
+Bez platného členského pověření je odmítnuté. Pozvánky pro nové uživatelské
+notebooky ještě nejsou implementované.
 
 Zbývající kroky:
 

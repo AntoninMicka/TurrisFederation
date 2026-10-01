@@ -143,6 +143,17 @@ class NotebookTests(unittest.TestCase):
             with self.subTest(action=request['action']), self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
                 n.command(self.a, request)
 
+    def test_public_status_hides_admin_pairing_data_without_admin_role(self):
+        unconnected = self.a.public_status()
+        self.assertEqual([], unconnected['peers'])
+        self.assertEqual('', unconnected['invitation'])
+        self.assertEqual('', unconnected['configurationVersion'])
+        self.assertNotIn('address', unconnected['config'])
+        with patch.object(self.a, 'access_status', return_value={'state': 'valid', 'role': 'administrator'}):
+            administrator = self.a.public_status()
+        self.assertTrue(administrator['peers'])
+        self.assertTrue(administrator['invitation'])
+
     def test_empty_notebook_adopts_configuration_and_management_identity(self):
         self.node(self.a)
         self.root_identity(self.a)

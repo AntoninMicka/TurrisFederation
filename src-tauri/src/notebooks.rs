@@ -151,6 +151,15 @@ pub fn require_admin(app: &tauri::AppHandle) -> Result<(), String> {
     else { Err("Operace vyžaduje platné administrátorské pověření notebooku.".into()) }
 }
 
+pub fn require_member(app: &tauri::AppHandle) -> Result<String, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let access = script_request(&data, &json!({"action": "access_status"}))?;
+    match (access["state"].as_str(), access["role"].as_str()) {
+        (Some("valid"), Some(role @ ("administrator" | "user"))) => Ok(role.into()),
+        _ => Err("Operace vyžaduje platné pověření člena federace.".into()),
+    }
+}
+
 pub fn resume(data: &Path, config_dir: &Path, service: &NotebookService) {
     if unit_path(config_dir).exists() { return; }
     let config = fs::read(data.join("notebooks/config.json")).ok()
