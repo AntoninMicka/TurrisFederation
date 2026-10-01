@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
-import { notebookAction, notebookEnrollmentAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnPlan, NotebookVpnStatus } from "./domain";
 
 const tabs = [
   { id: 'overview', label: 'Přehled' },
@@ -45,6 +45,11 @@ const enrollmentRequest = ref("");
 const receivedInvitation = ref("");
 const requestedUser = ref("");
 const issuedInvitation = ref("");
+const vpnPlan = ref<NotebookVpnPlan | null>(null);
+const vpnStatus = ref<NotebookVpnStatus | null>(null);
+const vpnBusy = ref(false);
+const vpnError = ref("");
+const vpnConfirmed = ref(false);
 const notebookLabels: Record<string, string> = { synced: "Synchronizováno", local_newer: "Místní změny čekají na převzetí", conflict: "Konflikt změn", error: "Přenos se nezdařil" };
 let notebookPoll: ReturnType<typeof setInterval> | undefined;
 
@@ -100,9 +105,55 @@ async function enrollmentOperation(action: "request" | "accept" | "issue") {
       receivedInvitation.value = "";
       enrollmentRequest.value = "";
       await refreshReadOnlyOverview();
+      await loadVpnStatus();
     }
   } catch (error) { enrollmentError.value = String(error); }
   finally { enrollmentBusy.value = false; }
+}
+
+async function loadVpnStatus() {
+  if (notebookSync.value?.access.state !== "valid") return;
+  try {
+    const result = await notebookVpnAction<{ vpn: NotebookVpnStatus }>({ action: "vpn_status" });
+    vpnStatus.value = result.vpn;
+  } catch (error) { vpnError.value = String(error); }
+}
+
+async function previewVpnInstall() {
+  vpnBusy.value = true;
+  vpnError.value = "";
+  vpnConfirmed.value = false;
+  try {
+    const result = await notebookVpnAction<{ plan: NotebookVpnPlan; vpn: NotebookVpnStatus }>({ action: "vpn_plan" });
+    vpnPlan.value = result.plan;
+    vpnStatus.value = result.vpn;
+  } catch (error) { vpnError.value = String(error); }
+  finally { vpnBusy.value = false; }
+}
+
+async function installVpn() {
+  if (!vpnPlan.value || !vpnConfirmed.value) return;
+  vpnBusy.value = true;
+  vpnError.value = "";
+  try {
+    const result = await notebookVpnAction<{ vpn: NotebookVpnStatus }>({ action: "vpn_install", planId: vpnPlan.value.id });
+    vpnStatus.value = result.vpn;
+    vpnPlan.value = null;
+    vpnConfirmed.value = false;
+  } catch (error) { vpnError.value = String(error); }
+  finally { vpnBusy.value = false; }
+}
+
+async function rollbackVpn() {
+  if (!window.confirm("Odpojit aktuální VPN profil a obnovit předchozí NetworkManager konfiguraci?")) return;
+  vpnBusy.value = true;
+  vpnError.value = "";
+  try {
+    const result = await notebookVpnAction<{ vpn: NotebookVpnStatus }>({ action: "vpn_rollback", confirm: true });
+    vpnStatus.value = result.vpn;
+    vpnPlan.value = null;
+  } catch (error) { vpnError.value = String(error); }
+  finally { vpnBusy.value = false; }
 }
 
 async function loadSharedSettings() {
@@ -245,7 +296,10 @@ const lanCidrsText = ref("");
 onMounted(async () => {
   try {
     if ("__TAURI_INTERNALS__" in window) await notebookOperation();
-    if (notebookSync.value?.access.state === "valid") await refreshReadOnlyOverview();
+    if (notebookSync.value?.access.state === "valid") {
+      await refreshReadOnlyOverview();
+      await loadVpnStatus();
+    }
     if (!isAdministrator.value) return;
     nodes.value = await listNodes();
     ztSettings.value = await getZeroTierSettings();
@@ -545,7 +599,10 @@ async function submitConnection() {
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <FederationOverview :overview="readOnlyOverview" :notebook="notebookSync"
         :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
-        @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics" />
+        :vpn-plan="vpnPlan" :vpn-status="vpnStatus" :vpn-busy="vpnBusy" :vpn-error="vpnError"
+        :vpn-confirmed="vpnConfirmed" @update:vpn-confirmed="vpnConfirmed = $event"
+        @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
+        @vpn-preview="previewVpnInstall" @vpn-install="installVpn" @vpn-rollback="rollbackVpn" />
     </div>
     <div v-show="activeTab === 'routers'" id="panel-routers" class="tab-panel" role="tabpanel" aria-labelledby="tab-routers" tabindex="0">
     <section class="panel">

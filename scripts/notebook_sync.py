@@ -41,6 +41,11 @@ USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
 ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-2'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 ENROLLMENT_TTL = 15 * 60
+VPN_CONNECTION = 'turris-federation'
+VPN_BACKUP = 'turris-federation-rollback'
+VPN_REPLACED = 'turris-federation-replaced'
+VPN_INTERFACE = 'tf_notebook'
+VPN_PLAN_TTL = 10 * 60
 
 
 def fingerprint(cert):
@@ -119,6 +124,89 @@ def dominates(left, right):
 
 def joined(left, right):
     return {k: max(left.get(k, 0), right.get(k, 0)) for k in left.keys() | right.keys()}
+
+
+def valid_uuid(value):
+    try:
+        return isinstance(value, str) and str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError):
+        return False
+
+
+def local_command(args, allow_failure=False, timeout=120):
+    environment = dict(os.environ, LC_ALL='C')
+    result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=timeout, env=environment)
+    if result.returncode and not allow_failure:
+        raise ValueError('Systémový nástroj %s odmítl operaci.' % Path(args[0]).name)
+    return result.stdout.decode(errors='replace')
+
+
+def nmcli_uuids():
+    output = local_command(['/usr/bin/nmcli', '-t', '-f', 'UUID', 'connection', 'show'])
+    result = {line.strip() for line in output.splitlines() if line.strip()}
+    if any(not valid_uuid(value) for value in result):
+        raise ValueError('NetworkManager vrátil neplatný seznam profilů.')
+    return result
+
+
+def nmcli_connections():
+    result = {}
+    for name in [VPN_CONNECTION, VPN_BACKUP]:
+        output = local_command(['/usr/bin/nmcli', '-t', '-f', 'UUID,TYPE', 'connection', 'show', 'id', name],
+                               allow_failure=True).strip()
+        if output:
+            values = output.splitlines()
+            fields = values[0].split(':') if len(values) == 1 else []
+            if len(fields) != 2 or not valid_uuid(fields[0]) or fields[1] != 'wireguard':
+                raise ValueError('NetworkManager obsahuje nejednoznačný spravovaný profil.')
+            result[name] = {'uuid': fields[0], 'type': fields[1]}
+    return result
+
+
+def privileged_nmcli(args):
+    if any(not isinstance(value, str) or '\x00' in value or '\n' in value for value in args):
+        raise ValueError('Neplatný parametr NetworkManageru.')
+    return local_command(['/usr/bin/pkexec', '/usr/bin/nmcli', *args])
+
+
+def verify_vpn(address, routes):
+    links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev', VPN_INTERFACE]))
+    assigned = {item.get('local') for link in links for item in link.get('addr_info', [])
+                if item.get('family') == 'inet'}
+    if address not in assigned:
+        raise ValueError('Aktivované rozhraní nemá podepsanou WireGuard adresu.')
+    for cidr in routes:
+        network = ipaddress.ip_network(cidr)
+        destination = network.network_address + (1 if network.num_addresses > 1 else 0)
+        found = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', str(destination)]))
+        if len(found) != 1 or found[0].get('dev') != VPN_INTERFACE:
+            raise ValueError('Po aktivaci chybí očekávaná VPN route: ' + cidr)
+    if any(value is not False for value in Store.forwarding_state().values()):
+        raise ValueError('Po aktivaci nelze potvrdit vypnutý systémový IP forwarding.')
+
+
+def verify_underlay(address, document):
+    links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show']))
+    devices = {link.get('ifname') for link in links for item in link.get('addr_info', [])
+               if item.get('family') == 'inet' and item.get('local') == address}
+    if len(devices) != 1:
+        raise ValueError('Podepsaná ZeroTier adresa není jednoznačně přiřazená notebooku.')
+    device = devices.pop()
+    if not isinstance(device, str) or not re.fullmatch(r'zt[a-zA-Z0-9]+', device):
+        raise ValueError('Podepsaná ZeroTier adresa není na rozhraní ZeroTier.')
+    for router in document['config']['nodes']:
+        if router['id'] not in document['members']:
+            continue
+        route = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', router['zeroTierAddress']]))
+        if len(route) != 1 or route[0].get('dev') != device:
+            raise ValueError('Routerový WireGuard endpoint není dostupný přes ZeroTier.')
+    return device
+
+
+def public_vpn_plan(plan):
+    return {key: (bool(value) if key == 'currentConnection' else value)
+            for key, value in plan.items() if key != 'configHash'}
 
 
 class Store:
@@ -247,8 +335,11 @@ class Store:
         return base64.b64encode(public_der[len(prefix):]).decode()
 
     def network_subnets(self):
-        with sqlite3.connect(self.data_dir / 'federation.db', timeout=10) as db:
+        db = sqlite3.connect(self.data_dir / 'federation.db', timeout=10)
+        try:
             row = db.execute("SELECT value FROM app_settings WHERE name='zerotier'").fetchone()
+        finally:
+            db.close()
         settings = json.loads(row[0]) if row else {}
         try:
             zero_tier = ipaddress.ip_network(settings['zeroTierSubnet'], strict=True)
@@ -320,6 +411,162 @@ class Store:
                           'Endpoint = ' + router['zeroTierAddress'] + ':' + str(f.WG_PORT),
                           'AllowedIPs = ' + ', '.join(allowed), 'PersistentKeepalive = 25'])
         f.atomic(self.root / 'wireguard.conf', ('\n'.join(lines) + '\n').encode())
+
+    def wireguard_endpoint(self):
+        status = self.access_status()
+        if status.get('state') != 'valid' or status.get('role') not in ['administrator', 'user']:
+            raise ValueError('Instalace VPN vyžaduje platné pověření člena federace.')
+        published = f.read(self.fleet / 'published.json')
+        public_path = self.root / 'federation-root.pub'
+        if not published or not public_path.exists():
+            raise ValueError('Chybí podepsaná topologie nebo veřejná kotva federace.')
+        document = f.validate_document(f.verify(public_path.read_text(), published))
+        notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
+        if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
+            raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
+        config = self.root / 'wireguard.conf'
+        if not config.exists():
+            self.write_wireguard_config(document)
+        routes = []
+        for router in document['config']['nodes']:
+            if router['id'] in document['members']:
+                routes.extend([router['wireguardAddress'] + '/32'] + router['lanCidrs'])
+        return document, notebook, config, sorted(set(routes), key=lambda value: (ipaddress.ip_network(value).network_address,
+                                                                                 ipaddress.ip_network(value).prefixlen))
+
+    @staticmethod
+    def forwarding_state():
+        values = {}
+        for name, path in [('ipv4', Path('/proc/sys/net/ipv4/ip_forward')),
+                           ('ipv6', Path('/proc/sys/net/ipv6/conf/all/forwarding'))]:
+            try:
+                values[name] = path.read_text().strip() == '1'
+            except OSError:
+                values[name] = None
+        return values
+
+    def vpn_plan(self):
+        if not all(Path(path).exists() for path in ['/usr/bin/nmcli', '/usr/bin/pkexec', '/usr/sbin/ip']):
+            raise ValueError('Instalace VPN vyžaduje NetworkManager, polkit a nástroj ip.')
+        document, notebook, config, routes = self.wireguard_endpoint()
+        forwarding = self.forwarding_state()
+        if any(value is not False for value in forwarding.values()):
+            raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Před instalací jej vypněte.')
+        underlay = verify_underlay(notebook['zeroTierAddress'], document)
+        current = nmcli_connections().get(VPN_CONNECTION)
+        plan = {'id': secrets.token_hex(24), 'expiresAt': time.time() + VPN_PLAN_TTL,
+                'revision': document['revision'], 'configHash': hashlib.sha256(config.read_bytes()).hexdigest(),
+                'connectionName': VPN_CONNECTION, 'interfaceName': VPN_INTERFACE,
+                'address': notebook['wireguardAddress'] + '/32',
+                'zeroTierAddress': notebook['zeroTierAddress'], 'underlayDevice': underlay, 'routes': routes,
+                'currentConnection': current, 'forwarding': forwarding,
+                'steps': [
+                    'Ověřit podepsanou revizi, lokální WireGuard klíč a vypnutý IP forwarding.',
+                    'Přes polkit vytvořit nový NetworkManager profil bez výchozí trasy.',
+                    'Předchozí profil zachovat jako obnovovací kopii.',
+                    'Aktivovat rozhraní tf_notebook a ověřit adresu i host routy.',
+                    'Při selhání odstranit nový profil a automaticky obnovit předchozí.',
+                ]}
+        f.atomic(self.root / 'vpn-plan.json', plan)
+        return public_vpn_plan(plan)
+
+    def vpn_install(self, plan_id):
+        plan = f.read(self.root / 'vpn-plan.json')
+        document, notebook, config, routes = self.wireguard_endpoint()
+        if (not plan or plan.get('id') != plan_id or plan.get('expiresAt', 0) < time.time()
+                or plan.get('revision') != document['revision']
+                or plan.get('configHash') != hashlib.sha256(config.read_bytes()).hexdigest()
+                or plan.get('address') != notebook['wireguardAddress'] + '/32' or plan.get('routes') != routes):
+            raise ValueError('Plán instalace VPN chybí, vypršel nebo se konfigurace změnila.')
+        if any(value is not False for value in self.forwarding_state().values()):
+            raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Instalace byla zastavena.')
+        if plan.get('underlayDevice') != verify_underlay(notebook['zeroTierAddress'], document):
+            raise ValueError('ZeroTier podklad se od vytvoření plánu změnil.')
+        before = nmcli_connections()
+        current = before.get(VPN_CONNECTION, {}).get('uuid')
+        new_uuid = None
+        backup_uuid = None
+        try:
+            stale_backup = before.get(VPN_BACKUP, {}).get('uuid')
+            if stale_backup:
+                privileged_nmcli(['connection', 'delete', 'uuid', stale_backup])
+            if current:
+                backup_uuid = current
+                privileged_nmcli(['connection', 'modify', 'uuid', current, 'connection.id', VPN_BACKUP])
+            before_import = nmcli_uuids()
+            privileged_nmcli(['connection', 'import', 'type', 'wireguard', 'file', str(config)])
+            after_import = nmcli_uuids()
+            created = after_import - before_import
+            if len(created) != 1:
+                raise ValueError('NetworkManager nepotvrdil právě jeden nový profil.')
+            new_uuid = created.pop()
+            privileged_nmcli(['connection', 'modify', 'uuid', new_uuid,
+                              'connection.id', VPN_CONNECTION, 'connection.interface-name', VPN_INTERFACE,
+                              'connection.autoconnect', 'yes', 'ipv4.never-default', 'yes',
+                              'ipv6.never-default', 'yes', 'wireguard.peer-routes', 'yes'])
+            privileged_nmcli(['connection', 'up', 'uuid', new_uuid])
+            verify_vpn(notebook['wireguardAddress'], routes)
+            receipt = {'state': 'installed', 'revision': document['revision'], 'installedAt': time.time(),
+                       'activeUuid': new_uuid, 'backupUuid': backup_uuid, 'address': plan['address'],
+                       'routes': routes, 'forwarding': self.forwarding_state()}
+            f.atomic(self.root / 'vpn-state.json', receipt)
+            (self.root / 'vpn-plan.json').unlink(missing_ok=True)
+            return self.vpn_status()
+        except Exception as error:
+            rollback_errors = []
+            if new_uuid:
+                try:
+                    privileged_nmcli(['connection', 'delete', 'uuid', new_uuid])
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+            if backup_uuid:
+                try:
+                    privileged_nmcli(['connection', 'modify', 'uuid', backup_uuid,
+                                      'connection.id', VPN_CONNECTION])
+                    privileged_nmcli(['connection', 'up', 'uuid', backup_uuid])
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+            f.atomic(self.root / 'vpn-state.json', {'state': 'error', 'failedAt': time.time(),
+                     'error': 'Instalace VPN selhala.' + (' Automatická obnova také selhala.' if rollback_errors else ''),
+                     'rollbackComplete': not rollback_errors})
+            raise ValueError('Instalace VPN selhala; ' + ('předchozí profil byl obnoven.' if not rollback_errors
+                             else 'automatickou obnovu se nepodařilo dokončit.')) from error
+
+    def vpn_rollback(self):
+        if self.access_status().get('state') != 'valid':
+            raise ValueError('Návrat VPN vyžaduje platné pověření člena federace.')
+        state = f.read(self.root / 'vpn-state.json', {})
+        active = state.get('activeUuid')
+        backup = state.get('backupUuid')
+        if state.get('state') != 'installed' or not valid_uuid(active) or (backup and not valid_uuid(backup)):
+            raise ValueError('Není k dispozici ověřený stav pro návrat VPN.')
+        if backup:
+            try:
+                privileged_nmcli(['connection', 'modify', 'uuid', active, 'connection.id', VPN_REPLACED])
+                privileged_nmcli(['connection', 'modify', 'uuid', backup, 'connection.id', VPN_CONNECTION])
+                privileged_nmcli(['connection', 'up', 'uuid', backup])
+                privileged_nmcli(['connection', 'delete', 'uuid', active])
+            except Exception as error:
+                try:
+                    privileged_nmcli(['connection', 'modify', 'uuid', backup, 'connection.id', VPN_BACKUP])
+                    privileged_nmcli(['connection', 'modify', 'uuid', active, 'connection.id', VPN_CONNECTION])
+                    privileged_nmcli(['connection', 'up', 'uuid', active])
+                except Exception:
+                    f.atomic(self.root / 'vpn-state.json', {**state, 'state': 'error',
+                             'error': 'Návrat VPN i obnova aktivního profilu selhaly.',
+                             'rollbackComplete': False, 'failedAt': time.time()})
+                    raise ValueError('Návrat VPN selhal a aktivní profil se nepodařilo obnovit.') from error
+                raise ValueError('Návrat VPN selhal; aktivní profil byl zachován.') from error
+        else:
+            privileged_nmcli(['connection', 'delete', 'uuid', active])
+        result = {**state, 'state': 'rolled_back', 'rolledBackAt': time.time(), 'activeUuid': backup,
+                  'backupUuid': None}
+        f.atomic(self.root / 'vpn-state.json', result)
+        return self.vpn_status()
+
+    def vpn_status(self):
+        state = f.read(self.root / 'vpn-state.json', {'state': 'ready' if (self.root / 'wireguard.conf').exists() else 'unconfigured'})
+        return {key: value for key, value in state.items() if key not in ['activeUuid', 'backupUuid']}
 
     def enrollment_request(self, name):
         if self.access_status()['state'] == 'valid':
@@ -860,6 +1107,16 @@ def command(store, req):
     if action == 'accept_user_invitation':
         store.accept_user_invitation(req['invitation'])
         return store.public_status()
+    if action == 'vpn_plan':
+        return {'plan': store.vpn_plan(), 'vpn': store.vpn_status()}
+    if action == 'vpn_install':
+        return {'vpn': store.vpn_install(req.get('planId'))}
+    if action == 'vpn_rollback':
+        if req.get('confirm') is not True:
+            raise ValueError('Návrat VPN vyžaduje výslovné potvrzení.')
+        return {'vpn': store.vpn_rollback()}
+    if action == 'vpn_status':
+        return {'vpn': store.vpn_status()}
     if action == 'configure':
         name, address = req['name'].strip(), req['address'].strip()
         if not 0 < len(name) <= 80:

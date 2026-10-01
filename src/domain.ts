@@ -121,6 +121,31 @@ export interface ReadOnlyOverview {
   notebooks: ReadOnlyNotebook[];
   diagnostics: NotebookDiagnostics;
 }
+export interface NotebookVpnPlan {
+  id: string;
+  expiresAt: number;
+  revision: number;
+  connectionName: string;
+  interfaceName: string;
+  address: string;
+  zeroTierAddress: string;
+  underlayDevice: string;
+  routes: string[];
+  currentConnection: boolean;
+  forwarding: { ipv4: boolean | null; ipv6: boolean | null };
+  steps: string[];
+}
+export interface NotebookVpnStatus {
+  state: "unconfigured" | "ready" | "installed" | "rolled_back" | "error";
+  revision?: number;
+  installedAt?: number;
+  rolledBackAt?: number;
+  address?: string;
+  routes?: string[];
+  forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
+  error?: string;
+  rollbackComplete?: boolean;
+}
 export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {
   operation: "install" | "update";

@@ -41,7 +41,8 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] Opravit souběh přijetí nové revize a nepotvrzené změny: nová revize musí
   počkat na potvrzení/rollback; potvrzení musí patřit právě aplikované revizi.
 - [x] Přidat tento notebook do přehledu jako místní řídicí uzel pouze pro kontrolu
-  ZeroTier. Nemá WireGuard peery, tunelovou adresu ani routerový deploy.
+  ZeroTier. V této původní etapě neměl WireGuard peery, tunelovou adresu ani
+  routerový deploy; koncové VPN připojení doplňuje následující úkol.
 - [ ] **P1: Rozdělit notebooky na administrátorské a uživatelské síťové uzly.**
   Oba typy budou plnohodnotné koncové uzly VPN, ale bez inzerovaných LAN prefixů,
   forwardingu nebo masquerade mezi VPN a fyzickou sítí. Administrátorský notebook
@@ -74,9 +75,15 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     notebook na lokálně vytvořený veřejný WireGuard klíč a přidělené ZeroTier/WG
     adresy. Pozvánka vytvoří privátní koncovou konfiguraci; router pro notebook
     přijme jen jeho `/32` a jeho handshake nehodnotí jako dostupnost federace.
-    Zbývá privilegovaná instalace této konfigurace, odvolání a aktualizace
-    topologie bez řídicí synchronizace. Místní diagnostika přijímá cíle jen
-    z podepsané revize.
+    UI nyní před instalací zobrazí deset minut platný plán a přes polkit spouští
+    pouze systémový `nmcli`. Plán nejprve ověří přidělenou ZeroTier adresu a
+    cesty k routerům přes konkrétní `zt…` rozhraní. NetworkManager profil
+    nepřidává výchozí trasu, instalace selže při zapnutém IP forwardingu a
+    předchozí profil zůstává jako obnovovací kopie pro automatický i ruční
+    rollback. Tok je pokrytý lokálními testy, ale nebyl spuštěný s reálným
+    polkit agentem ani VPN. Zbývá odvolání,
+    aktualizace topologie bez řídicí synchronizace a fyzická akceptace. Místní
+    diagnostika přijímá cíle jen z podepsané revize.
   - [ ] Připravit produkční instalaci notebooku: podepsaný `.deb` pro první
     Ubuntu/Debian ARM64, dodanou uživatelskou jednotku, autostart tray,
     jednorázové pozvání, lokální identitu a bezpečnou aktualizaci/odinstalaci.

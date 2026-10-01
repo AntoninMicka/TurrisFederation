@@ -3,7 +3,8 @@
 Stav: schválený směr návrhu. Základ trvalé uživatelské služby, lokálního
 stavového socketu a ovládání ze stavové lišty je implementovaný na feature
 větvi. Podepsaný model už odděluje routery od notebooků a eviduje roli
-notebooku; koncová VPN konfigurace zatím implementovaná není.
+notebooku. Koncová VPN konfigurace i potvrzovaný instalační tok jsou
+implementované; zbývá ověření na skutečných zařízeních.
 
 Notebook je plnohodnotný koncový uzel federované VPN, nikoli router lokality.
 Má vlastní identitu a tunelovou adresu a může používat služby dostupné ve
@@ -125,8 +126,8 @@ První implementace read-only přehledu spouští místní ping pouze explicitn�
 tlačítkem. Backend sám vybere ZeroTier adresy přijatých routerů z ověřené
 publikované revize; UI mu nepředává libovolný cíl. Výsledek platí jen pro
 konkrétní revizi a po 120 sekundách se zobrazuje jako zastaralý. WireGuard
-dostupnost se na notebooku v této fázi neměří, protože notebook vlastní
-WireGuard spojení nemá.
+dostupnost se v současné místní kontrole ještě neměří; instalace profilu pouze
+ověří rozhraní, přidělenou adresu a očekávané routy.
 
 ## Důvěra a změna role
 
@@ -181,10 +182,12 @@ Zbývající kroky:
    synchronizace řídicí identity a nedostane kořenový privátní klíč.
 3. [~] Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
-   Generování, podepsané adresy a routerová konfigurace jsou hotové; zbývá
-   potvrzovaná systémová instalace a end-to-end ověření tunelu.
+   Generování, podepsané adresy, routerová konfigurace a potvrzovaný lokální
+   NetworkManager/polkit instalační tok s rollbackem jsou hotové; zbývá
+   end-to-end ověření tunelu na skutečných zařízeních.
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
-   služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH.
+   služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH. VPN část
+   je implementovaná; balíčkovaná aktualizace a rollback backendu ještě ne.
 5. Přidat klienta ve stavové liště, lokální IPC a otevření jediné instance UI;
    zavření okna nesmí ukončit backend ani VPN.
 6. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze

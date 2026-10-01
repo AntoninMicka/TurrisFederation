@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { ReadOnlyNode, ReadOnlyOverview } from "./domain";
+import type { NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview } from "./domain";
 
 const props = defineProps<{
   overview: ReadOnlyOverview | null;
   notebook: NotebookSyncStatus | null;
   loading: boolean;
   diagnosticsLoading: boolean;
+  vpnPlan: NotebookVpnPlan | null;
+  vpnStatus: NotebookVpnStatus | null;
+  vpnBusy: boolean;
+  vpnError: string;
+  vpnConfirmed: boolean;
 }>();
 
-defineEmits<{ refresh: []; diagnose: [] }>();
+defineEmits<{ refresh: []; diagnose: []; vpnPreview: []; vpnInstall: []; vpnRollback: []; "update:vpnConfirmed": [value: boolean] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -142,6 +147,28 @@ function diagnosticClass(nodeId: string) {
       <p>ZeroTier Network ID: <code>{{ overview?.networkId || "—" }}</code></p>
       <p>Notebook je koncový uzel v ZeroTier. Neroutuje provoz mezi VPN a fyzickou sítí a neinzeruje svou LAN.</p>
       <p class="muted">Změny konfigurace, audity a nasazení jsou oddělené v administračních záložkách.</p>
+    </section>
+
+    <section class="overview-section">
+      <div class="overview-section-heading">
+        <h3>VPN tohoto notebooku</h3>
+        <button type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnPreview')">
+          {{ vpnBusy ? "Pracuji…" : "Zobrazit instalační plán" }}
+        </button>
+      </div>
+      <p v-if="vpnError" class="error">{{ vpnError }}</p>
+      <p><strong>{{ vpnStatus?.state === "installed" ? "VPN profil je nainstalovaný" : vpnStatus?.state === "rolled_back" ? "Předchozí profil byl obnoven" : vpnStatus?.state === "error" ? "Poslední instalace selhala" : "VPN profil zatím není nainstalovaný" }}</strong></p>
+      <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
+      <template v-if="vpnPlan">
+        <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>
+        <p>Routy: <code>{{ vpnPlan.routes.join(", ") || "žádné" }}</code></p>
+        <p v-if="vpnPlan.currentConnection" class="warning">Stávající profil bude před změnou zachovaný pro rollback.</p>
+        <ol><li v-for="step in vpnPlan.steps" :key="step">{{ step }}</li></ol>
+        <label class="trust-check"><input type="checkbox" :checked="vpnConfirmed" @change="$emit('update:vpnConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím systémovým změnám a chci vyvolat polkit potvrzení instalace.</label>
+        <button type="button" :disabled="vpnBusy || !vpnConfirmed" @click="$emit('vpnInstall')">Nainstalovat a aktivovat VPN</button>
+      </template>
+      <button v-if="vpnStatus?.state === 'installed'" type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnRollback')">Obnovit předchozí VPN profil</button>
+      <p class="muted">Instalace nevytváří výchozí trasu, nezapíná forwarding a používá pouze routy z podepsané topologie. Privátní klíč se nepředává v argumentech procesu.</p>
     </section>
   </section>
 </template>

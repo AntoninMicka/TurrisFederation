@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Notebook protocol tests with disposable databases, identities and loopback TLS."""
 import copy
+import contextlib
 import importlib.util
 import json
 import os
@@ -58,7 +59,7 @@ class NotebookTests(unittest.TestCase):
             for filename in ['key.pem', 'cert.pem']:
                 shutil.copy(identity.root / filename, store.root / filename)
             store.init_identity()
-            with sqlite3.connect(store.data_dir / 'federation.db') as db:
+            with contextlib.closing(sqlite3.connect(store.data_dir / 'federation.db')) as db:
                 db.executescript(SCHEMA)
             self.stores.append(store)
         self.a, self.b, self.c = self.stores
@@ -104,6 +105,14 @@ class NotebookTests(unittest.TestCase):
                   'wireguardKey': __import__('base64').b64encode(b'r' * 32).decode()}
         f.atomic(store.fleet / 'members.json', {member['nodeId']: member})
         return f.snapshot(store.fleet, config, {member['nodeId']: member})
+
+    def onboard_user(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('User notebook')
+        invitation = self.a.issue_user_invitation(json.dumps(request))
+        self.b.accept_user_invitation(json.dumps(invitation))
+        return invitation
 
     def test_admin_credential_requires_explicit_bootstrap_and_verifies_identity(self):
         self.assertEqual('unconnected', self.a.access_status()['state'])
@@ -239,6 +248,99 @@ class NotebookTests(unittest.TestCase):
         with patch.object(n.time, 'time', return_value=credential['acceptBy'] + 1):
             with self.assertRaisesRegex(ValueError, 'neodpovídá'):
                 self.b.accept_user_invitation(json.dumps(invitation))
+
+    def test_vpn_install_uses_reviewed_plan_and_never_passes_private_key_in_arguments(self):
+        self.onboard_user()
+        forwarding = {'ipv4': False, 'ipv6': False}
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value={}), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.vpn_plan()
+        self.assertEqual(('tf_notebook', '10.203.0.3/32'), (plan['interfaceName'], plan['address']))
+        self.assertEqual(['10.203.0.1/32', '192.168.1.0/24'], plan['routes'])
+        self.assertNotIn('configHash', plan)
+
+        new_uuid = str(uuid.uuid4())
+        calls = []
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value={}), \
+                patch.object(n, 'nmcli_uuids', side_effect=[set(), {new_uuid}]), \
+                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'), \
+                patch.object(n, 'verify_vpn') as verify:
+            state = self.b.vpn_install(plan['id'])
+        self.assertEqual('installed', state['state'])
+        verify.assert_called_once_with('10.203.0.3', plan['routes'])
+        arguments = repr(calls)
+        self.assertIn("'connection', 'import', 'type', 'wireguard', 'file'", arguments)
+        self.assertIn("'ipv4.never-default', 'yes'", arguments)
+        self.assertIn("'ipv6.never-default', 'yes'", arguments)
+        self.assertNotIn((self.b.root / 'wireguard.key').read_text().strip(), arguments)
+
+    def test_failed_vpn_activation_restores_previous_profile(self):
+        self.onboard_user()
+        forwarding = {'ipv4': False, 'ipv6': False}
+        old_uuid, new_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value={n.VPN_CONNECTION: {'uuid': old_uuid, 'type': 'wireguard'}}), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.vpn_plan()
+        calls = []
+        with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
+                patch.object(n, 'nmcli_connections', return_value={n.VPN_CONNECTION: {'uuid': old_uuid, 'type': 'wireguard'}}), \
+                patch.object(n, 'nmcli_uuids', side_effect=[{old_uuid}, {old_uuid, new_uuid}]), \
+                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'), \
+                patch.object(n, 'verify_vpn', side_effect=ValueError('missing route')), \
+                self.assertRaisesRegex(ValueError, 'předchozí profil byl obnoven'):
+            self.b.vpn_install(plan['id'])
+        self.assertIn(['connection', 'modify', 'uuid', old_uuid, 'connection.id', n.VPN_BACKUP], calls)
+        self.assertIn(['connection', 'delete', 'uuid', new_uuid], calls)
+        self.assertIn(['connection', 'modify', 'uuid', old_uuid, 'connection.id', n.VPN_CONNECTION], calls)
+        self.assertIn(['connection', 'up', 'uuid', old_uuid], calls)
+        self.assertEqual({'state': 'error', 'error': 'Instalace VPN selhala.', 'rollbackComplete': True},
+                         {key: self.b.vpn_status()[key] for key in ['state', 'error', 'rollbackComplete']})
+
+    def test_vpn_plan_blocks_forwarding_and_rollback_requires_confirmation(self):
+        self.onboard_user()
+        with patch.object(n.Store, 'forwarding_state', return_value={'ipv4': True, 'ipv6': False}), \
+                patch.object(n, 'nmcli_connections') as connections, \
+                self.assertRaisesRegex(ValueError, 'forwarding'):
+            self.b.vpn_plan()
+        connections.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
+            n.command(self.b, {'action': 'vpn_rollback'})
+
+    def test_vpn_plan_requires_signed_zerotier_address_and_router_routes_on_underlay(self):
+        self.onboard_user()
+        document = f.validate_document(f.verify(
+            (self.b.root / 'federation-root.pub').read_text(), f.read(self.b.fleet / 'published.json')))
+        outputs = [
+            json.dumps([{'ifname': 'zt1234', 'addr_info': [
+                {'family': 'inet', 'local': '10.147.0.3'}]}]),
+            json.dumps([{'dev': 'zt1234'}]),
+        ]
+        with patch.object(n, 'local_command', side_effect=outputs):
+            self.assertEqual('zt1234', n.verify_underlay('10.147.0.3', document))
+        with patch.object(n, 'local_command', return_value='[]'), \
+                self.assertRaisesRegex(ValueError, 'není jednoznačně'):
+            n.verify_underlay('10.147.0.3', document)
+
+    def test_explicit_vpn_rollback_restores_saved_profile(self):
+        self.onboard_user()
+        active, backup = str(uuid.uuid4()), str(uuid.uuid4())
+        f.atomic(self.b.root / 'vpn-state.json', {'state': 'installed', 'activeUuid': active,
+                 'backupUuid': backup, 'revision': 3, 'address': '10.203.0.3/32', 'routes': []})
+        calls = []
+        with patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''):
+            result = n.command(self.b, {'action': 'vpn_rollback', 'confirm': True})['vpn']
+        self.assertEqual('rolled_back', result['state'])
+        self.assertEqual([
+            ['connection', 'modify', 'uuid', active, 'connection.id', n.VPN_REPLACED],
+            ['connection', 'modify', 'uuid', backup, 'connection.id', n.VPN_CONNECTION],
+            ['connection', 'up', 'uuid', backup],
+            ['connection', 'delete', 'uuid', active],
+        ], calls)
 
     def test_empty_notebook_adopts_configuration_and_management_identity(self):
         self.node(self.a)
@@ -493,7 +595,7 @@ class NotebookTests(unittest.TestCase):
                     for process in processes:
                         if process.poll() is not None:
                             self.fail('Service stopped: ' + process.communicate()[1].decode())
-                    with sqlite3.connect(store.data_dir / 'federation.db') as db:
+                    with contextlib.closing(sqlite3.connect(store.data_dir / 'federation.db')) as db:
                         row = db.execute('SELECT name FROM nodes').fetchone()
                     if row and row[0] == name:
                         return
