@@ -33,6 +33,12 @@ název a veřejný certifikát; neobsahují soukromý klíč. Potvrzení otisku 
 v tomto případě nutné na obou stranách. Ruční párování nenahrazuje dosažitelnost
 TCP/8856. Firewall aplikace sama nemění.
 
+Potvrzení nastavení synchronizace na administrátorském notebooku současně
+porovná jeho vlastní podepsanou ZeroTier adresu se skutečnou adresou vybraného
+rozhraní. Při rozdílu vydá novou podepsanou revizi, ale zachová WireGuard adresu,
+klíč a identitu notebooku. Tím lze bezpečně opravit starší revize, které adresu
+notebooku pouze automaticky alokovaly ze subnetu.
+
 Služba běží při spuštěné aplikaci a po dalším spuštění se obnoví, pokud byla
 zapnutá. Discovery běží nezávisle na čekání síťové synchronizace. Přenosy se
 opakují po dokončení předchozího cyklu a 30sekundové pauze; nedostupný protějšek

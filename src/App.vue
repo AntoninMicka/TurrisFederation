@@ -826,7 +826,7 @@ async function submitConnection() {
         <form class="form" @submit.prevent="notebookOperation({ action: 'configure', ...syncDraft })">
           <label>Název tohoto notebooku<input v-model="syncDraft.name" required maxlength="80" :disabled="syncBusy" /></label>
           <label>ZeroTier IPv4 adresa pro synchronizaci<input v-model="syncDraft.address" placeholder="Stabilní ZeroTier IPv4 tohoto notebooku" required :disabled="syncBusy" /></label>
-          <small>Použijte adresu aktivního rozhraní ZeroTier, která zůstává stejná při změně Wi‑Fi nebo LAN. Fyzická LAN adresa není podporovaná. Discovery se opakuje každých 30 sekund.</small>
+          <small>Použijte adresu aktivního rozhraní ZeroTier, která zůstává stejná při změně Wi‑Fi nebo LAN. Fyzická LAN adresa není podporovaná. U administrátora potvrzení také opraví jeho vlastní adresu v podepsané topologii; discovery se opakuje každých 30 sekund.</small>
           <button :disabled="syncBusy">{{ notebookSync.running ? 'Použít nastavení a restartovat' : 'Zapnout discovery a synchronizaci' }}</button>
           <button type="button" class="secondary" :disabled="syncBusy || !notebookSync.config.enabled" @click="notebookOperation({ action: 'stop' })">Vypnout synchronizaci</button>
         </form>

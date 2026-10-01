@@ -320,10 +320,12 @@ class Store:
             raise ValueError('Existující kotva notebooku patří jiné federaci.')
         wg_public = self.wireguard_identity()
         subnets = self.network_subnets()
+        configured_address = self.configured_zerotier_address(subnets)
         with f.locked(self.fleet):
             document = f.validate_document(f.verify(public, f.read(self.fleet / 'published.json')))
             administrator = self.endpoint_notebook(
-                document, self.id, self.local_name(), 'administrator', wg_public, subnets)
+                document, self.id, self.local_name(), 'administrator', wg_public, subnets,
+                zero_tier_address=configured_address)
             published, document = self.publish_notebooks(private, document, [administrator])
             self.write_wireguard_config(document)
         now = int(time.time())
@@ -384,6 +386,19 @@ class Store:
             raise ValueError('Notebooky vyžadují IPv4 subnet ZeroTier a WireGuard o velikosti /16 až /30.')
         return zero_tier, wireguard
 
+    def configured_zerotier_address(self, subnets=None):
+        address = f.read(self.root / 'config.json', {}).get('address')
+        if not address:
+            return None
+        try:
+            value = ipaddress.IPv4Address(address)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Nastavená synchronizační adresa notebooku není platná IPv4.') from exc
+        zero_tier = (subnets or self.network_subnets())[0]
+        if value not in zero_tier:
+            raise ValueError('Synchronizační adresa notebooku neleží v nastaveném ZeroTier subnetu.')
+        return str(value)
+
     @staticmethod
     def free_address(network, used):
         for candidate in network.hosts():
@@ -391,7 +406,8 @@ class Store:
                 return str(candidate)
         raise ValueError('V adresním plánu už není volná adresa pro notebook.')
 
-    def endpoint_notebook(self, document, notebook_id, name, role, wireguard_key, subnets):
+    def endpoint_notebook(self, document, notebook_id, name, role, wireguard_key, subnets,
+                          zero_tier_address=None):
         existing = next((item for item in document['config'].get('notebooks', [])
                          if item['id'] == notebook_id), None)
         if existing and (existing['name'] != name or existing['role'] != role):
@@ -406,12 +422,47 @@ class Store:
                     used_zt.add(item['zeroTierAddress'])
                 if item['wireguardAddress']:
                     used_wg.add(item['wireguardAddress'])
-        zero_tier = existing.get('zeroTierAddress') if existing else None
+        zero_tier = zero_tier_address or (existing.get('zeroTierAddress') if existing else None)
+        if zero_tier:
+            try:
+                zero_tier = str(ipaddress.IPv4Address(zero_tier))
+            except ValueError as exc:
+                raise ValueError('ZeroTier adresa notebooku není platná IPv4.') from exc
+            if ipaddress.IPv4Address(zero_tier) not in subnets[0]:
+                raise ValueError('ZeroTier adresa notebooku neleží v nastaveném subnetu.')
+            if zero_tier in used_zt:
+                raise ValueError('ZeroTier adresa notebooku je už použitá jiným členem federace.')
         wireguard = existing.get('wireguardAddress') if existing else None
         return {'id': notebook_id, 'name': name, 'role': role,
                 'zeroTierAddress': zero_tier or self.free_address(subnets[0], used_zt),
                 'wireguardAddress': wireguard or self.free_address(subnets[1], used_wg),
                 'wireguardKey': wireguard_key}
+
+    def reconcile_administrator_endpoint(self, address):
+        if self.access_status().get('role') != 'administrator':
+            return False
+        private = self.fleet / 'root.pem'
+        published = f.read(self.fleet / 'published.json')
+        if not private.exists() or not published:
+            raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+        subnets = self.network_subnets()
+        if str(ipaddress.IPv4Address(address)) != self.configured_zerotier_address(subnets):
+            raise ValueError('Synchronizační adresa notebooku se během aktualizace změnila.')
+        public = f.public_key(private)
+        with f.locked(self.fleet):
+            document = f.validate_document(f.verify(public, f.read(self.fleet / 'published.json')))
+            existing = next((item for item in document['config'].get('notebooks', [])
+                             if item['id'] == self.id and item['role'] == 'administrator'), None)
+            if not existing:
+                raise ValueError('Administrátorský notebook chybí v podepsané topologii.')
+            administrator = self.endpoint_notebook(
+                document, self.id, existing['name'], 'administrator', self.wireguard_identity(), subnets,
+                zero_tier_address=address)
+            if administrator == existing:
+                return False
+            _, updated = self.publish_notebooks(private, document, [administrator])
+            self.write_wireguard_config(updated)
+            return True
 
     def publish_notebooks(self, private, document, requested):
         notebooks = [dict(item, wireguardKey=item.get('wireguardKey'))
@@ -928,7 +979,8 @@ class Store:
             root_public = f.public_key(private)
             document = f.validate_document(f.verify(root_public, published))
             administrator = self.endpoint_notebook(document, self.id, self.local_name(), 'administrator',
-                                                   administrator_key, subnets)
+                                                   administrator_key, subnets,
+                                                   zero_tier_address=self.configured_zerotier_address(subnets))
             allocation_document = json.loads(f.encode(document))
             allocation_notebooks = [item for item in allocation_document['config'].get('notebooks', [])
                                     if item['id'] != self.id]
@@ -1473,6 +1525,7 @@ def command(store, req):
             raise ValueError('Vyplňte název notebooku (nejvýše 80 znaků).')
         zerotier_interface(address)
         f.atomic(store.root / 'config.json', {'enabled': True, 'name': name, 'address': address})
+        store.reconcile_administrator_endpoint(address)
     elif action == 'stop':
         config = f.read(store.root / 'config.json', {})
         f.atomic(store.root / 'config.json', dict(config, enabled=False))

@@ -118,6 +118,8 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual('unconnected', self.a.access_status()['state'])
         self.assertFalse(self.a.access_status()['canBootstrapAdmin'])
         self.published_federation(self.a)
+        f.atomic(self.a.root / 'config.json', {
+            'enabled': True, 'name': 'Administrator', 'address': '10.147.0.2'})
         self.assertTrue(self.a.access_status()['canBootstrapAdmin'])
 
         # Recover a migration interrupted after pinning the verifier.
@@ -143,6 +145,32 @@ class NotebookTests(unittest.TestCase):
         f.atomic(self.a.root / 'credential.json', envelope)
         self.assertEqual({'state': 'invalid', 'role': None, 'canBootstrapAdmin': False,
                           'error': 'Podepsané pověření notebooku není platné.'}, self.a.access_status())
+
+    def test_admin_configure_repairs_signed_zerotier_address_and_preserves_identity(self):
+        self.published_federation(self.a)
+        f.atomic(self.a.root / 'config.json', {
+            'enabled': True, 'name': 'Administrator', 'address': '10.147.0.2'})
+        self.a.bootstrap_admin_credential()
+        public = f.public_key(self.a.fleet / 'root.pem')
+        document = f.validate_document(f.verify(public, f.read(self.a.fleet / 'published.json')))
+        other = self.a.endpoint_notebook(
+            document, self.b.id, 'Second administrator', 'administrator',
+            self.b.wireguard_identity(), self.a.network_subnets(), zero_tier_address='10.147.0.3')
+        _, before = self.a.publish_notebooks(self.a.fleet / 'root.pem', document, [other])
+        endpoint = next(item for item in before['config']['notebooks'] if item['id'] == self.a.id)
+        wireguard = (endpoint['wireguardAddress'], endpoint['wireguardKey'])
+
+        with patch.object(n, 'zerotier_interface', return_value=__import__('ipaddress').ip_network('10.147.0.0/24')):
+            result = n.command(self.a, {
+                'action': 'configure', 'name': 'Administrator', 'address': '10.147.0.9'})
+
+        after = f.validate_document(f.verify(public, f.read(self.a.fleet / 'published.json')))
+        repaired = next(item for item in after['config']['notebooks'] if item['id'] == self.a.id)
+        self.assertEqual(before['revision'] + 1, after['revision'])
+        self.assertEqual('10.147.0.9', repaired['zeroTierAddress'])
+        self.assertEqual(wireguard, (repaired['wireguardAddress'], repaired['wireguardKey']))
+        self.assertEqual(other, next(item for item in after['config']['notebooks'] if item['id'] == self.b.id))
+        self.assertEqual('10.147.0.9', result['config']['address'])
 
     def test_expired_or_wrong_subject_credential_fails_closed(self):
         envelope = self.published_federation(self.a)
