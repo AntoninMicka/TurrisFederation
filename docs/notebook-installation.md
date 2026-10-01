@@ -106,9 +106,11 @@ a teprve potom zapíše data; `root.pem` se uživatelskému notebooku nepředáv
 notebooku. Administrátor přidělí volné adresy z uložených ZeroTier a WireGuard
 subnetů. Po přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
 routerovými peery a jejich federovanými LAN prefixy. Soubor se instaluje až po
-samostatném deset minut platném plánu a potvrzení v UI. Privilegovaně se přes
-polkit spouští pouze systémový `nmcli`, nikoli skript z uživatelského datového
-adresáře. Importovaný profil používá rozhraní `tf_notebook`, `never-default`
+samostatném deset minut platném plánu a potvrzení v UI. Instalační tok spouští
+přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datového
+adresáře. Místní diagnostika může při nedostatečném oprávnění samostatně
+vyžádat pouze read-only příkaz systémového `wg` pro časy handshake. Importovaný
+profil používá rozhraní `tf_notebook`, `never-default`
 pro IPv4 i IPv6 a pouze podepsané routy. Instalace odmítne systém s aktivním
 IPv4 nebo IPv6 forwardingem a před změnou ověří, že podepsaná ZeroTier adresa
 i cesty k endpointům routerů skutečně používají jedno konkrétní rozhraní `zt…`.
@@ -117,6 +119,12 @@ jako obnovovací kopii; neúspěšná kontrola adresy nebo rout spustí automati
 rollback a UI nabízí také výslovný návrat. Tento tok zatím prošel pouze testy
 s nahrazenými systémovými příkazy, nikoli reálným polkit potvrzením a aktivací
 tunelu.
+
+Explicitní místní kontrola navíc ověřuje aktivní profil, rozhraní, podepsanou
+adresu, všechny očekávané routy a vypnutý forwarding. Pět WireGuard pingů pro
+každý router míří jen na cíle z podepsané revize; handshake výstup se mapuje na
+routery bez zveřejnění jejich veřejných klíčů. Výsledek se po 120 sekundách
+označí jako zastaralý a není sdílen jako stav jiných notebooků.
 
 První administrátor představuje zvláštní bootstrap: může vytvořit novou
 federaci a její kořenovou identitu pouze v explicitním toku **Vytvořit novou

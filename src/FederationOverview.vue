@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview } from "./domain";
+import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview } from "./domain";
 
 const props = defineProps<{
   overview: ReadOnlyOverview | null;
@@ -10,6 +10,7 @@ const props = defineProps<{
   diagnosticsLoading: boolean;
   vpnPlan: NotebookVpnPlan | null;
   vpnStatus: NotebookVpnStatus | null;
+  vpnDiagnostics: NotebookVpnDiagnostics | null;
   vpnBusy: boolean;
   vpnError: string;
   vpnConfirmed: boolean;
@@ -66,6 +67,44 @@ function diagnosticClass(nodeId: string) {
   if (result.successPercent >= 80) return "yellow";
   return "red";
 }
+
+function vpnDiagnostic(nodeId: string) {
+  return props.vpnDiagnostics?.nodes[nodeId];
+}
+
+function measurementLabel(result?: DiagnosticMeasurement) {
+  if (!result?.samples.length || Date.now() / 1000 - result.checkedAt > 120) return "● Bez aktuálního měření";
+  const replies = result.samples.filter(Boolean).length;
+  return `● ${result.successPercent?.toFixed(1)} % · ${replies}/${result.samples.length} odpovědí`;
+}
+
+function measurementClass(result?: DiagnosticMeasurement) {
+  if (!result?.samples.length || Date.now() / 1000 - result.checkedAt > 120 || result.successPercent === null) return "unknown";
+  if (result.successPercent >= 95) return "green";
+  if (result.successPercent >= 80) return "yellow";
+  return "red";
+}
+
+function handshakeLabel(nodeId: string) {
+  const state = vpnDiagnostic(nodeId)?.handshakeState;
+  if (state === "recent") return "Handshake je aktuální";
+  if (state === "stale") return "Handshake je zastaralý";
+  if (state === "never") return "Handshake dosud neproběhl";
+  return "Handshake nelze ověřit";
+}
+
+const vpnDiagnosticFresh = computed(() =>
+  !!props.vpnDiagnostics && props.vpnDiagnostics.revision === props.overview?.revision
+    && Date.now() / 1000 - props.vpnDiagnostics.checkedAt <= 120,
+);
+
+const profileLabel = computed(() => ({
+  active: "aktivní", inactive: "neaktivní", missing: "chybí", unknown: "nelze ověřit",
+})[props.vpnDiagnostics?.profile ?? "unknown"]);
+
+function presenceLabel(value: boolean | null, positive: string) {
+  return value === true ? positive : value === false ? "chybí" : "nelze ověřit";
+}
 </script>
 
 <template>
@@ -93,7 +132,7 @@ function diagnosticClass(nodeId: string) {
       <div class="overview-section-heading">
         <h3>Uzly federace</h3>
         <button type="button" class="secondary" :disabled="diagnosticsLoading || !overview?.revision" @click="$emit('diagnose')">
-          {{ diagnosticsLoading ? "Měřím…" : "Spustit ping · 5 paketů" }}
+          {{ diagnosticsLoading ? "Měřím…" : "Spustit místní kontrolu · 5 paketů" }}
         </button>
       </div>
       <p v-if="!overview?.nodes.length" class="muted">Federace zatím neobsahuje žádné routery.</p>
@@ -114,12 +153,15 @@ function diagnosticClass(nodeId: string) {
               </td>
               <td><span class="overview-badge">{{ membership(node) }}</span></td>
               <td><span :class="['overview-signal', diagnosticClass(node.id)]">{{ diagnosticLabel(node.id) }}</span></td>
-              <td><span class="overview-signal unknown">Notebook nepoužívá WireGuard</span></td>
+              <td>
+                <span :class="['overview-signal', measurementClass(vpnDiagnostic(node.id)?.wireguard)]">{{ measurementLabel(vpnDiagnostic(node.id)?.wireguard) }}</span>
+                <small class="overview-line">{{ handshakeLabel(node.id) }}</small>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z přijaté konfigurace. Ping se spouští pouze tlačítkem a míří výhradně na ZeroTier adresy přijatých routerů z podepsané revize. Notebook WireGuard v této verzi nepoužívá a dostupnost neodhaduje z jiných stavů.</p>
+      <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z přijaté konfigurace. Ping se spouští pouze tlačítkem a míří výhradně na ZeroTier a WireGuard adresy přijatých routerů z podepsané revize. Výsledek platí jen pro tento notebook a po 120 sekundách se označí jako zastaralý.</p>
     </section>
 
     <section class="overview-section">
@@ -159,6 +201,13 @@ function diagnosticClass(nodeId: string) {
       <p v-if="vpnError" class="error">{{ vpnError }}</p>
       <p><strong>{{ vpnStatus?.state === "installed" ? "VPN profil je nainstalovaný" : vpnStatus?.state === "rolled_back" ? "Předchozí profil byl obnoven" : vpnStatus?.state === "error" ? "Poslední instalace selhala" : "VPN profil zatím není nainstalovaný" }}</strong></p>
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
+      <template v-if="vpnDiagnostics">
+        <p :class="vpnDiagnosticFresh ? '' : 'warning'">Místní kontrola revize {{ vpnDiagnostics.revision }}: profil {{ profileLabel }}, rozhraní {{ presenceLabel(vpnDiagnostics.interfacePresent, "nalezeno") }}, adresa {{ presenceLabel(vpnDiagnostics.addressAssigned, "odpovídá") }}, routy {{ vpnDiagnostics.routesActive }}/{{ vpnDiagnostics.routesExpected }}.</p>
+        <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="error">Nelze potvrdit vypnutý IPv4 a IPv6 forwarding.</p>
+        <p v-if="vpnDiagnostics.missingRoutes.length" class="warning">Chybějící routy: <code>{{ vpnDiagnostics.missingRoutes.join(", ") }}</code></p>
+        <p v-if="vpnDiagnostics.unknownRoutes.length" class="warning">Routy, které nelze ověřit: <code>{{ vpnDiagnostics.unknownRoutes.join(", ") }}</code></p>
+        <p v-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
+      </template>
       <template v-if="vpnPlan">
         <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>
         <p>Routy: <code>{{ vpnPlan.routes.join(", ") || "žádné" }}</code></p>

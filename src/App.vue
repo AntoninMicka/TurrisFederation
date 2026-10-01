@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import FederationOverview from "./FederationOverview.vue";
 import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnPlan, NotebookVpnStatus } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus } from "./domain";
 
 const tabs = [
   { id: 'overview', label: 'Přehled' },
@@ -47,6 +47,7 @@ const requestedUser = ref("");
 const issuedInvitation = ref("");
 const vpnPlan = ref<NotebookVpnPlan | null>(null);
 const vpnStatus = ref<NotebookVpnStatus | null>(null);
+const vpnDiagnostics = ref<NotebookVpnDiagnostics | null>(null);
 const vpnBusy = ref(false);
 const vpnError = ref("");
 const vpnConfirmed = ref(false);
@@ -116,6 +117,7 @@ async function loadVpnStatus() {
   try {
     const result = await notebookVpnAction<{ vpn: NotebookVpnStatus }>({ action: "vpn_status" });
     vpnStatus.value = result.vpn;
+    vpnDiagnostics.value = result.vpn.diagnostics ?? null;
   } catch (error) { vpnError.value = String(error); }
 }
 
@@ -250,9 +252,14 @@ async function refreshReadOnlyOverview() {
 async function runNotebookDiagnostics() {
   diagnosticsLoading.value = true;
   try {
-    await deploymentAction("diagnostics");
+    const [, local] = await Promise.all([
+      deploymentAction("diagnostics"),
+      notebookVpnAction<{ diagnostics: NotebookVpnDiagnostics; vpn: NotebookVpnStatus }>({ action: "vpn_diagnostics" }),
+    ]);
+    vpnDiagnostics.value = local.diagnostics;
+    vpnStatus.value = local.vpn;
     readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
-    message.value = "Místní měření dostupnosti přijatých routerů bylo dokončeno.";
+    message.value = "Místní kontrola ZeroTier, WireGuardu, rout a dostupnosti byla dokončena.";
   } catch (error) {
     message.value = `Měření dostupnosti selhalo: ${String(error)}`;
   } finally {
@@ -599,7 +606,7 @@ async function submitConnection() {
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <FederationOverview :overview="readOnlyOverview" :notebook="notebookSync"
         :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"
-        :vpn-plan="vpnPlan" :vpn-status="vpnStatus" :vpn-busy="vpnBusy" :vpn-error="vpnError"
+        :vpn-plan="vpnPlan" :vpn-status="vpnStatus" :vpn-diagnostics="vpnDiagnostics" :vpn-busy="vpnBusy" :vpn-error="vpnError"
         :vpn-confirmed="vpnConfirmed" @update:vpn-confirmed="vpnConfirmed = $event"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
         @vpn-preview="previewVpnInstall" @vpn-install="installVpn" @vpn-rollback="rollbackVpn" />

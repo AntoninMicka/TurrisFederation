@@ -83,7 +83,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     rollback. Tok je pokrytý lokálními testy, ale nebyl spuštěný s reálným
     polkit agentem ani VPN. Zbývá odvolání,
     aktualizace topologie bez řídicí synchronizace a fyzická akceptace. Místní
-    diagnostika přijímá cíle jen z podepsané revize.
+    diagnostika nyní kontroluje profil, rozhraní, adresu, forwarding, routy,
+    handshake a pět WG pingů; cíle přijímá jen z podepsané revize a výsledek
+    označí po 120 sekundách jako zastaralý.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

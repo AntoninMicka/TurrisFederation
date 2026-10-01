@@ -122,12 +122,15 @@ ukázat členství a poslední sdílenou konfiguraci, ne tvrdit jejich aktuáln�
 dostupnost. Výsledek místní kontroly se nepoužívá jako autorita pro změnu
 členství nebo přístupových práv.
 
-První implementace read-only přehledu spouští místní ping pouze explicitním
-tlačítkem. Backend sám vybere ZeroTier adresy přijatých routerů z ověřené
-publikované revize; UI mu nepředává libovolný cíl. Výsledek platí jen pro
-konkrétní revizi a po 120 sekundách se zobrazuje jako zastaralý. WireGuard
-dostupnost se v současné místní kontrole ještě neměří; instalace profilu pouze
-ověří rozhraní, přidělenou adresu a očekávané routy.
+Read-only přehled spouští místní kontrolu pouze explicitním tlačítkem. Backend
+sám vybere ZeroTier a WireGuard adresy přijatých routerů z ověřené publikované
+revize; UI mu nepředává libovolný cíl. Kontrola ověří NetworkManager profil,
+rozhraní, přidělenou adresu, očekávané routy, vypnutý forwarding, handshake a
+provede pět pingů na každé podepsané routerové adrese. Handshake se nejprve čte
+bez zvýšení oprávnění a při zamítnutí může polkit spustit pouze systémové
+`wg show tf_notebook latest-handshakes`. Privátní klíče se nečtou ani nevracejí
+do UI. Výsledek platí jen pro konkrétní revizi a po 120 sekundách se zobrazuje
+jako zastaralý.
 
 ## Důvěra a změna role
 
@@ -183,8 +186,8 @@ Zbývající kroky:
 3. [~] Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
    Generování, podepsané adresy, routerová konfigurace a potvrzovaný lokální
-   NetworkManager/polkit instalační tok s rollbackem jsou hotové; zbývá
-   end-to-end ověření tunelu na skutečných zařízeních.
+   NetworkManager/polkit instalační tok s rollbackem i místní diagnostika jsou
+   hotové; zbývá end-to-end ověření tunelu na skutečných zařízeních.
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
    služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH. VPN část
    je implementovaná; balíčkovaná aktualizace a rollback backendu ještě ne.

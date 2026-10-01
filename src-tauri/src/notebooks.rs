@@ -176,7 +176,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let config_dir = app.path().config_dir().map_err(|e| e.to_string())?;
         let service = app.state::<NotebookService>();
         let action = request["action"].as_str().ok_or("Chybí operace.")?;
-        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_invitation", "accept_user_invitation", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "configure", "stop", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
+        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_invitation", "accept_user_invitation", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
             return Err("Neznámá operace notebooku.".into());
         }
         // Serialize commands, including config/status updates, without blocking the UI.

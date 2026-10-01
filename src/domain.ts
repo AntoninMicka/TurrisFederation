@@ -135,6 +135,27 @@ export interface NotebookVpnPlan {
   forwarding: { ipv4: boolean | null; ipv6: boolean | null };
   steps: string[];
 }
+export interface NotebookVpnDiagnosticNode {
+  name: string;
+  address: string;
+  handshakeState: "recent" | "stale" | "never" | "unknown";
+  handshakeAt: number | null;
+  wireguard: DiagnosticMeasurement;
+}
+export interface NotebookVpnDiagnostics {
+  revision: number;
+  state: "complete";
+  checkedAt: number;
+  profile: "active" | "inactive" | "missing" | "unknown";
+  interfacePresent: boolean | null;
+  addressAssigned: boolean | null;
+  routesExpected: number;
+  routesActive: number;
+  missingRoutes: string[];
+  unknownRoutes: string[];
+  forwarding: { ipv4: boolean | null; ipv6: boolean | null };
+  nodes: Record<string, NotebookVpnDiagnosticNode>;
+}
 export interface NotebookVpnStatus {
   state: "unconfigured" | "ready" | "installed" | "rolled_back" | "error";
   revision?: number;
@@ -145,6 +166,7 @@ export interface NotebookVpnStatus {
   forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
   error?: string;
   rollbackComplete?: boolean;
+  diagnostics?: NotebookVpnDiagnostics;
 }
 export type DeploymentMode = "full" | "settings";
 export interface DeploymentPlan {

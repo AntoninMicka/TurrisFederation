@@ -326,6 +326,75 @@ class NotebookTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'není jednoznačně'):
             n.verify_underlay('10.147.0.3', document)
 
+    def test_local_vpn_diagnostics_use_only_signed_router_targets(self):
+        self.onboard_user()
+        profile_uuid = str(uuid.uuid4())
+        document = f.validate_document(f.verify(
+            (self.b.root / 'federation-root.pub').read_text(), f.read(self.b.fleet / 'published.json')))
+        router_id = str(uuid.UUID(int=1))
+        router_key = document['members'][router_id]['wireguardKey']
+        now = time.time()
+
+        def local(args, **_kwargs):
+            if args[:5] == ['/usr/sbin/ip', '-j', 'link', 'show', 'dev']:
+                return json.dumps([{'ifname': n.VPN_INTERFACE}])
+            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev']:
+                return json.dumps([{'addr_info': [{'family': 'inet', 'local': '10.203.0.3'}]}])
+            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
+                return json.dumps([{'dev': n.VPN_INTERFACE}])
+            if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
+                return f'{router_key}\t{int(now)}\n'
+            raise AssertionError(args)
+
+        measurement = {'address': '10.203.0.1', 'samples': [True] * 5,
+                       'checkedAt': now, 'successPercent': 100}
+        with patch.object(n, 'nmcli_connections', return_value={
+                    n.VPN_CONNECTION: {'uuid': profile_uuid, 'type': 'wireguard'}}), \
+                patch.object(n, 'nmcli_active_uuids', return_value={profile_uuid}), \
+                patch.object(n, 'local_command', side_effect=local), \
+                patch.object(n.Store, 'forwarding_state', return_value={'ipv4': False, 'ipv6': False}), \
+                patch.object(f, 'ping_batch', return_value=measurement) as ping:
+            result = n.command(self.b, {'action': 'vpn_diagnostics'})['diagnostics']
+
+        self.assertEqual(('active', True, True),
+                         (result['profile'], result['interfacePresent'], result['addressAssigned']))
+        self.assertEqual((2, 2, [], []),
+                         (result['routesExpected'], result['routesActive'], result['missingRoutes'], result['unknownRoutes']))
+        self.assertEqual('recent', result['nodes'][router_id]['handshakeState'])
+        self.assertEqual([(('10.203.0.1', n.VPN_INTERFACE), {})],
+                         [(call.args, call.kwargs) for call in ping.call_args_list])
+        self.assertNotIn(router_key, json.dumps(result))
+        self.assertEqual(result, self.b.vpn_status()['diagnostics'])
+
+    def test_local_vpn_diagnostics_report_unknown_handshake_and_missing_routes(self):
+        self.onboard_user()
+
+        def local(args, **_kwargs):
+            if args[:5] == ['/usr/sbin/ip', '-j', 'link', 'show', 'dev']:
+                raise ValueError('missing interface')
+            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev']:
+                raise ValueError('missing interface')
+            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
+                return json.dumps([{'dev': 'eth0'}])
+            if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
+                raise ValueError('permission denied')
+            if args[:4] == ['/usr/bin/pkexec', '/usr/bin/wg', 'show', n.VPN_INTERFACE]:
+                raise ValueError('permission denied')
+            raise AssertionError(args)
+
+        unavailable = {'address': '10.203.0.1', 'samples': [],
+                       'checkedAt': time.time(), 'successPercent': None}
+        with patch.object(n, 'nmcli_connections', return_value={}), \
+                patch.object(n, 'nmcli_active_uuids', return_value=set()), \
+                patch.object(n, 'local_command', side_effect=local), \
+                patch.object(n.Store, 'forwarding_state', return_value={'ipv4': False, 'ipv6': False}), \
+                patch.object(f, 'ping_batch', return_value=unavailable):
+            result = self.b.vpn_diagnostics()
+        self.assertEqual(('missing', None, None),
+                         (result['profile'], result['interfacePresent'], result['addressAssigned']))
+        self.assertEqual((2, 0), (result['routesExpected'], result['routesActive']))
+        self.assertEqual('unknown', next(iter(result['nodes'].values()))['handshakeState'])
+
     def test_explicit_vpn_rollback_restores_saved_profile(self):
         self.onboard_user()
         active, backup = str(uuid.uuid4()), str(uuid.uuid4())

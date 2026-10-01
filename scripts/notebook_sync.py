@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 # Copied beside this script by the desktop launcher.
 import federation as f
@@ -46,6 +47,7 @@ VPN_BACKUP = 'turris-federation-rollback'
 VPN_REPLACED = 'turris-federation-replaced'
 VPN_INTERFACE = 'tf_notebook'
 VPN_PLAN_TTL = 10 * 60
+VPN_HANDSHAKE_MAX_AGE = 180
 
 
 def fingerprint(cert):
@@ -150,6 +152,14 @@ def nmcli_uuids():
     return result
 
 
+def nmcli_active_uuids():
+    output = local_command(['/usr/bin/nmcli', '-t', '-f', 'UUID', 'connection', 'show', '--active'])
+    result = {line.strip() for line in output.splitlines() if line.strip()}
+    if any(not valid_uuid(value) for value in result):
+        raise ValueError('NetworkManager vrátil neplatný seznam aktivních profilů.')
+    return result
+
+
 def nmcli_connections():
     result = {}
     for name in [VPN_CONNECTION, VPN_BACKUP]:
@@ -168,6 +178,27 @@ def privileged_nmcli(args):
     if any(not isinstance(value, str) or '\x00' in value or '\n' in value for value in args):
         raise ValueError('Neplatný parametr NetworkManageru.')
     return local_command(['/usr/bin/pkexec', '/usr/bin/nmcli', *args])
+
+
+def wireguard_handshakes():
+    """Read only public peer keys and timestamps; retry through polkit when needed."""
+    commands = [
+        ['/usr/bin/wg', 'show', VPN_INTERFACE, 'latest-handshakes'],
+        ['/usr/bin/pkexec', '/usr/bin/wg', 'show', VPN_INTERFACE, 'latest-handshakes'],
+    ]
+    for command in commands:
+        try:
+            output = local_command(command)
+            result = {}
+            for line in output.splitlines():
+                fields = line.split('\t')
+                if len(fields) != 2 or not fields[1].isdigit():
+                    raise ValueError('Nástroj WireGuard vrátil neplatný stav handshake.')
+                result[fields[0]] = int(fields[1])
+            return result
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return None
 
 
 def verify_vpn(address, routes):
@@ -566,7 +597,83 @@ class Store:
 
     def vpn_status(self):
         state = f.read(self.root / 'vpn-state.json', {'state': 'ready' if (self.root / 'wireguard.conf').exists() else 'unconfigured'})
-        return {key: value for key, value in state.items() if key not in ['activeUuid', 'backupUuid']}
+        result = {key: value for key, value in state.items() if key not in ['activeUuid', 'backupUuid']}
+        diagnostics = f.read(self.root / 'vpn-diagnostics.json')
+        if diagnostics:
+            result['diagnostics'] = diagnostics
+        return result
+
+    def vpn_diagnostics(self):
+        document, notebook, _config, routes = self.wireguard_endpoint()
+        checked_at = time.time()
+        try:
+            managed = nmcli_connections().get(VPN_CONNECTION)
+            active = nmcli_active_uuids()
+            profile = 'active' if managed and managed['uuid'] in active else ('inactive' if managed else 'missing')
+        except (OSError, ValueError, subprocess.SubprocessError):
+            profile = 'unknown'
+
+        try:
+            links = json.loads(local_command(['/usr/sbin/ip', '-j', 'link', 'show', 'dev', VPN_INTERFACE]))
+            interface_present = len(links) == 1 and links[0].get('ifname') == VPN_INTERFACE
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            interface_present = None
+        try:
+            addresses = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev', VPN_INTERFACE]))
+            assigned = {item.get('local') for link in addresses for item in link.get('addr_info', [])
+                        if item.get('family') == 'inet'}
+            address_assigned = notebook['wireguardAddress'] in assigned
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            address_assigned = None
+
+        missing_routes = []
+        unknown_routes = []
+        for cidr in routes:
+            network = ipaddress.ip_network(cidr)
+            destination = network.network_address + (1 if network.num_addresses > 1 else 0)
+            try:
+                found = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', str(destination)]))
+                if len(found) != 1 or found[0].get('dev') != VPN_INTERFACE:
+                    missing_routes.append(cidr)
+            except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+                unknown_routes.append(cidr)
+
+        handshakes = wireguard_handshakes()
+        handshake_available = handshakes is not None
+        handshakes = handshakes or {}
+
+        peers = [router for router in document['config']['nodes'] if router['id'] in document['members']]
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(peers)))) as pool:
+            jobs = {router['id']: pool.submit(f.ping_batch, router['wireguardAddress'], VPN_INTERFACE)
+                    for router in peers}
+            nodes = {}
+            for router in peers:
+                timestamp = handshakes.get(document['members'][router['id']]['wireguardKey'], 0)
+                if not handshake_available:
+                    handshake_state = 'unknown'
+                elif timestamp <= 0:
+                    handshake_state = 'never'
+                elif checked_at - timestamp <= VPN_HANDSHAKE_MAX_AGE:
+                    handshake_state = 'recent'
+                else:
+                    handshake_state = 'stale'
+                nodes[router['id']] = {
+                    'name': router['name'], 'address': router['wireguardAddress'],
+                    'handshakeState': handshake_state,
+                    'handshakeAt': timestamp if timestamp > 0 else None,
+                    'wireguard': jobs[router['id']].result(),
+                }
+        result = {
+            'revision': document['revision'], 'state': 'complete', 'checkedAt': checked_at,
+            'profile': profile, 'interfacePresent': interface_present,
+            'addressAssigned': address_assigned,
+            'routesExpected': len(routes),
+            'routesActive': len(routes) - len(missing_routes) - len(unknown_routes),
+            'missingRoutes': missing_routes, 'unknownRoutes': unknown_routes,
+            'forwarding': self.forwarding_state(), 'nodes': nodes,
+        }
+        f.atomic(self.root / 'vpn-diagnostics.json', result)
+        return result
 
     def enrollment_request(self, name):
         if self.access_status()['state'] == 'valid':
@@ -1117,6 +1224,8 @@ def command(store, req):
         return {'vpn': store.vpn_rollback()}
     if action == 'vpn_status':
         return {'vpn': store.vpn_status()}
+    if action == 'vpn_diagnostics':
+        return {'diagnostics': store.vpn_diagnostics(), 'vpn': store.vpn_status()}
     if action == 'configure':
         name, address = req['name'].strip(), req['address'].strip()
         if not 0 < len(name) <= 80:
