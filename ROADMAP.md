@@ -65,7 +65,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     platného členství pokrývá i uživatelské notebooky přijaté před zavedením
     automatické instalace a případnou chybu služby ukáže v UI.
   - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
-    odstranění služby v reálné grafické uživatelské relaci.
+    odstranění služby v reálné grafické uživatelské relaci. První zkouška
+    odhlášení/přihlášení na KDE Wayland odhalila uvozovky v poli `TryExec`,
+    kvůli kterým systemd XDG generátor hledal neexistující název binárky.
+    Pole bylo odstraněno. Instalace i odstranění autostartu navíc provádějí
+    `daemon-reload`, protože při zapnutém lingeru uživatelský `systemd` přežívá
+    odhlášení. Opakovaná zkouška po novém sestavení zůstává otevřená.
   - [x] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
     pro odpojení notebooku přímo ze stavové lišty. Druhé spuštění nyní přes
     privátní uživatelský socket zobrazí existující okno; stav ikony vychází

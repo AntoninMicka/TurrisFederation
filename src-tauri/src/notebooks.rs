@@ -60,7 +60,11 @@ fn quote_desktop_exec(path: &Path) -> Result<String, String> {
 
 fn autostart_contents(executable: &Path) -> Result<String, String> {
     let executable = quote_desktop_exec(executable)?;
-    Ok(format!("[Desktop Entry]\nType=Application\nName=Turris Federation\nComment=Stav federovaného připojení\nExec={executable} --background\nTryExec={executable}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
+    // TryExec is a plain string in the desktop-entry specification, not an
+    // Exec field. Quoting an absolute path there makes systemd's XDG generator
+    // look for a filename which literally contains quote characters. Exec is
+    // sufficient and remains safe for paths containing spaces.
+    Ok(format!("[Desktop Entry]\nType=Application\nName=Turris Federation\nComment=Stav federovaného připojení\nExec={executable} --background\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
 }
 
 fn install_tray_autostart(config: &Path) -> Result<(), String> {
@@ -71,12 +75,19 @@ fn install_tray_autostart(config: &Path) -> Result<(), String> {
     let temporary = parent.join(format!(".{AUTOSTART_NAME}.tmp-{}", std::process::id()));
     fs::write(&temporary, autostart_contents(&executable)?).map_err(|e| e.to_string())?;
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
-    fs::rename(&temporary, &target).map_err(|e| e.to_string())
+    fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
+    // With user lingering enabled, the user manager survives logout. Its XDG
+    // autostart generator therefore does not discover a newly created desktop
+    // entry at the next login unless the manager configuration is reloaded.
+    systemctl(&["daemon-reload"])
 }
 
 fn remove_tray_autostart(config: &Path) -> Result<(), String> {
     let target = autostart_path(config);
-    if target.exists() { fs::remove_file(target).map_err(|e| e.to_string())?; }
+    if target.exists() {
+        fs::remove_file(target).map_err(|e| e.to_string())?;
+        systemctl(&["daemon-reload"])?;
+    }
     Ok(())
 }
 
@@ -436,7 +447,7 @@ mod tests {
     fn tray_autostart_uses_background_mode_and_quotes_executable() {
         let entry = autostart_contents(Path::new("/home/test user/Turris $Federation")).unwrap();
         assert!(entry.contains("Exec=\"/home/test user/Turris \\$Federation\" --background"));
-        assert!(entry.contains("TryExec=\"/home/test user/Turris \\$Federation\""));
+        assert!(!entry.contains("TryExec="));
         assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
         assert!(quote_desktop_exec(Path::new("/tmp/bad\nentry")).is_err());
     }
