@@ -10,8 +10,10 @@ import os
 from pathlib import Path
 import re
 import socket
+import socketserver
 import sqlite3
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -31,6 +33,7 @@ FIELDS = ['id', 'name', 'sshHost', 'sshPort', 'sshUser', 'lanCidrs',
 COLUMNS = ['id', 'name', 'ssh_host', 'ssh_port', 'ssh_user', 'lan_cidrs',
            'zero_tier_address', 'public_endpoint', 'wireguard_address']
 FLEET_FILES = ['root.pem', 'members.json', 'published.json', 'revision-floor.json']
+LOCAL_LIMIT = 16 * 1024
 
 
 def fingerprint(cert):
@@ -402,7 +405,64 @@ def discover(store, raw, source, network):
             f.atomic(store.root / 'discovered.json', peers)
 
 
-def serve(store):
+def local_socket_path():
+    override = os.environ.get('TF_BACKEND_SOCKET')
+    if override:
+        return Path(override)
+    runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if not runtime:
+        raise ValueError('Chybí XDG_RUNTIME_DIR pro lokální rozhraní backendu.')
+    return Path(runtime) / 'turris-federation' / 'backend.sock'
+
+
+def make_local_server(store, path=None):
+    path = Path(path or local_socket_path())
+    if path.parent.is_symlink():
+        raise ValueError('Adresář lokálního socketu nesmí být symbolický odkaz.')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.stat().st_uid != os.getuid():
+        raise ValueError('Adresář lokálního socketu patří jinému uživateli.')
+    os.chmod(path.parent, 0o700)
+    if path.exists() or path.is_socket():
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.2)
+            probe.connect(str(path))
+        except OSError:
+            path.unlink(missing_ok=True)
+        else:
+            raise ValueError('Lokální backend již běží.')
+        finally:
+            probe.close()
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            try:
+                if hasattr(socket, 'SO_PEERCRED'):
+                    pid, uid, _ = struct.unpack('3i', self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    if uid != os.getuid() or pid <= 0:
+                        raise ValueError('Nepovolený místní klient.')
+                raw = self.rfile.readline(LOCAL_LIMIT + 1)
+                if not raw.endswith(b'\n') or len(raw) > LOCAL_LIMIT:
+                    raise ValueError('Neplatný místní požadavek.')
+                request = json.loads(raw)
+                if request != {'action': 'status'}:
+                    raise ValueError('Lokální rozhraní je pouze pro čtení stavu.')
+                response = {'ok': True, 'status': store.status(), 'backend': {'running': True, 'pid': os.getpid()}}
+            except Exception as error:
+                response = {'ok': False, 'error': str(error) if type(error) is ValueError else 'Neplatný místní požadavek.'}
+            self.wfile.write(f.encode(response) + b'\n')
+
+    class Server(socketserver.ThreadingUnixStreamServer):
+        daemon_threads = True
+
+    server = Server(str(path), Handler)
+    os.chmod(path, 0o600)
+    server.socket_path = path
+    return server
+
+
+def serve_sync(store, stopped):
     config = f.read(store.root / 'config.json')
     address = config['address']
     network = interface(address)
@@ -423,8 +483,6 @@ def serve(store):
         udp.close()
         udp = None
         discovery_error = 'Multicast není dostupný. Použijte ruční párování; TLS synchronizace zůstává dostupná.'
-    stopped = threading.Event()
-
     def exchange():
         while not stopped.is_set() and os.getppid() == parent:
             runtime = {'updatedAt': time.time(), 'peers': f.read(store.root / 'runtime.json', {}).get('peers', {})}
@@ -476,6 +534,26 @@ def serve(store):
             udp.close()
         server.shutdown()
         server.server_close()
+
+
+def serve(store):
+    local = make_local_server(store)
+    local_worker = threading.Thread(target=local.serve_forever, daemon=True)
+    local_worker.start()
+    stopped = threading.Event()
+    try:
+        config = f.read(store.root / 'config.json', {})
+        if config.get('enabled'):
+            serve_sync(store, stopped)
+        else:
+            f.atomic(store.root / 'runtime.json', {'updatedAt': time.time(), 'state': 'idle'})
+            while True:
+                time.sleep(3600)
+    finally:
+        stopped.set()
+        local.shutdown()
+        local.server_close()
+        local.socket_path.unlink(missing_ok=True)
 
 
 def command(store, req):

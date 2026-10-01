@@ -60,7 +60,7 @@ export async function openZeroTierCentral(): Promise<string> {
   return invoke("open_zerotier_central");
 }
 
-export async function deploymentAction<T>(action: "overview" | "validate" | "deploy" | "publish", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null, mode: "full" | "settings" | null = null): Promise<T> {
+export async function deploymentAction<T>(action: "overview" | "refresh" | "validate" | "deploy" | "publish", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null, mode: "full" | "settings" | null = null): Promise<T> {
   if (browserMode) throw new Error("Deploy a synchronizace jsou dostupné v desktopové aplikaci.");
   return invoke("deployment_action", { action, nodeId, credentials, planId, mode });
 }
@@ -79,8 +79,14 @@ export interface NotebookSyncStatus {
   id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
+  service?: { installed: boolean; active: boolean; unit: string };
 }
 export async function notebookAction(request: Record<string, unknown>): Promise<NotebookSyncStatus> {
   if (browserMode) throw new Error("Synchronizace notebooků je dostupná v desktopové aplikaci.");
   return invoke("notebook_action", { request });
+}
+
+export async function manageNotebookService(action: "service_install" | "service_remove"): Promise<{ service: { installed: boolean; active: boolean; unit: string } }> {
+  if (browserMode) throw new Error("Uživatelskou službu lze spravovat v desktopové aplikaci.");
+  return invoke("notebook_action", { request: { action } });
 }

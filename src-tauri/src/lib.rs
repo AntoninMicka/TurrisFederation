@@ -9,6 +9,8 @@ mod zerotier;
 mod deployment;
 mod notebooks;
 use tauri::{Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use uuid::Uuid;
 
 struct AppState { db: Mutex<Connection>, ssh_dir: PathBuf }
@@ -474,13 +476,42 @@ async fn open_zerotier_central(state: State<'_, AppState>) -> Result<String, Str
 pub fn run() {
     tauri::Builder::default().setup(|app| {
         let data_dir = app.path().app_data_dir()?; fs::create_dir_all(&data_dir)?;
+        let config_dir = app.path().config_dir()?;
         let db = Connection::open(data_dir.join("federation.db"))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         migrate(&db).map_err(std::io::Error::other)?;
         let notebook_service = notebooks::NotebookService::default();
-        notebooks::resume(&data_dir, &notebook_service);
+        notebooks::resume(&data_dir, &config_dir, &notebook_service);
         app.manage(notebook_service);
         app.manage(notebooks::NotebookCommandGate::default());
-        app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") }); Ok(())
+        app.manage(AppState { db: Mutex::new(db), ssh_dir: data_dir.join("ssh") });
+
+        let status = MenuItem::with_id(app, "backend-status", notebooks::indicator(), false, None::<&str>)?;
+        let open = MenuItem::with_id(app, "open-ui", "Otevřít Turris Federation", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit-ui", "Ukončit UI (backend zůstane běžet)", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&status, &open, &quit])?;
+        let mut tray = TrayIconBuilder::with_id("main").menu(&menu).tooltip("Turris Federation");
+        if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+        tray.build(app)?;
+        let status_item = status.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let label = notebooks::indicator();
+            let _ = status_item.set_text(label);
+        });
+        Ok(())
+    }).on_menu_event(|app, event| match event.id().as_ref() {
+        "open-ui" => if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        },
+        "quit-ui" => app.exit(0),
+        _ => (),
+    }).on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+        }
     }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).run(tauri::generate_context!()).expect("Turris Federation failed to start");
 }

@@ -52,6 +52,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   jedinou instanci UI, zatímco zavření okna službu ani VPN neukončí. Návrh a
   akceptační hranice:
   [role notebooků](docs/notebook-node-roles.md).
+  - [x] Implementovat základ `systemd --user` backendu, privátní read-only Unix
+    socket, explicitní instalaci/odstranění, tray menu a skrytí UI při zavření.
+  - [ ] Ověřit instalaci, automatický start, restart po pádu, stavovou lištu a
+    odstranění služby v reálné grafické uživatelské relaci.
+  - [ ] Doplnit jedinou instanci UI, barevné stavové ikony a potvrzovanou akci
+    pro odpojení notebooku přímo ze stavové lišty.
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.

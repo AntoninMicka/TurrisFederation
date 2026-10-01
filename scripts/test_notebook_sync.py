@@ -242,6 +242,66 @@ class NotebookTests(unittest.TestCase):
             server.server_close()
             worker.join(2)
 
+    def test_local_backend_socket_is_private_and_read_only(self):
+        socket_path = Path(self.temp.name) / 'runtime' / 'backend.sock'
+        server = n.make_local_server(self.a, socket_path)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            self.assertEqual(0o600, socket_path.stat().st_mode & 0o777)
+            self.assertEqual(0o700, socket_path.parent.stat().st_mode & 0o777)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(socket_path))
+                client.sendall(b'{"action":"status"}\n')
+                response = json.loads(client.makefile().readline())
+            self.assertTrue(response['ok'])
+            self.assertTrue(response['backend']['running'])
+            self.assertEqual(os.getpid(), response['backend']['pid'])
+            self.assertNotIn('PRIVATE KEY', json.dumps(response))
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(socket_path))
+                client.sendall(b'{"action":"stop"}\n')
+                rejected = json.loads(client.makefile().readline())
+            self.assertFalse(rejected['ok'])
+            self.assertIn('pouze pro čtení', rejected['error'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            socket_path.unlink(missing_ok=True)
+            worker.join(2)
+        real_runtime = Path(self.temp.name) / 'real-runtime'
+        real_runtime.mkdir()
+        linked_runtime = Path(self.temp.name) / 'linked-runtime'
+        linked_runtime.symlink_to(real_runtime, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'symbolický odkaz'):
+            n.make_local_server(self.a, linked_runtime / 'backend.sock')
+
+    def test_disabled_backend_stays_alive_and_reports_over_local_socket(self):
+        service_dir = Path(self.temp.name) / 'idle-service'
+        service_dir.mkdir()
+        shutil.copy(ROOT / 'scripts/notebook_sync.py', service_dir / 'notebook_sync.py')
+        shutil.copy(ROOT / 'router/files/usr/lib/turris-federation/federation.py', service_dir / 'federation.py')
+        socket_path = self.a.root / 'idle-backend.sock'
+        process = subprocess.Popen(
+            [sys.executable, service_dir / 'notebook_sync.py', 'serve', self.a.data_dir],
+            env=dict(os.environ, TF_BACKEND_SOCKET=str(socket_path)),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not socket_path.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertIsNone(process.poll(), process.stderr.read().decode() if process.poll() is not None else '')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(socket_path))
+                client.sendall(b'{"action":"status"}\n')
+                response = json.loads(client.makefile().readline())
+            self.assertTrue(response['ok'])
+            self.assertTrue(response['backend']['running'])
+            self.assertFalse(response['status']['config'].get('enabled', False))
+        finally:
+            process.kill()
+            process.communicate(timeout=5)
+
     def test_two_running_services_sync_both_directions_without_controller(self):
         self.node(self.a)
         self.root_identity(self.a)
@@ -266,7 +326,9 @@ class NotebookTests(unittest.TestCase):
                 f.atomic(store.root / 'peers.json', peers)
                 code = "import sys; sys.path.insert(0,sys.argv[1]); import notebook_sync as n; n.PORT=int(sys.argv[3]); n.INTERVAL=0.2; s=n.Store(sys.argv[2]); s.init_identity(); n.serve(s)"
                 processes.append(subprocess.Popen([sys.executable, '-c', code, str(service_dir), str(store.data_dir), str(port)],
-                    env=dict(os.environ, PATH=str(service_dir) + ':' + os.environ['PATH']), stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+                    env=dict(os.environ, PATH=str(service_dir) + ':' + os.environ['PATH'],
+                             TF_BACKEND_SOCKET=str(store.root / 'backend.sock')),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE))
 
             def wait_name(store, name):
                 end = time.monotonic() + 8

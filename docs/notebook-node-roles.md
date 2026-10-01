@@ -1,6 +1,8 @@
 # Role notebooků jako síťových uzlů
 
-Stav: schválený směr návrhu, dosud neimplementováno.
+Stav: schválený směr návrhu. Základ trvalé uživatelské služby, lokálního
+stavového socketu a ovládání ze stavové lišty je implementovaný na feature
+větvi; role uzlů a koncové VPN členství zatím implementované nejsou.
 
 Notebook je plnohodnotný koncový uzel federované VPN, nikoli router lokality.
 Má vlastní identitu a tunelovou adresu a může používat služby dostupné ve
@@ -65,6 +67,14 @@ Instalace služby, její aktualizace a obnova konfigurace musí být atomické a
 zachovat předchozí funkční verzi pro rollback. Privátní klíče a pověření zůstávají
 v uživatelském úložišti s oprávněním `0600` nebo v systémovém úložišti tajemství;
 stavová lišta ani běžné logy je nesmí zobrazit.
+
+První implementační řez používá jednotku
+`turris-federation-backend.service`. Instalace i odstranění jsou výslovné akce
+v UI. Lokální socket přijímá pouze čtení sanitizovaného stavu, kontroluje UID
+klienta a má oprávnění `0600`. Zavření hlavního okna ho skryje; samostatná
+položka stavové lišty UI skutečně ukončí, aniž by zastavila nainstalovaný
+backend. Aktivace a chování stavové lišty v reálné grafické relaci ještě
+vyžadují ruční přijetí.
 
 ## Síťové chování
 

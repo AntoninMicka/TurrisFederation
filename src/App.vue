@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
-import { notebookAction, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
+import { notebookAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan } from "./domain";
 
@@ -56,6 +56,16 @@ async function resolveNotebook(peer: NotebookPeer, choice: "local" | "remote") {
     ? "Použít místní konfiguraci jako společné řešení konfliktu? Protější notebook ji při synchronizaci převezme."
     : "Převzít konfiguraci druhého notebooku? Místní návrh bude nahrazen; místní SSH důvěra a audity zůstanou zachované.")) return;
   await notebookOperation({ action: "resolve", peer: peer.id, choice, token: peer.conflictToken });
+}
+async function serviceOperation(action: "service_install" | "service_remove") {
+  if (action === "service_remove" && !window.confirm("Zastavit a odstranit uživatelskou službu notebooku? Síťový backend po zavření UI nebude běžet.")) return;
+  syncBusy.value = true;
+  syncError.value = "";
+  try {
+    const result = await manageNotebookService(action);
+    if (notebookSync.value) notebookSync.value = { ...notebookSync.value, service: result.service };
+  } catch (error) { syncError.value = String(error); }
+  finally { syncBusy.value = false; }
 }
 
 async function loadSharedSettings() {
@@ -544,6 +554,16 @@ async function submitConnection() {
       <button v-if="sharedSettingsChanged" class="secondary" :disabled="!!connectionNode || saving || ztSaving" @click="loadSharedSettings">Načíst sdílené nastavení</button>
       <button v-if="!notebookSync" :disabled="syncBusy" @click="notebookOperation()">{{ syncBusy ? 'Načítám…' : 'Načíst stav synchronizace' }}</button>
       <template v-if="notebookSync">
+        <div class="setup-preview">
+          <strong>Trvalý backend notebooku</strong>
+          <p v-if="notebookSync.service?.installed">{{ notebookSync.service.active ? 'Uživatelská služba běží.' : 'Uživatelská služba je nainstalovaná, ale neběží.' }}</p>
+          <p v-else>Backend je zatím svázaný s otevřenou aplikací.</p>
+          <div class="node-actions">
+            <button v-if="!notebookSync.service?.installed" :disabled="syncBusy" @click="serviceOperation('service_install')">Nainstalovat a spustit uživatelskou službu</button>
+            <button v-else class="secondary" :disabled="syncBusy" @click="serviceOperation('service_remove')">Zastavit a odstranit službu</button>
+          </div>
+          <small>Služba se spouští po přihlášení uživatele. Zavření okna ji nezastaví; UI lze znovu otevřít ze stavové lišty.</small>
+        </div>
         <p><strong>{{ notebookSync.running ? 'Synchronizace běží' : 'Synchronizace je vypnutá nebo služba neběží' }}</strong></p>
         <p v-if="notebookSync.error" class="error">{{ notebookSync.error }}</p>
         <form class="form" @submit.prevent="notebookOperation({ action: 'configure', ...syncDraft })">
