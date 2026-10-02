@@ -2,11 +2,13 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import FederationOverview from "./FederationOverview.vue";
+import ServiceDirectory from "./ServiceDirectory.vue";
 import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
 import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, TopologyRefreshPlan } from "./domain";
 
 const tabs = [
+  { id: 'services', label: 'Zlaté stránky' },
   { id: 'overview', label: 'Přehled' },
   { id: 'routers', label: 'Routery' },
   { id: 'notebooks', label: 'Notebooky' },
@@ -16,10 +18,10 @@ const tabs = [
   { id: 'settings', label: 'Nastavení' },
 ] as const;
 type TabId = typeof tabs[number]['id'];
-const activeTab = ref<TabId>('overview');
+const activeTab = ref<TabId>('services');
 const notebookSync = ref<NotebookSyncStatus | null>(null);
 const isAdministrator = computed(() => notebookSync.value?.access.role === "administrator" && notebookSync.value.access.state === "valid");
-const visibleTabs = computed(() => isAdministrator.value ? tabs : tabs.filter(tab => tab.id === "overview"));
+const visibleTabs = computed(() => isAdministrator.value ? tabs : tabs.filter(tab => tab.id === "services" || tab.id === "overview"));
 
 function navigateTabs(event: KeyboardEvent, index: number) {
   let target = index;
@@ -643,7 +645,7 @@ async function submitConnection() {
     <section v-if="notebookSync && !isAdministrator && notebookSync.access.role !== 'user'" class="panel access-gate" role="status">
       <div><p class="kicker">Pověření notebooku</p><h2>Notebook není připojen k federaci</h2></div>
       <p v-if="notebookSync.access.state === 'invalid'" class="error">{{ notebookSync.access.error }}</p>
-      <p v-else>Pro administrační funkce chybí platné podepsané pověření. Přehled zůstává pouze pro čtení.</p>
+      <p v-else>Pro administrační funkce chybí platné podepsané pověření. Zlaté stránky a přehled zůstávají pouze pro čtení.</p>
       <button v-if="notebookSync.access.canBootstrapAdmin" :disabled="syncBusy" @click="bootstrapAdministrator">
         Převést tento řídicí notebook na administrátorskou roli
       </button>
@@ -673,6 +675,9 @@ async function submitConnection() {
         <span v-else-if="tab.id === 'audits' && findings.length" class="tab-count">{{ findings.length }}</span>
       </button>
     </nav>
+    <div v-show="activeTab === 'services'" id="panel-services" class="tab-panel" role="tabpanel" aria-labelledby="tab-services" tabindex="0">
+      <ServiceDirectory :overview="readOnlyOverview" :user-cache-only="notebookSync?.access.role === 'user'" />
+    </div>
     <div v-show="activeTab === 'overview'" id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <FederationOverview :overview="readOnlyOverview" :notebook="notebookSync"
         :loading="overviewLoading" :diagnostics-loading="diagnosticsLoading"

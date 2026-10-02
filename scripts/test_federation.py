@@ -733,16 +733,21 @@ class FederationTests(unittest.TestCase):
                  'services': [{'id': 'camera', 'name': 'Camera stream', 'hostAddress': '192.168.2.30',
                                'protocol': 'tcp', 'port': 8554, 'path': None}], 'servicesObservedAt': 100}})
         f.atomic(self.root / 'wireguard.key', b'PRIVATE-WG-SECRET')
-        page = f.web_page(self.root).decode()
-        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera', 'Printer web', 'https://192.168.1.20:8443/status', 'Camera stream', '192.168.2.30:8554']:
-            self.assertIn(wanted, page)
-        self.assertIn('href="https://192.168.1.20:8443/status" target="_blank" rel="noopener noreferrer"', page)
-        self.assertNotIn('href="192.168.2.30:8554"', page)
+        overview = f.web_page(self.root).decode()
+        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera']:
+            self.assertIn(wanted, overview)
+        directory = f.web_page(self.root, authenticated=False).decode()
+        for wanted in ['&lt;script&gt;', 'Printer web', 'https://192.168.1.20:8443/status', 'Camera stream', '192.168.2.30:8554']:
+            self.assertIn(wanted, directory)
+        self.assertIn('href="https://192.168.1.20:8443/status" target="_blank" rel="noopener noreferrer"', directory)
+        self.assertNotIn('href="192.168.2.30:8554"', directory)
         for unwanted in ['<script>', '<b>failure</b>', 'PRIVATE-WG-SECRET', 'REPORT-SECRET', 'BEGIN PUBLIC KEY', 'BEGIN PRIVATE KEY']:
-            self.assertNotIn(unwanted, page)
-        self.assertIn('nikoli aktuální dostupnost', page)
+            self.assertNotIn(unwanted, overview)
+            self.assertNotIn(unwanted, directory)
+        self.assertIn('nepotvrzuje, že služba právě odpovídá', directory)
         filtered = f.web_page(self.root, service_filters={
-            'service': 'Printer', 'protocol': 'https', 'host': 'printer.local', 'router': '<script>'}).decode()
+            'service': 'Printer', 'protocol': 'https', 'host': 'printer.local', 'router': '<script>'},
+            authenticated=False).decode()
         self.assertIn('Printer web', filtered)
         self.assertNotIn('Camera stream', filtered)
 
@@ -1006,31 +1011,31 @@ class FederationTests(unittest.TestCase):
         report.update(hosts=[{'address': '192.168.1.20', 'name': 'home.local'}], hostsObservedAt=time.time())
         f.atomic(self.root / 'report.json', report)
         handler = f.web_handler(self.root)
-        page = self.web_request('GET', f.WEB_PATH, handler=handler)
+        page = self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler)
         token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
         self.assertIn(b'name="editorHost"', page)
         self.assertNotIn(b'name="hostAddress"', page)
-        selected = self.web_request('GET', f.WEB_PATH + '?editorHost=192.168.1.20', handler=handler)
+        selected = self.web_request('GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20', handler=handler)
         self.assertIn(b'home.local', selected)
         self.assertIn(b'name="hostAddress" value="192.168.1.20"', selected)
-        self.assertLess(selected.index('Editor služeb'.encode()), selected.index('Zlaté stránky služeb</h2>'.encode()))
+        self.assertNotIn('Zlaté stránky služeb</h2>'.encode(), selected)
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
                    'path': '/lovelace', 'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
                                 ({'hostAddress': '192.168.1.21'}, b'409'),
                                 ({'hostAddress': '192.168.2.20'}, b'409')]:
-            response = self.web_request('POST', f.WEB_PATH + 'services/save',
+            response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/save',
                                         urlencode({**service, **changed}), handler)
             self.assertIn(status, response)
         self.assertFalse((self.root / 'services.json').exists())
-        response = self.web_request('POST', f.WEB_PATH + 'services/save', urlencode(service), handler)
+        response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/save', urlencode(service), handler)
         self.assertIn(b'303', response)
-        self.assertIn(b'Location: /turris-federation/?editorHost=192.168.1.20', response)
+        self.assertIn(b'Location: /turris-federation/overview/?editorHost=192.168.1.20', response)
         self.assertNotIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
         self.assertIn('Home Assistant'.encode(), self.web_request('GET', f.WEB_PATH, handler=handler))
-        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_PATH + '?editorHost=192.168.1.20', handler=handler))
-        response = self.web_request('POST', f.WEB_PATH + 'services/delete',
+        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20', handler=handler))
+        response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/delete',
                                     urlencode({'token': token, 'id': 'home-assistant'}), handler)
         self.assertIn(b'303', response)
         self.assertEqual([], f.local_services(self.root, node(1)))
@@ -1040,20 +1045,20 @@ class FederationTests(unittest.TestCase):
         self.prepare_diagnostics()
         handler = f.web_handler(self.root)
         with patch.object(f, 'start_diagnostics') as start:
-            page = self.web_request('GET', f.WEB_PATH, handler=handler)
+            page = self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler)
             token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
-            self.web_request('GET', f.WEB_PATH, handler=handler)
-            self.assertIn(b'404', self.web_request('GET', f.WEB_PATH + 'diagnostics', handler=handler))
+            self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler)
+            self.assertIn(b'404', self.web_request('GET', f.WEB_OVERVIEW_PATH + 'diagnostics', handler=handler))
             for body, status in [('token=wrong', b'403'), ('token=%FF', b'403'), ('token=' + token + '&target=8.8.8.8', b'403'), ('', b'400')]:
-                response = self.web_request('POST', f.WEB_PATH + 'diagnostics', body, handler)
+                response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'diagnostics', body, handler)
                 self.assertIn(status, response)
             start.assert_not_called()
-            response = self.web_request('POST', f.WEB_PATH + 'diagnostics', 'token=' + token, handler)
+            response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'diagnostics', 'token=' + token, handler)
             self.assertIn(b'303', response)
-            self.assertIn(b'Location: /turris-federation/', response)
+            self.assertIn(b'Location: /turris-federation/overview/', response)
             start.assert_called_once_with(self.root)
         with patch.object(f, 'start_diagnostics', side_effect=ValueError('Diagnostika už běží.')):
-            self.assertIn(b'409', self.web_request('POST', f.WEB_PATH + 'diagnostics', 'token=' + token, handler))
+            self.assertIn(b'409', self.web_request('POST', f.WEB_OVERVIEW_PATH + 'diagnostics', 'token=' + token, handler))
 
     def web_request(self, method, path, body='', handler=None):
         client, server = socket.socketpair()
@@ -1079,12 +1084,16 @@ class FederationTests(unittest.TestCase):
             client.close()
             thread.join(timeout=5)
 
-    def test_web_http_is_read_only_and_does_not_expose_sync_or_files(self):
+    def test_public_web_directory_is_read_only_and_does_not_expose_overview_or_files(self):
         response = self.web_request('GET', '/turris-federation/')
         self.assertIn(b'200 OK', response)
         self.assertIn(b'Cache-Control: no-store', response)
         self.assertIn(b'frame-ancestors', response)
-        self.assertIn('Dokončete deploy'.encode(), response)
+        self.assertIn('Zlaté stránky služeb'.encode(), response)
+        self.assertIn(b'href="/turris-federation/overview/"', response)
+        for private in ['Editor služeb', 'Uzly federace', 'ZeroTier Network ID', 'name="token"']:
+            self.assertNotIn(private.encode(), response)
+        self.assertIn(b'400', self.web_request('GET', '/turris-federation/?editorHost=192.168.1.20'))
         for path in ['/bundle', '/etc/turris-federation/root.pub', '/turris-federation/../root.pem']:
             self.assertIn(b'404', self.web_request('GET', path))
         script = self.web_request('GET', '/turris-federation/app.js')
@@ -1096,6 +1105,14 @@ class FederationTests(unittest.TestCase):
         for method in ['POST', 'PUT', 'PATCH', 'DELETE']:
             self.assertIn(b'405', self.web_request(method, '/turris-federation/'))
         self.assertFalse((self.root / 'report.json').exists())
+
+    def test_overview_route_contains_only_authenticated_management_content(self):
+        response = self.web_request('GET', f.WEB_OVERVIEW_PATH)
+        self.assertIn(b'200 OK', response)
+        self.assertIn('Uzly federace'.encode(), response)
+        self.assertIn('Editor služeb'.encode(), response)
+        self.assertNotIn('Zlaté stránky služeb</h2>'.encode(), response)
+        self.assertIn(b'href="/turris-federation/"', response)
 
     def test_web_corrupt_config_returns_error_without_raw_exception(self):
         f.atomic(self.root / 'accepted.json', b'PRIVATE-BROKEN-DATA')
@@ -1125,6 +1142,11 @@ class FederationTests(unittest.TestCase):
         tile = json.loads(next(value for name, value in files.items() if name.endswith('.json')))
         self.assertEqual('/turris-federation/', tile['url'])
         self.assertEqual('/icons/turris-federation.svg', tile['icon'])
+        proxy = next(value.decode() for name, value in files.items() if name.endswith('turris-federation.conf'))
+        public_proxy, protected_proxy = proxy.split('$HTTP["url"] =~ "^/turris-federation/overview($|/)"', 1)
+        self.assertNotIn('auth.require', public_proxy)
+        self.assertIn('auth.backend = "pam"', protected_proxy)
+        self.assertIn('auth.require', protected_proxy)
 
     def test_failed_web_update_restores_previous_files_and_permissions(self):
         files = self.web_files_fixture()

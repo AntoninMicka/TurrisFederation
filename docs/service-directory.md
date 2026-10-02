@@ -9,8 +9,9 @@ notebook bez místní cache podepsaných reportů zatím katalog automaticky nez
 
 Router, který už oznamuje pasivně známé hosty ve své LAN, umožní místnímu
 správci pojmenovat služby dostupné na těchto hostech. Ověřené katalogy všech
-přijatých routerů se v desktopové aplikaci a routerovém WebApps přehledu složí
-do jednoho seznamu **Zlaté stránky služeb**.
+přijatých routerů se v desktopové aplikaci a samostatné první záložce
+routerového WebApps rozhraní složí do jednoho seznamu **Zlaté stránky
+služeb**.
 
 Příklady po výběru hosta:
 
@@ -54,7 +55,7 @@ potvrzení správce.
 
 ## Uložení a publikování
 
-Místní editor bude součástí přihlášeného WebApps rozhraní daného routeru.
+Místní editor je součástí přihlášené záložky **Přehled** daného routeru.
 Zápis vyžaduje PAM přihlášení, CSRF token, přesný tvar požadavku a atomické
 uložení do samostatného souboru vlastněného službou. Nesmí měnit UCI, firewall,
 DNS ani konfiguraci cílového hosta. Správce nejdřív vybere propagovaného hosta,
@@ -100,6 +101,9 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 
 ## Bezpečnostní hranice
 
+- Read-only Zlaté stránky na routeru jsou dostupné bez přihlášení. Síťový
+  přehled, diagnostika a editor služeb jsou na samostatné cestě chráněné PAM;
+  oddělení vynucuje lighttpd, nikoli pouze skrytí prvků v HTML.
 - Zlaté stránky nevytvářejí firewallová pravidla ani nové routy.
 - Router neprovádí plošný scan portů. Položka je tvrzení místního správce,
   nikoli důkaz, že služba právě odpovídá.

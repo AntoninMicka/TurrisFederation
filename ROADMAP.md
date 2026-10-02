@@ -21,8 +21,8 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 
 ## Kontrola deploye a aktuální TODO (20. 9. 2026)
 
-- [x] Doplnit webový přehled na routeru a dlaždici Turris Federation do WebApps;
-  instalovat i aktualizovat přes LAN, chránit přístup PAM přihlášením.
+- [x] Doplnit do WebApps veřejné Zlaté stránky a PAM chráněný přehled routeru;
+  instalovat i aktualizovat přes LAN a vynutit oddělení cest v lighttpd.
 - [x] Ověřit návrat původních webových souborů při chybné konfiguraci lighttpd.
 - [ ] Na skutečném Turrisu ověřit dlaždici, HTTPS/PAM přihlášení, restart webové
   instance a aktualizaci vedle existujících webových aplikací.
@@ -211,7 +211,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   - [x] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
     zachování stáří při výpadku a odstranění katalogu po odvolání routeru.
   - [x] Zobrazit jednotný read-only seznam v desktopu a WebApps, doplnit filtry
-    a kopírování přesně validovaného endpointu.
+    a kopírování přesně validovaného endpointu. V desktopu je katalog první
+    samostatná záložka pro uživatele i administrátora; na routeru je výchozí
+    veřejnou záložkou před PAM chráněným přehledem.
   - [x] HTTP(S) endpoint otevírat v systémovém prohlížeči bez shellu; povolit
     pouze doslovnou IPv4 URL, platný port a validovanou cestu bez přihlašovacích
     údajů, query nebo fragmentu. TCP endpoint zůstává pouze ke kopírování.

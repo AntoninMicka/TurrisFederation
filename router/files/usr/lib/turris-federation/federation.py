@@ -1332,6 +1332,7 @@ def sync_loop(root):
 WEB_PROXY_PATH = Path('/etc/lighttpd/conf.d/turris-federation.conf')
 WEB_PORT = 8845
 WEB_PATH = '/turris-federation/'
+WEB_OVERVIEW_PATH = WEB_PATH + 'overview/'
 WEB_FILES = {
     '/etc/turris-webapps/80-turris-federation.json': json.dumps({
         'id': 'turris-federation', 'title': 'Turris Federation', 'url': WEB_PATH,
@@ -1341,7 +1342,10 @@ WEB_FILES = {
     '/www/webapps-icons/turris-federation.svg': b'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="20" fill="#123047"/><path d="M24 66 48 26 72 66Z" fill="none" stroke="#58d5c9" stroke-width="5"/><g fill="#fff"><circle cx="48" cy="26" r="10"/><circle cx="24" cy="66" r="10"/><circle cx="72" cy="66" r="10"/></g></svg>''',
     '/etc/lighttpd/conf.d/turris-federation.conf': b'''# Managed by Turris Federation LAN deployment.
 server.modules += ( "mod_proxy", "mod_auth", "mod_authn_pam" )
-$HTTP["url"] =~ "^/turris-federation($|/)" {
+$HTTP["url"] =~ "^/turris-federation($|/$|/app\\.js$)" {
+  proxy.server = ( "" => ( ( "host" => "127.0.0.1", "port" => 8845 ) ) )
+}
+$HTTP["url"] =~ "^/turris-federation/overview($|/)" {
   auth.backend = "pam"
   auth.require = ( "" => ( "method" => "basic", "realm" => "Turris Federation", "require" => "valid-user" ) )
   proxy.server = ( "" => ( ( "host" => "127.0.0.1", "port" => 8845 ) ) )
@@ -1363,7 +1367,7 @@ td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb
 .hosts{margin:0;padding-left:18px;min-width:170px}.hosts li{margin:0 0 6px}.hosts small{display:block}
 .badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
 .signal{white-space:nowrap;font-size:13px}.green{color:#7ee2a8}.yellow{color:#ffda75}.red{color:#ff9292}.unknown{color:#a8bdcc}
-.button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none;background:#13283a;color:#e6eff6;cursor:pointer}
+.button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none;background:#13283a;color:#e6eff6;cursor:pointer}.web-tabs{display:flex;justify-content:flex-start;gap:8px}.web-tabs .active{background:#28556a;color:#fff}
 .service-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end;margin-top:18px}
 label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select{min-width:0;padding:10px;border:1px solid #517185;border-radius:7px;background:#0c1925;color:#e6eff6}
 .inline-form{display:inline}.danger{border-color:#a96060;color:#ffb4b4}
@@ -1374,14 +1378,15 @@ WEB_LABELS = {'pending': 'Čeká na aplikování', 'error': 'Chyba agenta', 'con
 WEB_SCRIPT = '''document.addEventListener("click",async event=>{const button=event.target.closest("[data-copy-endpoint]");if(!button)return;try{await navigator.clipboard.writeText(button.dataset.copyEndpoint);button.textContent="Zkopírováno"}catch(error){button.textContent="Kopírování selhalo"}});'''.encode()
 
 
-def parse_service_filters(query):
+def parse_service_filters(query, allow_editor=False):
     fields = parse_qs(query, keep_blank_values=True)
-    allowed = {'service', 'protocol', 'host', 'router', 'editorHost'}
+    allowed = {'service', 'protocol', 'host', 'router'} | ({'editorHost'} if allow_editor else set())
     if set(fields) - allowed or any(len(values) != 1 for values in fields.values()):
         raise ValueError('Neplatný filtr služeb.')
     result = {key: fields.get(key, [''])[0].strip() for key in allowed}
     if result['protocol'] not in SERVICE_PROTOCOLS | {''}:
         raise ValueError('Neplatný filtr protokolu.')
+    result.setdefault('editorHost', '')
     if result['editorHost']:
         try:
             if ipaddress.ip_address(result['editorHost']).version != 4:
@@ -1394,7 +1399,7 @@ def parse_service_filters(query):
     return result
 
 
-def web_page(root, csrf_token='', service_filters=None):
+def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     """Render only selected public configuration/status fields, never raw files or keys."""
     import html
     def esc(value):
@@ -1443,7 +1448,7 @@ def web_page(root, csrf_token='', service_filters=None):
     if report.get('pendingPeers'):
         names = {node['id']: node['name'] for node in doc['config']['nodes']} if doc else {}
         notices += '<p class="notice">Čekající protějšky: %s</p>' % esc(', '.join(names.get(peer, peer) for peer in report['pendingPeers']))
-    diagnostic_form = ('<form method="post" action="/turris-federation/diagnostics"><input type="hidden" name="token" value="%s"><button class="button" %s>Spustit ping · 5 paketů</button></form>' % (esc(csrf_token), 'disabled' if running else '')) if doc and csrf_token else ''
+    diagnostic_form = ('<form method="post" action="%sdiagnostics"><input type="hidden" name="token" value="%s"><button class="button" %s>Spustit ping · 5 paketů</button></form>' % (WEB_OVERVIEW_PATH, esc(csrf_token), 'disabled' if running else '')) if doc and csrf_token else ''
     if running:
         diagnostic_form += '<p class="notice">Probíhá měření. Výsledky se zobrazí po dokončení.</p>'
     elif diagnostics.get('state') in ['running', 'error']:
@@ -1457,9 +1462,9 @@ def web_page(root, csrf_token='', service_filters=None):
     local_service_rows = ''.join(
         '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
             esc(service['name']), esc(service['id']), esc(service_endpoint(service)),
-            esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_PATH,
+            esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_OVERVIEW_PATH,
             esc(csrf_token), esc(service['id'])) for service in selected_definitions)
-    host_selector = '''<form class="service-form" method="get" action="''' + WEB_PATH + '''">
+    host_selector = '''<form class="service-form" method="get" action="''' + WEB_OVERVIEW_PATH + '''">
 <label>Host (uzel v LAN)<select name="editorHost" required><option value="">Vyberte hosta</option>''' + ''.join(
         '<option value="%s"%s>%s%s</option>' % (
             esc(host['address']), ' selected' if host['address'] == editor_host else '',
@@ -1468,7 +1473,7 @@ def web_page(root, csrf_token='', service_filters=None):
         '<p class="notice">Router zatím nepropaguje žádného hosta, ke kterému lze přidat službu.</p>'
     service_editor = ''
     if own and csrf_token and editor_host:
-        service_editor = '''<form class="service-form" method="post" action="''' + WEB_PATH + '''services/save">
+        service_editor = '''<form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''services/save">
 <input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
 <input type="hidden" name="hostAddress" value="''' + esc(editor_host) + '''">
 <label>ID služby<input name="id" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="ollama-main"></label>
@@ -1509,7 +1514,6 @@ def web_page(root, csrf_token='', service_filters=None):
     directory_section = '''<section><h2>Zlaté stránky služeb</h2>
 <p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
 <form class="service-form" method="get" action="''' + WEB_PATH + '''">
-<input type="hidden" name="editorHost" value="''' + esc(editor_host) + '''">
 <label>Služba<input name="service" value="''' + esc(filters['service']) + '''"></label>
 <label>Protokol<select name="protocol"><option value="">všechny</option>''' + ''.join(
         '<option value="%s"%s>%s</option>' % (protocol, ' selected' if filters['protocol'] == protocol else '', protocol)
@@ -1519,9 +1523,16 @@ def web_page(root, csrf_token='', service_filters=None):
 <button class="button">Filtrovat</button></form>
 <div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Router</th><th>Čerstvost</th><th>Akce</th></tr></thead><tbody>''' + (directory_rows or '<tr><td colspan="5">Filtru neodpovídá žádná ověřená služba.</td></tr>') + '''</tbody></table></div></section>'''
     refresh = '<meta http-equiv="refresh" content="2">' if running else ''
-    return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">''' + refresh + '''
-<title>Turris Federation</title><style>''' + WEB_STYLE + '''</style><script src="/turris-federation/app.js" defer></script></head><body><main>
-<nav><a href="/">← Úvodní stránka Turrisu</a><a class="button" href="/turris-federation/">Obnovit stav</a></nav>
+    head = '''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">''' + refresh + '''
+<title>Turris Federation</title><style>''' + WEB_STYLE + '''</style><script src="/turris-federation/app.js" defer></script></head><body><main>'''
+    tabs = '''<nav class="web-tabs" aria-label="Turris Federation"><a class="button%s" href="%s">Zlaté stránky</a><a class="button%s" href="%s">Přehled</a></nav>''' % (
+        '' if authenticated else ' active', WEB_PATH, ' active' if authenticated else '', WEB_OVERVIEW_PATH)
+    if not authenticated:
+        return (head + tabs + '''
+<div class="kicker">Turris Federation · veřejný katalog</div><h1>Zlaté stránky služeb</h1>
+<p class="muted">Veřejný read-only seznam služeb oznámených přijatými routery. Přehled sítě a editor vyžadují přihlášení.</p>''' + directory_section + '''
+</main></body></html>''').encode()
+    return (head + tabs + '''
 <div class="kicker">Turris Federation · přehled sítě</div><h1>''' + esc(own['name'] if own else 'Federace routerů') + '''</h1>
 <p class="muted">Poslední zaznamenaný stav místního agenta. Načtení stránky neprovádí nový audit sítě.</p>''' + notices + '''
 <div class="cards"><article class="card"><span>Stav tohoto routeru</span><strong>''' + esc(state) + '''</strong></article>
@@ -1529,7 +1540,7 @@ def web_page(root, csrf_token='', service_filters=None):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + local_services_section + directory_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1546,17 +1557,29 @@ def web_handler(root):
             target = urlsplit(self.path)
             if target.path == WEB_PATH + 'app.js' and not target.query:
                 body, status, content_type = WEB_SCRIPT, 200, 'application/javascript; charset=utf-8'
-            elif target.path not in [WEB_PATH, WEB_PATH.rstrip('/')]:
-                self.send_error(404)
-                return
-            else:
+            elif target.path in [WEB_PATH, WEB_PATH.rstrip('/')]:
                 try:
-                    filters = parse_service_filters(target.query)
+                    filters = parse_service_filters(target.query, allow_editor=False)
                 except ValueError:
                     self.send_error(400)
                     return
                 try:
-                    body = web_page(root, csrf_token, filters)
+                    body = web_page(root, service_filters=filters, authenticated=False)
+                    status, content_type = 200, 'text/html; charset=utf-8'
+                except Exception:
+                    body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
+                    status, content_type = 503, 'text/html; charset=utf-8'
+            elif target.path not in [WEB_OVERVIEW_PATH, WEB_OVERVIEW_PATH.rstrip('/')]:
+                self.send_error(404)
+                return
+            else:
+                try:
+                    filters = parse_service_filters(target.query, allow_editor=True)
+                except ValueError:
+                    self.send_error(400)
+                    return
+                try:
+                    body = web_page(root, csrf_token, filters, authenticated=True)
                     status, content_type = 200, 'text/html; charset=utf-8'
                 except Exception:
                     body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
@@ -1571,7 +1594,7 @@ def web_handler(root):
             self.wfile.write(body)
 
         def do_POST(self):
-            if self.path not in [WEB_PATH + 'diagnostics', WEB_PATH + 'services/save', WEB_PATH + 'services/delete']:
+            if self.path not in [WEB_OVERVIEW_PATH + 'diagnostics', WEB_OVERVIEW_PATH + 'services/save', WEB_OVERVIEW_PATH + 'services/delete']:
                 self.send_error(405)
                 return
             try:
@@ -1586,9 +1609,9 @@ def web_handler(root):
             if not re.fullmatch('[0-9a-f]{64}', token) or not secrets.compare_digest(token, csrf_token):
                 self.send_error(403)
                 return
-            redirect_location = WEB_PATH
+            redirect_location = WEB_OVERVIEW_PATH
             try:
-                if self.path == WEB_PATH + 'diagnostics':
+                if self.path == WEB_OVERVIEW_PATH + 'diagnostics':
                     if set(fields) != {'token'} or fields['token'] != [token]:
                         self.send_error(403)
                         return
@@ -1600,7 +1623,7 @@ def web_handler(root):
                     node = next((item for item in doc['config']['nodes'] if item['id'] == own_id), None) if doc else None
                     if not node or own_id not in doc['members']:
                         raise ValueError('Router nemá platné členství federace.')
-                    if self.path == WEB_PATH + 'services/delete':
+                    if self.path == WEB_OVERVIEW_PATH + 'services/delete':
                         if set(fields) != {'token', 'id'} or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
@@ -1724,29 +1747,47 @@ def check_web():
     if not icon.lstrip().startswith(b'<svg') or b'turris-federation' not in proxy or b'8845' not in proxy:
         raise ValueError('Ikona nebo konfigurace lighttpd pro Turris Federation je poškozená.')
 
-    # First verify the private status backend independently of lighttpd/auth.
+    # First verify both backend pages independently of lighttpd/auth.
     connection = http.client.HTTPConnection('127.0.0.1', WEB_PORT, timeout=5)
     try:
         connection.request('GET', WEB_PATH)
         response = connection.getresponse()
         body = response.read(LIMIT)
-        if response.status != 200 or b'Turris Federation' not in body:
-            raise ValueError('Interní webový přehled nepotvrdil funkční spuštění.')
+        if response.status != 200 or 'Zlaté stránky služeb'.encode() not in body or 'Editor služeb'.encode() in body:
+            raise ValueError('Interní veřejný katalog nepotvrdil funkční spuštění.')
     finally:
         connection.close()
 
-    # Then verify that lighttpd loaded the public route and protects it with auth.
-    # Without credentials this route must be challenged, not return 404 or bypass auth.
+    connection = http.client.HTTPConnection('127.0.0.1', WEB_PORT, timeout=5)
+    try:
+        connection.request('GET', WEB_OVERVIEW_PATH)
+        response = connection.getresponse()
+        body = response.read(LIMIT)
+        if response.status != 200 or 'Přehled'.encode() not in body or 'Editor služeb'.encode() not in body:
+            raise ValueError('Interní chráněný přehled nepotvrdil funkční spuštění.')
+    finally:
+        connection.close()
+
+    # Then verify that lighttpd exposes the catalog without login.
     connection = http.client.HTTPConnection('127.0.0.1', 80, timeout=5)
     try:
         connection.request('GET', WEB_PATH, headers={'Host': 'localhost'})
         response = connection.getresponse()
+        body = response.read(LIMIT)
+        if response.status != 200 or 'Zlaté stránky služeb'.encode() not in body:
+            raise ValueError('Veřejné Zlaté stránky Turris Federation nejsou aktivní přes lighttpd.')
+    finally:
+        connection.close()
+
+    # The network overview and editor must remain behind PAM authentication.
+    connection = http.client.HTTPConnection('127.0.0.1', 80, timeout=5)
+    try:
+        connection.request('GET', WEB_OVERVIEW_PATH, headers={'Host': 'localhost'})
+        response = connection.getresponse()
         response.read(LIMIT)
         challenge = response.getheader('WWW-Authenticate', '')
         if response.status != 401 or 'Basic' not in challenge:
-            raise ValueError(
-                'Veřejná cesta Turris Federation není aktivní přes lighttpd nebo není chráněná přihlášením.'
-            )
+            raise ValueError('Přehled Turris Federation není chráněný PAM přihlášením.')
     finally:
         connection.close()
 
