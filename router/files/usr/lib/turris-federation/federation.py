@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 VERSION = 1
 NOTEBOOK_VERSION = 2
@@ -723,7 +723,7 @@ def read_only_notebook_overview(root):
                   'zeroTierAddress': item['zeroTierAddress'], 'wireguardAddress': item['wireguardAddress']}
                  for item in doc['config'].get('notebooks', [])]
     return {'revision': doc['revision'], 'networkId': doc['config']['networkId'], 'nodes': nodes,
-            'notebooks': notebooks,
+            'notebooks': notebooks, 'services': aggregate_services(doc, reports),
             'diagnostics': notebook_diagnostics_overview(root)}
 
 
@@ -951,6 +951,40 @@ def validate_catalog(node, report):
     if services is not None:
         result.update(services)
     return result or None
+
+
+def service_endpoint(service):
+    if service['protocol'] == 'tcp':
+        return '%s:%s' % (service['hostAddress'], service['port'])
+    return '%s://%s:%s%s' % (service['protocol'], service['hostAddress'], service['port'], service['path'] or '')
+
+
+def aggregate_services(doc, reports, now=None):
+    """Build a reviewed read-only projection from signed, enrolled-node reports."""
+    now = time.time() if now is None else now
+    if not isinstance(reports, dict):
+        reports = {}
+    result = []
+    for node in doc['config']['nodes']:
+        if node['id'] not in doc['members']:
+            continue
+        report = reports.get(node['id'], {})
+        try:
+            catalog = validate_report_services(node, report)
+            hosts = validate_hosts(node, report)
+        except (TypeError, ValueError):
+            continue
+        if catalog is None:
+            continue
+        host_names = {host['address']: host['name'] for host in (hosts or {}).get('hosts', [])}
+        observed = catalog['servicesObservedAt']
+        stale = report.get('reachable') is False or not 0 <= now - observed <= 120
+        for service in catalog['services']:
+            result.append({**service, 'routerId': node['id'], 'routerName': node['name'],
+                           'hostName': host_names.get(service['hostAddress']),
+                           'endpoint': service_endpoint(service), 'observedAt': observed,
+                           'stale': stale, 'routeAdvertised': True})
+    return sorted(result, key=lambda item: (item['routerName'].casefold(), item['name'].casefold(), item['id']))
 
 
 def health(root, doc):
@@ -1312,9 +1346,24 @@ label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select{min-width:0
 '''
 WEB_LABELS = {'pending': 'Čeká na aplikování', 'error': 'Chyba agenta', 'confirming': 'Čeká na potvrzení',
               'waiting_peers': 'Čeká na protějšky', 'active': 'Spojení ověřeno', 'rollback': 'Obnovena záloha', 'revoked': 'Členství odvoláno'}
+WEB_SCRIPT = '''document.addEventListener("click",async event=>{const button=event.target.closest("[data-copy-endpoint]");if(!button)return;try{await navigator.clipboard.writeText(button.dataset.copyEndpoint);button.textContent="Zkopírováno"}catch(error){button.textContent="Kopírování selhalo"}});'''.encode()
 
 
-def web_page(root, csrf_token=''):
+def parse_service_filters(query):
+    fields = parse_qs(query, keep_blank_values=True)
+    allowed = {'service', 'protocol', 'host', 'router'}
+    if set(fields) - allowed or any(len(values) != 1 for values in fields.values()):
+        raise ValueError('Neplatný filtr služeb.')
+    result = {key: fields.get(key, [''])[0].strip() for key in allowed}
+    if result['protocol'] not in SERVICE_PROTOCOLS | {''}:
+        raise ValueError('Neplatný filtr protokolu.')
+    if any(len(value) > 120 or any(ord(character) < 32 for character in value)
+           for value in result.values()):
+        raise ValueError('Neplatný filtr služeb.')
+    return result
+
+
+def web_page(root, csrf_token='', service_filters=None):
     """Render only selected public configuration/status fields, never raw files or keys."""
     import html
     def esc(value):
@@ -1325,7 +1374,7 @@ def web_page(root, csrf_token=''):
     doc = validate_document(verify((root / 'root.pub').read_text(), envelope)) if envelope else None
     own_id = read(root / 'node.json', {}).get('nodeId')
     own = next((node for node in doc['config']['nodes'] if node['id'] == own_id), None) if doc else None
-    services = local_services(root, own) if own else []
+    local_definitions = local_services(root, own) if own else []
     state = WEB_LABELS.get(report.get('state'), 'Zatím nenasazeno')
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
@@ -1368,12 +1417,11 @@ def web_page(root, csrf_token=''):
         diagnostic_form += '<p class="notice">Probíhá měření. Výsledky se zobrazí po dokončení.</p>'
     elif diagnostics.get('state') in ['running', 'error']:
         diagnostic_form += '<p class="notice">Měření nebylo dokončeno. Spusťte diagnostiku znovu.</p>'
-    service_rows = ''.join(
+    local_service_rows = ''.join(
         '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
-            esc(service['name']), esc(service['id']), esc('%s://%s:%s%s' % (
-                service['protocol'], service['hostAddress'], service['port'], service['path'] or '')),
+            esc(service['name']), esc(service['id']), esc(service_endpoint(service)),
             esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_PATH,
-            esc(csrf_token), esc(service['id'])) for service in services)
+            esc(csrf_token), esc(service['id'])) for service in local_definitions)
     service_editor = ''
     if own and csrf_token:
         service_editor = '''<form class="service-form" method="post" action="''' + WEB_PATH + '''services/save">
@@ -1386,12 +1434,42 @@ def web_page(root, csrf_token=''):
 <label>Cesta HTTP(S)<input name="path" placeholder="/lovelace"></label>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
 <button class="button">Uložit službu</button></form>'''
-    services_section = '''<section><h2>Zlaté stránky služeb · tento router</h2>
+    local_services_section = '''<section><h2>Zlaté stránky služeb · tento router</h2>
 <p class="muted">Místní definice zatím zůstávají pouze na tomto routeru. Nemění firewall, DNS ani cílového hosta.</p>
-<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' + (service_rows or '<tr><td colspan="4">Zatím není definovaná žádná služba.</td></tr>') + '''</tbody></table></div>''' + service_editor + '''</section>'''
+<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' + (local_service_rows or '<tr><td colspan="4">Zatím není definovaná žádná služba.</td></tr>') + '''</tbody></table></div>''' + service_editor + '''</section>'''
+    filters = service_filters or {key: '' for key in ['service', 'protocol', 'host', 'router']}
+    catalog_reports = {}
+    if doc:
+        for node in doc['config']['nodes']:
+            source = report if node['id'] == own_id else shared_catalog.get(node['id'], {})
+            if isinstance(source, dict):
+                catalog_reports[node['id']] = source
+    directory = aggregate_services(doc, catalog_reports, now) if doc else []
+    directory = [service for service in directory
+                 if filters['service'].casefold() in service['name'].casefold()
+                 and (not filters['protocol'] or service['protocol'] == filters['protocol'])
+                 and filters['host'].casefold() in ('%s %s' % (service['hostAddress'], service['hostName'] or '')).casefold()
+                 and filters['router'].casefold() in service['routerName'].casefold()]
+    directory_rows = ''.join(
+        '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s<br><code>%s</code></td><td>%s<br><small>%s</small></td><td><span class="badge">%s</span></td><td><button type="button" class="button" data-copy-endpoint="%s">Kopírovat endpoint</button></td></tr>' % (
+            esc(service['name']), esc(service['protocol']), esc(service['hostName'] or service['hostAddress']),
+            esc(service['endpoint']), esc(service['routerName']),
+            esc(time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(service['observedAt']))),
+            'Zastaralé' if service['stale'] else 'Aktuální', esc(service['endpoint'])) for service in directory)
+    directory_section = '''<section><h2>Zlaté stránky služeb</h2>
+<p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
+<form class="service-form" method="get" action="''' + WEB_PATH + '''">
+<label>Služba<input name="service" value="''' + esc(filters['service']) + '''"></label>
+<label>Protokol<select name="protocol"><option value="">všechny</option>''' + ''.join(
+        '<option value="%s"%s>%s</option>' % (protocol, ' selected' if filters['protocol'] == protocol else '', protocol)
+        for protocol in sorted(SERVICE_PROTOCOLS)) + '''</select></label>
+<label>Host<input name="host" value="''' + esc(filters['host']) + '''"></label>
+<label>Router<input name="router" value="''' + esc(filters['router']) + '''"></label>
+<button class="button">Filtrovat</button></form>
+<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Router</th><th>Čerstvost</th><th>Akce</th></tr></thead><tbody>''' + (directory_rows or '<tr><td colspan="5">Filtru neodpovídá žádná ověřená služba.</td></tr>') + '''</tbody></table></div></section>'''
     refresh = '<meta http-equiv="refresh" content="2">' if running else ''
     return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">''' + refresh + '''
-<title>Turris Federation</title><style>''' + WEB_STYLE + '''</style></head><body><main>
+<title>Turris Federation</title><style>''' + WEB_STYLE + '''</style><script src="/turris-federation/app.js" defer></script></head><body><main>
 <nav><a href="/">← Úvodní stránka Turrisu</a><a class="button" href="/turris-federation/">Obnovit stav</a></nav>
 <div class="kicker">Turris Federation · přehled sítě</div><h1>''' + esc(own['name'] if own else 'Federace routerů') + '''</h1>
 <p class="muted">Poslední zaznamenaný stav místního agenta. Načtení stránky neprovádí nový audit sítě.</p>''' + notices + '''
@@ -1400,7 +1478,7 @@ def web_page(root, csrf_token=''):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + directory_section + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1414,21 +1492,30 @@ def web_handler(root):
             pass
 
         def do_GET(self):
-            if self.path not in [WEB_PATH, WEB_PATH.rstrip('/')]:
+            target = urlsplit(self.path)
+            if target.path == WEB_PATH + 'app.js' and not target.query:
+                body, status, content_type = WEB_SCRIPT, 200, 'application/javascript; charset=utf-8'
+            elif target.path not in [WEB_PATH, WEB_PATH.rstrip('/')]:
                 self.send_error(404)
                 return
-            try:
-                body = web_page(root, csrf_token)
-                status = 200
-            except Exception:
-                body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
-                status = 503
+            else:
+                try:
+                    filters = parse_service_filters(target.query)
+                except ValueError:
+                    self.send_error(400)
+                    return
+                try:
+                    body = web_page(root, csrf_token, filters)
+                    status, content_type = 200, 'text/html; charset=utf-8'
+                except Exception:
+                    body = '<!doctype html><html lang="cs"><meta charset="utf-8"><title>Turris Federation</title><h1>Stav nelze načíst</h1><p>Zkontrolujte agenta z desktopové aplikace.</p></html>'.encode()
+                    status, content_type = 503, 'text/html; charset=utf-8'
             self.send_response(status)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
             self.end_headers()
             self.wfile.write(body)
 

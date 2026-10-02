@@ -691,16 +691,24 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'report.json', {'state': 'waiting_peers', 'appliedRevision': 1,
                  'checkedAt': 100, 'pendingPeers': [node(2)['id']], 'error': '<b>failure</b>', 'secret': 'REPORT-SECRET',
-                 'hosts': [{'address': '192.168.1.20', 'name': 'printer.local'}], 'hostsObservedAt': 100})
+                 'hosts': [{'address': '192.168.1.20', 'name': 'printer.local'}], 'hostsObservedAt': 100,
+                 'services': [{'id': 'printer', 'name': 'Printer web', 'hostAddress': '192.168.1.20',
+                               'protocol': 'https', 'port': 8443, 'path': '/status'}], 'servicesObservedAt': 100})
         f.atomic(self.root / 'catalog.json', {node(2)['id']: {
-                 'hosts': [{'address': '192.168.2.30', 'name': 'camera'}], 'hostsObservedAt': 100}})
+                 'hosts': [{'address': '192.168.2.30', 'name': 'camera'}], 'hostsObservedAt': 100,
+                 'services': [{'id': 'camera', 'name': 'Camera stream', 'hostAddress': '192.168.2.30',
+                               'protocol': 'tcp', 'port': 8554, 'path': None}], 'servicesObservedAt': 100}})
         f.atomic(self.root / 'wireguard.key', b'PRIVATE-WG-SECRET')
         page = f.web_page(self.root).decode()
-        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera']:
+        for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera', 'Printer web', 'https://192.168.1.20:8443/status', 'Camera stream', '192.168.2.30:8554']:
             self.assertIn(wanted, page)
         for unwanted in ['<script>', '<b>failure</b>', 'PRIVATE-WG-SECRET', 'REPORT-SECRET', 'BEGIN PUBLIC KEY', 'BEGIN PRIVATE KEY']:
             self.assertNotIn(unwanted, page)
         self.assertIn('nikoli aktuální dostupnost', page)
+        filtered = f.web_page(self.root, service_filters={
+            'service': 'Printer', 'protocol': 'https', 'host': 'printer.local', 'router': '<script>'}).decode()
+        self.assertIn('Printer web', filtered)
+        self.assertNotIn('Camera stream', filtered)
 
     def test_ping_badge_thresholds_and_stale_measurements(self):
         for replies, color in [(20, 'green'), (19, 'green'), (18, 'yellow'), (16, 'yellow'), (15, 'red'), (14, 'red'), (0, 'red')]:
@@ -763,8 +771,12 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'reports.json', {node(1)['id']: {
             'state': 'active', 'reachable': True, 'checkedAt': 100,
             'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100,
+            'services': [{'id': 'printer-web', 'name': 'Printer', 'hostAddress': '192.168.1.20',
+                          'protocol': 'https', 'port': 8443, 'path': '/status'}], 'servicesObservedAt': 100,
             'error': 'INTERNAL', 'privateKey': 'SECRET'},
-            node(2)['id']: {'hosts': [{'address': '192.168.2.20', 'name': 'draft-host'}], 'hostsObservedAt': 100}})
+            node(2)['id']: {'hosts': [{'address': '192.168.2.20', 'name': 'draft-host'}], 'hostsObservedAt': 100,
+                            'services': [{'id': 'draft-service', 'name': 'Hidden', 'hostAddress': '192.168.2.20',
+                                          'protocol': 'tcp', 'port': 1234, 'path': None}], 'servicesObservedAt': 100}})
         f.atomic(self.root / 'root.pub', self.public.encode())
         (self.root / 'root.pem').unlink()
 
@@ -776,6 +788,10 @@ class FederationTests(unittest.TestCase):
         self.assertEqual([{'address': '192.168.1.20', 'name': 'printer'}], enrolled['hosts'])
         self.assertFalse(draft['enrolled'])
         self.assertEqual([], draft['hosts'])
+        self.assertEqual(1, len(result['services']))
+        self.assertEqual(('https://192.168.1.20:8443/status', 'printer', node(1)['id']),
+                         (result['services'][0]['endpoint'], result['services'][0]['hostName'], result['services'][0]['routerId']))
+        self.assertNotIn('draft-service', json.dumps(result['services']))
         self.assertEqual([{'id': 'c' * 64, 'name': 'User notebook', 'role': 'user',
                            'zeroTierAddress': None, 'wireguardAddress': None}], result['notebooks'])
         raw = json.dumps(result)
@@ -1007,6 +1023,12 @@ class FederationTests(unittest.TestCase):
         self.assertIn('Dokončete deploy'.encode(), response)
         for path in ['/bundle', '/etc/turris-federation/root.pub', '/turris-federation/../root.pem']:
             self.assertIn(b'404', self.web_request('GET', path))
+        script = self.web_request('GET', '/turris-federation/app.js')
+        self.assertIn(b'200 OK', script)
+        self.assertIn(b'navigator.clipboard.writeText', script)
+        self.assertIn(b"script-src 'self'", response)
+        self.assertIn(b'400', self.web_request('GET', '/turris-federation/?protocol=ssh'))
+        self.assertIn(b'400', self.web_request('GET', '/turris-federation/?service=a&service=b'))
         for method in ['POST', 'PUT', 'PATCH', 'DELETE']:
             self.assertIn(b'405', self.web_request(method, '/turris-federation/'))
         self.assertFalse((self.root / 'report.json').exists())

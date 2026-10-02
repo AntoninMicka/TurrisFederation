@@ -114,11 +114,27 @@ export interface ReadOnlyNotebook {
   zeroTierAddress: string | null;
   wireguardAddress: string | null;
 }
+export interface ServiceDirectoryEntry {
+  id: string;
+  name: string;
+  hostAddress: string;
+  hostName: string | null;
+  protocol: "tcp" | "http" | "https";
+  port: number;
+  path: string | null;
+  endpoint: string;
+  routerId: string;
+  routerName: string;
+  observedAt: number;
+  stale: boolean;
+  routeAdvertised: boolean;
+}
 export interface ReadOnlyOverview {
   revision: number;
   networkId: string;
   nodes: ReadOnlyNode[];
   notebooks: ReadOnlyNotebook[];
+  services: ServiceDirectoryEntry[];
   diagnostics: NotebookDiagnostics;
 }
 export interface NotebookVpnPlan {

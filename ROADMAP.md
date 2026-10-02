@@ -210,8 +210,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     místní úložiště a PAM/CSRF WebApps editor na jednotlivém routeru.
   - [x] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
     zachování stáří při výpadku a odstranění katalogu po odvolání routeru.
-  - [ ] Zobrazit jednotný read-only seznam v desktopu a WebApps, doplnit filtry
+  - [x] Zobrazit jednotný read-only seznam v desktopu a WebApps, doplnit filtry
     a kopírování přesně validovaného endpointu.
+  - [ ] Zpřístupnit ověřený katalog také uživatelským notebookům bez místní
+    administrační cache reportů; přenos musí zachovat podpis a nesmí předat
+    kořenový privátní klíč ani správcovské oprávnění.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 
