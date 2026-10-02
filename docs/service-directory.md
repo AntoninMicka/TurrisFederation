@@ -1,8 +1,8 @@
 # Zlaté stránky služeb
 
-Stav: místní editor, podepsaná agregace a read-only seznam v routerovém WebApps
-a desktopu jsou implementované v kódu, ale nejsou nasazené ani ověřené na
-skutečných routerech. Bezpečné otevírání služeb zůstává návrhem. Uživatelský
+Stav: místní editor, podepsaná agregace, read-only seznam a otevírání HTTP(S)
+v systémovém prohlížeči jsou implementované v kódu, ale nejsou nasazené ani
+ověřené na skutečných routerech. Uživatelský
 notebook bez místní cache podepsaných reportů zatím katalog automaticky nezíská.
 
 ## Cíl
@@ -119,7 +119,7 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Jednotný read-only seznam v desktopu a WebApps, filtry a kopírování endpointu.
 - [ ] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
-- [ ] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
+- [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.
 - [ ] Test na dvou routerech a notebooku včetně neplatných portů, cizích LAN adres,
    podvržených reportů, zastaralého katalogu a odvolaného routeru.

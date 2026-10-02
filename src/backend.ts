@@ -60,6 +60,11 @@ export async function openZeroTierCentral(): Promise<string> {
   return invoke("open_zerotier_central");
 }
 
+export async function openServiceEndpoint(endpoint: string): Promise<string> {
+  if (browserMode) throw new Error("Systémový prohlížeč lze otevřít z desktopové aplikace.");
+  return invoke("open_service_endpoint", { endpoint });
+}
+
 export async function deploymentAction<T>(action: "overview" | "refresh" | "validate" | "deploy" | "publish" | "diagnostics" | "diagnostics_overview" | "read_only_overview", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null, mode: "full" | "settings" | null = null): Promise<T> {
   if (browserMode) throw new Error("Deploy a synchronizace jsou dostupné v desktopové aplikaci.");
   return invoke("deployment_action", { action, nodeId, credentials, planId, mode });

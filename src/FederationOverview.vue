@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { NotebookSyncStatus } from "./backend";
+import { openServiceEndpoint } from "./backend";
 import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, TopologyRefreshPlan } from "./domain";
 
 const props = defineProps<{
@@ -120,6 +121,7 @@ const serviceProtocol = ref<"" | "tcp" | "http" | "https">("");
 const serviceHostFilter = ref("");
 const serviceRouterFilter = ref("");
 const copyStatus = ref("");
+const openingEndpoint = ref("");
 
 const filteredServices = computed(() => (props.overview?.services ?? []).filter(service =>
   service.name.toLocaleLowerCase("cs-CZ").includes(serviceFilter.value.trim().toLocaleLowerCase("cs-CZ"))
@@ -143,6 +145,18 @@ async function copyEndpoint(endpoint: string) {
     const copied = document.execCommand("copy");
     field.remove();
     copyStatus.value = copied ? `Zkopírováno: ${endpoint}` : "Endpoint se nepodařilo zkopírovat. Zkopírujte jej přímo z tabulky.";
+  }
+}
+
+async function openEndpoint(endpoint: string) {
+  openingEndpoint.value = endpoint;
+  try {
+    await openServiceEndpoint(endpoint);
+    copyStatus.value = `Otevřeno v systémovém prohlížeči: ${endpoint}`;
+  } catch (error) {
+    copyStatus.value = `Endpoint nelze otevřít: ${String(error)}`;
+  } finally {
+    openingEndpoint.value = "";
   }
 }
 </script>
@@ -204,7 +218,7 @@ async function copyEndpoint(endpoint: string) {
               <td>{{ service.hostName || service.hostAddress }}<small v-if="service.hostName" class="overview-line">{{ service.hostAddress }}</small></td>
               <td>{{ service.routerName }}<small class="overview-line">{{ service.routeAdvertised ? "Trasa je v podepsané topologii" : "Trasa není inzerovaná" }}</small></td>
               <td><span :class="['overview-badge', { stale: service.stale }]">{{ service.stale ? "Zastaralé" : "Aktuální" }}</span><small class="overview-line">{{ new Date(service.observedAt * 1000).toLocaleString("cs-CZ") }}</small></td>
-              <td><button type="button" class="secondary" @click="copyEndpoint(service.endpoint)">Kopírovat endpoint</button></td>
+              <td><div class="node-actions"><button type="button" class="secondary" @click="copyEndpoint(service.endpoint)">Kopírovat endpoint</button><button v-if="service.protocol === 'http' || service.protocol === 'https'" type="button" :disabled="!!openingEndpoint" @click="openEndpoint(service.endpoint)">{{ openingEndpoint === service.endpoint ? "Otevírám…" : "Otevřít v prohlížeči" }}</button></div></td>
             </tr>
           </tbody>
         </table>

@@ -294,6 +294,14 @@ class FederationTests(unittest.TestCase):
                 patch.object(f, 'request_http', return_value=response), self.assertRaises(ValueError):
             f.peer_status(node(1), self.member(1))
 
+    def test_service_endpoint_encodes_http_path_and_never_builds_tcp_url(self):
+        service = {'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': 8443,
+                   'path': '/česká cesta/%value'}
+        self.assertEqual('https://192.168.1.20:8443/%C4%8Desk%C3%A1%20cesta/%25value',
+                         f.service_endpoint(service))
+        self.assertEqual('192.168.1.20:11434', f.service_endpoint(
+            {**service, 'protocol': 'tcp', 'port': 11434, 'path': None}))
+
     def test_router_catalog_caches_verified_remote_announcements(self):
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         f.atomic(self.root / 'node.json', self.member(1))
@@ -728,6 +736,8 @@ class FederationTests(unittest.TestCase):
         page = f.web_page(self.root).decode()
         for wanted in ['&lt;script&gt;', '&lt;b&gt;failure&lt;/b&gt;', 'Stanoviště 2', 'Čeká na protějšky', '10.147.0.1', '192.168.1.0/24', 'printer.local', '192.168.2.30', 'camera', 'Printer web', 'https://192.168.1.20:8443/status', 'Camera stream', '192.168.2.30:8554']:
             self.assertIn(wanted, page)
+        self.assertIn('href="https://192.168.1.20:8443/status" target="_blank" rel="noopener noreferrer"', page)
+        self.assertNotIn('href="192.168.2.30:8554"', page)
         for unwanted in ['<script>', '<b>failure</b>', 'PRIVATE-WG-SECRET', 'REPORT-SECRET', 'BEGIN PUBLIC KEY', 'BEGIN PRIVATE KEY']:
             self.assertNotIn(unwanted, page)
         self.assertIn('nikoli aktuální dostupnost', page)

@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 VERSION = 1
 NOTEBOOK_VERSION = 2
@@ -980,7 +980,8 @@ def validate_catalog(node, report):
 def service_endpoint(service):
     if service['protocol'] == 'tcp':
         return '%s:%s' % (service['hostAddress'], service['port'])
-    return '%s://%s:%s%s' % (service['protocol'], service['hostAddress'], service['port'], service['path'] or '')
+    path = quote(service['path'] or '', safe="/!$&'()*+,-.:;=@_~")
+    return '%s://%s:%s%s' % (service['protocol'], service['hostAddress'], service['port'], path)
 
 
 def aggregate_services(doc, reports, now=None):
@@ -1498,11 +1499,13 @@ def web_page(root, csrf_token='', service_filters=None):
                  and filters['host'].casefold() in ('%s %s' % (service['hostAddress'], service['hostName'] or '')).casefold()
                  and filters['router'].casefold() in service['routerName'].casefold()]
     directory_rows = ''.join(
-        '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s<br><code>%s</code></td><td>%s<br><small>%s</small></td><td><span class="badge">%s</span></td><td><button type="button" class="button" data-copy-endpoint="%s">Kopírovat endpoint</button></td></tr>' % (
+        '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s<br><code>%s</code></td><td>%s<br><small>%s</small></td><td><span class="badge">%s</span></td><td><button type="button" class="button" data-copy-endpoint="%s">Kopírovat endpoint</button>%s</td></tr>' % (
             esc(service['name']), esc(service['protocol']), esc(service['hostName'] or service['hostAddress']),
             esc(service['endpoint']), esc(service['routerName']),
             esc(time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(service['observedAt']))),
-            'Zastaralé' if service['stale'] else 'Aktuální', esc(service['endpoint'])) for service in directory)
+            'Zastaralé' if service['stale'] else 'Aktuální', esc(service['endpoint']),
+            (' <a class="button" href="%s" target="_blank" rel="noopener noreferrer">Otevřít v prohlížeči</a>' % esc(service['endpoint']))
+            if service['protocol'] in {'http', 'https'} else '') for service in directory)
     directory_section = '''<section><h2>Zlaté stránky služeb</h2>
 <p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
 <form class="service-form" method="get" action="''' + WEB_PATH + '''">

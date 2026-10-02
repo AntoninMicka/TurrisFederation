@@ -465,20 +465,117 @@ async fn manage_zerotier(node_id: String, credentials: SshCredentials, network_i
     Ok(result)
 }
 
-#[tauri::command]
-async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
-    notebooks::require_admin(&app)?;
-    let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
-    let url = settings.url();
-    let mut child = tokio::process::Command::new("xdg-open").arg(url)
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-        .spawn().map_err(|e| format!("Prohlížeč nelze otevřít: {e}. Otevřete {url} ručně."))?;
+fn validated_service_endpoint(endpoint: &str) -> Result<String, String> {
+    if endpoint.is_empty()
+        || endpoint.len() > 2048
+        || endpoint
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || endpoint.contains(['\\', '?', '#'])
+    {
+        return Err("Endpoint služby není bezpečná HTTP(S) URL.".into());
+    }
+    let rest = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))
+        .ok_or("Otevřít lze pouze HTTP nebo HTTPS službu.")?;
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, ""), |(authority, path)| (authority, path));
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or("Endpoint služby nemá platný port.")?;
+    if host.contains(':')
+        || host.parse::<std::net::Ipv4Addr>().is_err()
+        || port
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+    {
+        return Err("Endpoint služby nemá platnou IPv4 adresu nebo port.".into());
+    }
+    let bytes = path.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] == b'%'
+            && (index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit())
+        {
+            return Err("Endpoint služby obsahuje neplatné URL kódování.".into());
+        }
+    }
+    Ok(endpoint.into())
+}
+
+#[cfg(test)]
+mod service_endpoint_tests {
+    use super::validated_service_endpoint;
+
+    #[test]
+    fn accepts_literal_http_and_https_service_urls() {
+        for endpoint in [
+            "http://192.168.1.20:8123",
+            "https://192.168.1.20:8443/lovelace",
+            "https://10.0.0.2:443/cesta%20s%20mezerou",
+        ] {
+            assert_eq!(validated_service_endpoint(endpoint).unwrap(), endpoint);
+        }
+    }
+
+    #[test]
+    fn rejects_non_http_credentials_queries_fragments_and_ambiguous_urls() {
+        for endpoint in [
+            "tcp://192.168.1.20:80",
+            "file:///etc/passwd",
+            "https://example.test:443/",
+            "https://user@192.168.1.20:443/",
+            "https://192.168.1.20/path",
+            "https://192.168.1.20:0/",
+            "https://192.168.1.20:443/?token=secret",
+            "https://192.168.1.20:443/#fragment",
+            "https://192.168.1.20:443\\evil",
+            "https://192.168.1.20:443/a b",
+            "https://192.168.1.20:443/%zz",
+        ] {
+            assert!(validated_service_endpoint(endpoint).is_err(), "accepted {endpoint}");
+        }
+    }
+}
+
+async fn open_system_browser(url: String) -> Result<String, String> {
+    let mut child = tokio::process::Command::new("xdg-open").arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Prohlížeč nelze otevřít: {e}. Otevřete {url} ručně."))?;
     match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) if status.success() => (),
         Ok(_) => return Err(format!("Prohlížeč se nepodařilo otevřít. Otevřete {url} ručně.")),
-        Err(_) => { tauri::async_runtime::spawn(async move { let _ = child.wait().await; }); }
+        Err(_) => {
+            tauri::async_runtime::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
     }
-    Ok(url.into())
+    Ok(url)
+}
+
+#[tauri::command]
+async fn open_zerotier_central(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    notebooks::require_admin(&app)?;
+    let settings = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        load_zerotier_settings(&db)?
+    };
+    open_system_browser(settings.url().into()).await
+}
+
+#[tauri::command]
+async fn open_service_endpoint(endpoint: String, app: tauri::AppHandle) -> Result<String, String> {
+    notebooks::require_member(&app)?;
+    open_system_browser(validated_service_endpoint(&endpoint)?).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -550,7 +647,7 @@ pub fn run() {
             api.prevent_close();
             let _ = window.hide();
         }
-    }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central]).build(tauri::generate_context!()).expect("Turris Federation failed to start");
+    }).invoke_handler(tauri::generate_handler![notebooks::notebook_action,check_notebook_zerotier,deployment::deployment_action,list_nodes,save_node,inspect_connection,connect_node,audit_node,get_zerotier_settings,save_zerotier_settings,export_settings,import_settings,list_zerotier_status,manage_zerotier,open_zerotier_central,open_service_endpoint]).build(tauri::generate_context!()).expect("Turris Federation failed to start");
     app.run(|handle, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             let lifecycle = handle.state::<AppLifecycle>();

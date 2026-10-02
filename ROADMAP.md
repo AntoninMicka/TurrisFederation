@@ -212,6 +212,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     zachování stáří při výpadku a odstranění katalogu po odvolání routeru.
   - [x] Zobrazit jednotný read-only seznam v desktopu a WebApps, doplnit filtry
     a kopírování přesně validovaného endpointu.
+  - [x] HTTP(S) endpoint otevírat v systémovém prohlížeči bez shellu; povolit
+    pouze doslovnou IPv4 URL, platný port a validovanou cestu bez přihlašovacích
+    údajů, query nebo fragmentu. TCP endpoint zůstává pouze ke kopírování.
   - [ ] Zpřístupnit ověřený katalog také uživatelským notebookům bez místní
     administrační cache reportů; přenos musí zachovat podpis a nesmí předat
     kořenový privátní klíč ani správcovské oprávnění.
