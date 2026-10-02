@@ -71,6 +71,28 @@ class NotebookTests(unittest.TestCase):
         peers[peer.id] = {'name': peer.id[:8], 'cert': peer.cert, 'address': '127.0.0.1'}
         f.atomic(source.root / 'peers.json', peers)
 
+    def test_nmcli_connections_recognizes_imported_interface_profile(self):
+        legacy_uuid = str(uuid.uuid4())
+
+        def connection_show(args, **_kwargs):
+            return f'{legacy_uuid}:wireguard\n' if args[-1] == n.VPN_INTERFACE else ''
+
+        with patch.object(n, 'local_command', side_effect=connection_show):
+            self.assertEqual(
+                {n.VPN_CONNECTION: {'uuid': legacy_uuid, 'type': 'wireguard'}},
+                n.nmcli_connections())
+
+    def test_nmcli_connections_rejects_two_current_profiles(self):
+        uuids = {n.VPN_CONNECTION: str(uuid.uuid4()), n.VPN_INTERFACE: str(uuid.uuid4())}
+
+        def connection_show(args, **_kwargs):
+            profile_uuid = uuids.get(args[-1])
+            return f'{profile_uuid}:wireguard\n' if profile_uuid else ''
+
+        with patch.object(n, 'local_command', side_effect=connection_show), \
+                self.assertRaisesRegex(ValueError, 'více spravovaných'):
+            n.nmcli_connections()
+
     def admin_command(self, store, request):
         with patch.object(store, 'access_status', return_value={'state': 'valid', 'role': 'administrator'}):
             return n.command(store, request)
@@ -515,6 +537,7 @@ class NotebookTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'předchozí profil byl obnoven'):
             self.b.vpn_install(plan['id'])
         self.assertIn(['connection', 'modify', 'uuid', old_uuid, 'connection.id', n.VPN_BACKUP], calls)
+        self.assertIn(['connection', 'down', 'uuid', old_uuid], calls)
         self.assertIn(['connection', 'delete', 'uuid', new_uuid], calls)
         self.assertIn(['connection', 'modify', 'uuid', old_uuid, 'connection.id', n.VPN_CONNECTION], calls)
         self.assertIn(['connection', 'up', 'uuid', old_uuid], calls)

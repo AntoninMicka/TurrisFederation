@@ -163,7 +163,8 @@ def nmcli_active_uuids():
 
 def nmcli_connections():
     result = {}
-    for name in [VPN_CONNECTION, VPN_BACKUP]:
+    for name, target in [(VPN_CONNECTION, VPN_CONNECTION), (VPN_BACKUP, VPN_BACKUP),
+                         (VPN_INTERFACE, VPN_CONNECTION)]:
         output = local_command(['/usr/bin/nmcli', '-t', '-f', 'UUID,TYPE', 'connection', 'show', 'id', name],
                                allow_failure=True).strip()
         if output:
@@ -171,7 +172,9 @@ def nmcli_connections():
             fields = values[0].split(':') if len(values) == 1 else []
             if len(fields) != 2 or not valid_uuid(fields[0]) or fields[1] != 'wireguard':
                 raise ValueError('NetworkManager obsahuje nejednoznačný spravovaný profil.')
-            result[name] = {'uuid': fields[0], 'type': fields[1]}
+            if target in result and result[target]['uuid'] != fields[0]:
+                raise ValueError('NetworkManager obsahuje více spravovaných VPN profilů.')
+            result[target] = {'uuid': fields[0], 'type': fields[1]}
     return result
 
 
@@ -713,6 +716,7 @@ class Store:
             if current:
                 backup_uuid = current
                 privileged_nmcli(['connection', 'modify', 'uuid', current, 'connection.id', VPN_BACKUP])
+                privileged_nmcli(['connection', 'down', 'uuid', current])
             before_import = nmcli_uuids()
             privileged_nmcli(['connection', 'import', 'type', 'wireguard', 'file', str(config)])
             after_import = nmcli_uuids()
