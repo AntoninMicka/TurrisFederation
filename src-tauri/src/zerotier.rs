@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{io::{Read, Write}, os::unix::net::UnixStream, time::Duration};
 
 pub const STATUS_SCRIPT: &str = include_str!("../../scripts/zerotier-status.sh");
 const SETUP_SCRIPT: &str = include_str!("../../scripts/zerotier-setup.sh");
+const NOTEBOOK_NETWORK_SOCKET: &str = "/run/turris-federation/notebook-network.sock";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +36,29 @@ pub fn validate_network_id(id: &str) -> Result<(), String> {
         return Err("ZeroTier Network ID musí mít přesně 16 hexadecimálních znaků.".into());
     }
     Ok(())
+}
+
+pub fn notebook_status(network_id: Option<&str>) -> Result<Status, String> {
+    if let Some(id) = network_id { validate_network_id(id)?; }
+    let mut socket = UnixStream::connect(NOTEBOOK_NETWORK_SOCKET)
+        .map_err(|_| "Systémová síťová služba notebooku neběží. Spusťte znovu run.sh.".to_string())?;
+    socket.set_read_timeout(Some(Duration::from_secs(4))).map_err(|e| e.to_string())?;
+    socket.set_write_timeout(Some(Duration::from_secs(4))).map_err(|e| e.to_string())?;
+    let request = serde_json::json!({"action": "status", "networkId": network_id});
+    socket.write_all(serde_json::to_string(&request).map_err(|e| e.to_string())?.as_bytes())
+        .and_then(|_| socket.write_all(b"\n"))
+        .map_err(|_| "Systémová síťová služba neodpovídá.".to_string())?;
+    let mut raw = Vec::new();
+    socket.take(256 * 1024).read_to_end(&mut raw)
+        .map_err(|_| "Systémová síťová služba neodpovídá.".to_string())?;
+    let response: Value = serde_json::from_slice(&raw)
+        .map_err(|_| "Systémová síťová služba vrátila neplatnou odpověď.".to_string())?;
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(response.get("error").and_then(Value::as_str)
+            .unwrap_or("Systémová síťová služba požadavek odmítla.").to_string());
+    }
+    serde_json::from_value(response.get("zerotier").cloned().unwrap_or(Value::Null))
+        .map_err(|_| "Systémová síťová služba vrátila neplatný stav ZeroTier.".to_string())
 }
 
 pub fn probe(network_id: Option<&str>, setup: bool) -> Result<String, String> {

@@ -57,6 +57,9 @@ Balíček má vlastnit pouze programové soubory:
 - `/usr/lib/turris-federation/` — verzovaný backend a neměnné pomocné soubory;
 - `/usr/lib/systemd/user/turris-federation-backend.service` — dodaná uživatelská
   jednotka, nikoli kopie generovaná do domovského adresáře;
+- `/etc/systemd/system/turris-federation-network.service` a
+  `/usr/lib/turris-federation/notebook_network_service.py` — úzce omezená
+  privilegovaná správa ZeroTier a ochrany proti transitnímu routování;
 - `/usr/share/applications/cz.turris.federation.desktop` — spouštěč UI;
 - `/etc/xdg/autostart/cz.turris.federation-tray.desktop` — spuštění klienta
   stavové lišty s parametrem `--background` po přihlášení;
@@ -67,6 +70,9 @@ uživatelských XDG adresářů a balíček je při aktualizaci nesmí přepisov
 Současná feature implementace generuje jednotku pod `~/.config/systemd/user`;
 před produkčním balíčkem se migruje na dodanou jednotku v `/usr/lib/systemd/user`,
 aby aktualizace kódu nezanechávala zastaralou cestu ke skriptu.
+Vývojový `run.sh` už systémovou síťovou službu verzovaně instaluje a
+aktualizuje. Její kontrakt a fyzickou akceptaci popisuje
+[privilegovaná síťová služba notebooku](notebook-network-service.md).
 
 Instalace balíčku může vyžádat systémové oprávnění, ale backend běží jako běžný
 uživatel. `postinst` smí provést pouze systémový `daemon-reload` a instalaci

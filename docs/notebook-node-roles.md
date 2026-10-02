@@ -44,6 +44,12 @@ diagnostiku a stav připojení. U administrátorského notebooku navíc obsluhuj
 řídicí funkce povolené jeho rolí. Samotná instalace nebo spuštění backendu ale
 žádné administrátorské oprávnění nevytváří.
 
+Privilegované síťové operace jsou oddělené do systémové
+`turris-federation-network.service`. Ta poskytuje sanitizovaný stav a omezenou
+správu ZeroTier, udržuje nftables guard proti transitnímu provozu přes
+`tf_notebook` a nesmí obsahovat identitu federace ani obecné root API. Podrobný
+kontrakt je v dokumentu [síťová služba notebooku](notebook-network-service.md).
+
 Uživatelský notebook neukládá adresu aktuální Wi-Fi ani fyzické LAN jako svou
 identitu a pro běh backendu ji nezadává. Stabilní adresy ZeroTier a WireGuard
 dostane v podepsané topologii. Původní přímá synchronizace mezi

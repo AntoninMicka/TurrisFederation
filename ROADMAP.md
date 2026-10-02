@@ -139,6 +139,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     identitu a bezpečnou aktualizaci/odinstalaci. Balíčkování do dokončení
     funkčních a end-to-end testů odkládáme. Návrh:
     [instalace notebooku](docs/notebook-installation.md).
+  - [~] Oddělit privilegovanou síťovou vrstvu notebooku do systémové služby.
+    Vývojová implementace poskytuje sanitizovaný ZeroTier stav, omezené
+    join/leave, nftables guard a instalaci/aktualizaci z `run.sh`; zbývá fyzická
+    akceptace, polkit politika produkčního balíčku a napojení všech VPN změn.
+    Návrh: [síťová služba notebooku](docs/notebook-network-service.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit
   autorizaci i restart. Oprava ZeroTier je zatím odložená do TODO.

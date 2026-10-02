@@ -33,9 +33,11 @@ Spuštění na Ubuntu/Debianu:
 Skript zkontroluje systémové knihovny a nástroje, chybějící balíčky
 nainstaluje přes `sudo apt-get` a chybějící Rust přes oficiální `rustup`
 do uživatelského účtu. Potom doplní npm závislosti, sestaví samostatný testovací
-klient s vloženým frontendem pro automatický start po přihlášení a spustí
+klient s vloženým frontendem pro automatický start po přihlášení, nainstaluje
+nebo aktualizuje úzce omezenou systémovou
+[síťovou službu notebooku](docs/notebook-network-service.md) a spustí
 vývojovou desktopovou aplikaci. Skript spouštěj bez `sudo`; při instalaci
-balíčků může požádat o heslo.
+balíčků nebo změně systémové služby může požádat o heslo.
 Vyžaduje připojení k internetu při instalaci a prvním sestavení.
 Pokud repozitář systému neposkytuje dostatečně nový Node.js (20.19+ nebo 22.12+),
 skript skončí s pokyny k aktualizaci. Argumenty předává příkazu `tauri dev`.

@@ -443,13 +443,9 @@ fn list_zerotier_status(state: State<'_, AppState>) -> Result<Vec<zerotier::Stat
 #[tauri::command]
 async fn check_notebook_zerotier(state: State<'_, AppState>) -> Result<zerotier::Status, String> {
     let settings = { let db = state.db.lock().map_err(|e| e.to_string())?; load_zerotier_settings(&db)? };
-    let probe = zerotier::probe(settings.network_id.as_deref(), false)?;
-    let output = tokio::time::timeout(std::time::Duration::from_secs(20),
-        tokio::process::Command::new("sh").args(["-c", &probe]).kill_on_drop(true).output())
-        .await.map_err(|_| "Kontrola ZeroTier notebooku překročila časový limit.".to_string())?
-        .map_err(|e| format!("Nelze zkontrolovat notebook: {e}"))?;
-    if !output.status.success() { return Err("Kontrola ZeroTier notebooku selhala.".into()); }
-    let mut result = zerotier::parse(&String::from_utf8_lossy(&output.stdout), "local-notebook", settings.network_id.as_deref(), &Utc::now().to_rfc3339());
+    let network_id = settings.network_id.clone();
+    let mut result = tokio::task::spawn_blocking(move || zerotier::notebook_status(network_id.as_deref()))
+        .await.map_err(|e| e.to_string())??;
     result.summary = result.summary.replace("Router", "Notebook").replace("routeru", "notebooku");
     Ok(result)
 }

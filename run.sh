@@ -72,6 +72,7 @@ esac
 
 # Systémové závislosti dle https://v2.tauri.app/start/prerequisites/
 packages=(build-essential pkg-config curl wget file ca-certificates openssh-client sshpass xdg-utils python3 openssl iproute2
+    nftables wireguard-tools network-manager policykit-1
     libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev
     libayatana-appindicator3-dev librsvg2-dev)
 
@@ -137,6 +138,14 @@ for command in node npm cargo rustc cc c++ make pkg-config; do
 done
 pkg-config --exists 'webkit2gtk-4.1 >= 2.40' gtk+-3.0 openssl librsvg-2.0 ||
     fail 'Systémové knihovny nejsou dostupné přes pkg-config nebo je WebKitGTK starší než 2.40.'
+
+# The privileged service owns only local network enforcement and sanitized
+# ZeroTier control. Install/update it before starting any unprivileged backend.
+if ! python3 scripts/install_notebook_network_service.py --check --uid "$UID"; then
+    command -v sudo >/dev/null 2>&1 || fail 'Instalace síťové služby vyžaduje sudo.'
+    printf 'Instaluji nebo aktualizuji systémovou síťovou službu notebooku…\n'
+    sudo python3 scripts/install_notebook_network_service.py --uid "$UID"
+fi
 
 if [[ ! -x node_modules/.bin/tauri || ! -x node_modules/.bin/vite ]] || ! npm ls --depth=0 >/dev/null 2>&1; then
     printf 'Instaluji npm závislosti…\n'
