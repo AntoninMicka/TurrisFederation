@@ -199,6 +199,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   se nespouští. Katalog je vidět pod uzlem v desktopu i routerovém WebApps přehledu.
 - [ ] Na dvou skutečných routerech ověřit naplnění katalogu, jeho obnovu po změně
   sousedů, stáří při výpadku protějšku a zobrazení v desktopu i WebApps.
+- [ ] **P2: Zlaté stránky služeb.** Na každém routeru umožnit místnímu správci
+  přiřadit k hostům ve vlastních LAN prefixech pojmenované `tcp`, `http` a
+  `https` služby s validním portem. Podepsané katalogy přijatých routerů složit
+  do jednoho read-only seznamu dostupného na všech noteboocích a routerech.
+  HTTP(S) položky otevírat bezpečně v systémovém prohlížeči; vložené zobrazení
+  povolit až po samostatném ověření izolace webview. Návrh dat, oprávnění,
+  validace a etap je v [Zlatých stránkách služeb](docs/service-directory.md).
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 
