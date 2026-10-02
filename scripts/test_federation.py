@@ -932,6 +932,9 @@ class FederationTests(unittest.TestCase):
         self.assertEqual([service], f.save_local_service(self.root, node(1), service))
         self.assertEqual([service], f.local_services(self.root, node(1)))
         self.assertEqual(0o600, (self.root / 'services.json').stat().st_mode & 0o777)
+        published = f.read(self.root / 'report.json')
+        self.assertEqual([service], published['services'])
+        self.assertIsInstance(published['servicesObservedAt'], float)
 
         invalid = [
             dict(service, hostAddress='192.168.2.20'),
@@ -1000,11 +1003,13 @@ class FederationTests(unittest.TestCase):
         self.assertIn(b'303', response)
         self.assertIn(b'Location: /turris-federation/?editorHost=192.168.1.20', response)
         self.assertNotIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
+        self.assertIn('Home Assistant'.encode(), self.web_request('GET', f.WEB_PATH, handler=handler))
         self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_PATH + '?editorHost=192.168.1.20', handler=handler))
         response = self.web_request('POST', f.WEB_PATH + 'services/delete',
                                     urlencode({'token': token, 'id': 'home-assistant'}), handler)
         self.assertIn(b'303', response)
         self.assertEqual([], f.local_services(self.root, node(1)))
+        self.assertEqual([], f.read(self.root / 'report.json')['services'])
 
     def test_web_only_explicit_token_protected_post_starts_diagnostics(self):
         self.prepare_diagnostics()

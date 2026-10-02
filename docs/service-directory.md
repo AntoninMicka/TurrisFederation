@@ -67,6 +67,11 @@ katalogu hostů. Příjemce ověří podpis routeru, členství, vlastnictví c�
 protokol, port, limity a přesný tvar každé položky. Neplatný katalog se celý
 odmítne; nesmí částečně prosáknout do globálního seznamu.
 
+Uložení nebo odstranění místní služby aktualizuje stejný snapshot v provozním
+reportu okamžitě. Přijaté routery jej stáhnou v následujícím periodickém
+synchronizačním cyklu; editor proto nesmí čekat na zdravotní kontrolu, než
+změnu začne publikovat.
+
 Agregovaný záznam navíc vždy nese identitu a název oznamujícího routeru,
 čas pozorování a stav čerstvosti. Při nedostupnosti routeru lze zobrazit poslední
 ověřený seznam jako zastaralý. Odebrání routeru z členství odstraní i jeho služby.

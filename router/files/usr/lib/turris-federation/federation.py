@@ -902,6 +902,15 @@ def local_services(root, node):
     return validate_services(node, read(Path(root) / 'services.json', []))
 
 
+def store_local_services(root, services):
+    """Persist definitions and publish the same snapshot in the signed status source."""
+    root = Path(root)
+    atomic(root / 'services.json', services)
+    report = read(root / 'report.json', {})
+    report.update(services=services, servicesObservedAt=time.time())
+    atomic(root / 'report.json', report)
+
+
 def save_local_service(root, node, service, allow_duplicate=False):
     root = Path(root)
     with locked(root):
@@ -914,7 +923,7 @@ def save_local_service(root, node, service, allow_duplicate=False):
             raise ValueError('Stejný endpoint už má jinou službu; potvrďte duplicitu.')
         services = [item for item in services if item['id'] != validated['id']] + [validated]
         services = validate_services(node, services)
-        atomic(root / 'services.json', services)
+        store_local_services(root, services)
         return services
 
 
@@ -927,7 +936,7 @@ def delete_local_service(root, node, service_id):
         if not any(item['id'] == service_id for item in services):
             raise ValueError('Služba neexistuje.')
         services = [item for item in services if item['id'] != service_id]
-        atomic(root / 'services.json', services)
+        store_local_services(root, services)
         return services
 
 
@@ -1475,7 +1484,7 @@ def web_page(root, csrf_token='', service_filters=None):
         (local_service_rows or '<tr><td colspan="4">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
         '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
     local_services_section = '''<section><h2>Editor služeb · tento router</h2>
-<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Editor nemění firewall, DNS ani cílového hosta.</p>''' + host_selector + selected_services + '''</section>'''
+<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Editor nemění firewall, DNS ani cílového hosta. Změna se místně publikuje ihned; ostatní routery ji převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:
