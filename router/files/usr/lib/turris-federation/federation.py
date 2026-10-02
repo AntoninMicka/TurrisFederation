@@ -931,6 +931,28 @@ def delete_local_service(root, node, service_id):
         return services
 
 
+def validate_report_services(node, report):
+    services = report.get('services')
+    observed = report.get('servicesObservedAt')
+    if services is None and observed is None:
+        return None
+    if (services is None or not isinstance(observed, (int, float)) or isinstance(observed, bool)
+            or not math.isfinite(observed) or observed < 0):
+        raise ValueError('Neplatný katalog služeb uzlu.')
+    return {'services': validate_services(node, services), 'servicesObservedAt': observed}
+
+
+def validate_catalog(node, report):
+    result = {}
+    hosts = validate_hosts(node, report)
+    services = validate_report_services(node, report)
+    if hosts is not None:
+        result.update(hosts)
+    if services is not None:
+        result.update(services)
+    return result or None
+
+
 def health(root, doc):
     own_id = read(Path(root) / 'node.json')['nodeId']
     if own_id not in doc['members']:
@@ -985,6 +1007,8 @@ def health(root, doc):
     hosts = discover_hosts(self_node(root, doc))
     if hosts is not None:
         result.update(hosts=hosts, hostsObservedAt=time.time())
+    services = local_services(root, self_node(root, doc))
+    result.update(services=services, servicesObservedAt=time.time())
     return result
 
 
@@ -1058,7 +1082,7 @@ def peer_status(peer, member, signer=None):
     report = payload.get('report')
     if not isinstance(report, dict):
         raise ValueError('Uzel vrátil neplatný provozní stav.')
-    catalog = validate_hosts(peer, report)
+    catalog = validate_catalog(peer, report)
     return {**report, **(catalog or {})}
 
 
@@ -1073,9 +1097,9 @@ def refresh_catalog(root, current, own_id):
     own = next((node for node in nodes if node['id'] == own_id), None)
     own_report = read(root / 'report.json', {})
     if own:
-        own_hosts = validate_hosts(own, own_report)
-        if own_hosts is not None:
-            catalog[own_id] = own_hosts
+        own_catalog = validate_catalog(own, own_report)
+        if own_catalog is not None:
+            catalog[own_id] = own_catalog
         else:
             catalog.pop(own_id, None)
     peers = [node for node in nodes if node['id'] != own_id]
@@ -1084,9 +1108,9 @@ def refresh_catalog(root, current, own_id):
         for future, peer in jobs.items():
             try:
                 report = future.result()
-                hosts = validate_hosts(peer, report)
-                if hosts is not None:
-                    catalog[peer['id']] = hosts
+                peer_catalog = validate_catalog(peer, report)
+                if peer_catalog is not None:
+                    catalog[peer['id']] = peer_catalog
                 else:
                     catalog.pop(peer['id'], None)
             except Exception:
@@ -1736,8 +1760,10 @@ def overview(root, config):
 
 def refresh_reports(root, doc):
     root = Path(root)
-    reports = read(root / 'reports.json', {})
     peers = [node for node in doc['config']['nodes'] if node['id'] in doc['members']]
+    previous = read(root / 'reports.json', {})
+    reports = {node['id']: previous[node['id']] for node in peers
+               if isinstance(previous, dict) and node['id'] in previous}
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(peers)))) as pool:
         jobs = {pool.submit(peer_status, peer, doc['members'][peer['id']], root / 'root.pem'): peer for peer in peers}
         for future, peer in jobs.items():
@@ -1753,7 +1779,9 @@ def refresh_reports(root, doc):
 def distribute_bundle(root, envelope, exclude=None):
     root = Path(root)
     doc = verify(public_key(root / 'root.pem'), envelope)
-    results = read(root / 'reports.json', {})
+    previous = read(root / 'reports.json', {})
+    results = {node['id']: previous[node['id']] for node in doc['config']['nodes']
+               if node['id'] in doc['members'] and isinstance(previous, dict) and node['id'] in previous}
     for peer in doc['config']['nodes']:
         if peer['id'] not in doc['members'] or peer['id'] == exclude:
             continue

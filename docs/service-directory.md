@@ -1,8 +1,8 @@
 # Zlaté stránky služeb
 
-Stav: první místní etapa je implementovaná v kódu, ale není nasazená ani ověřená
-na skutečném routeru. Podepsaný přenos, agregace a desktopový seznam zůstávají
-návrhem k budoucí implementaci.
+Stav: místní editor a podepsaná agregace jsou implementované v kódu, ale nejsou
+nasazené ani ověřené na skutečných routerech. Desktopový seznam a bezpečné
+otevírání služeb zůstávají návrhem k budoucí implementaci.
 
 ## Cíl
 
@@ -106,7 +106,7 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 ## Navržené pořadí implementace
 
 - [x] Formát, validace, atomické místní úložiště a PAM/CSRF editor na routeru.
-- [ ] Podepsaný přenos v reportu, agregace, stáří a odstranění po odvolání uzlu.
+- [x] Podepsaný přenos v reportu, agregace, stáří a odstranění po odvolání uzlu.
 - [ ] Jednotný read-only seznam v desktopu a WebApps, filtry a kopírování endpointu.
 - [ ] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.

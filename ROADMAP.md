@@ -208,8 +208,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   validace a etap je v [Zlatých stránkách služeb](docs/service-directory.md).
   - [x] Implementovat přesný formát, validaci vlastnictví LAN adresy, atomické
     místní úložiště a PAM/CSRF WebApps editor na jednotlivém routeru.
-  - [ ] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
+  - [x] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
     zachování stáří při výpadku a odstranění katalogu po odvolání routeru.
+  - [ ] Zobrazit jednotný read-only seznam v desktopu a WebApps, doplnit filtry
+    a kopírování přesně validovaného endpointu.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 

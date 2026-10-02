@@ -273,16 +273,51 @@ class FederationTests(unittest.TestCase):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 f.validate_hosts(node(1), malformed)
 
+    def test_signed_service_catalog_is_limited_to_announcing_node_lan(self):
+        service = {'id': 'camera', 'name': 'Camera', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 8443, 'path': '/view'}
+        good = {'services': [service], 'servicesObservedAt': 100}
+        self.assertEqual(good, f.validate_report_services(node(1), good))
+        for bad in [
+            {'services': [dict(service, hostAddress='192.168.2.20')], 'servicesObservedAt': 100},
+            {'services': [{**service, 'token': 'secret'}], 'servicesObservedAt': 100},
+            {'services': [service], 'servicesObservedAt': float('nan')},
+            {'services': [service]},
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                f.validate_report_services(node(1), bad)
+
+        response = f.sign(self.root / 'root.pem', {'nonce': 'a' * 64, 'nodeId': node(1)['id'],
+                          'report': {'services': [dict(service, hostAddress='192.168.2.20')],
+                                     'servicesObservedAt': 100}})
+        with patch.object(f.secrets, 'token_hex', return_value='a' * 64), \
+                patch.object(f, 'request_http', return_value=response), self.assertRaises(ValueError):
+            f.peer_status(node(1), self.member(1))
+
     def test_router_catalog_caches_verified_remote_announcements(self):
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         f.atomic(self.root / 'node.json', self.member(1))
-        f.atomic(self.root / 'report.json', {'hosts': [{'address': '192.168.1.10', 'name': None}], 'hostsObservedAt': 90})
-        remote = {'hosts': [{'address': '192.168.2.20', 'name': 'camera'}], 'hostsObservedAt': 100}
+        local_service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.10',
+                         'protocol': 'tcp', 'port': 11434, 'path': None}
+        remote_service = {'id': 'camera', 'name': 'Camera', 'hostAddress': '192.168.2.20',
+                          'protocol': 'https', 'port': 8443, 'path': '/view'}
+        f.atomic(self.root / 'report.json', {'hosts': [{'address': '192.168.1.10', 'name': None}], 'hostsObservedAt': 90,
+                 'services': [local_service], 'servicesObservedAt': 91})
+        remote = {'hosts': [{'address': '192.168.2.20', 'name': 'camera'}], 'hostsObservedAt': 100,
+                  'services': [remote_service], 'servicesObservedAt': 101}
         with patch.object(f, 'peer_status', return_value=remote):
             catalog = f.refresh_catalog(self.root, doc, node(1)['id'])
         self.assertEqual('192.168.1.10', catalog[node(1)['id']]['hosts'][0]['address'])
         self.assertEqual('camera', catalog[node(2)['id']]['hosts'][0]['name'])
+        self.assertEqual('ollama', catalog[node(1)['id']]['services'][0]['id'])
+        self.assertEqual('camera', catalog[node(2)['id']]['services'][0]['id'])
         self.assertEqual(catalog, f.read(self.root / 'catalog.json'))
+        with patch.object(f, 'peer_status', side_effect=ValueError('offline')):
+            stale = f.refresh_catalog(self.root, doc, node(1)['id'])
+        self.assertEqual(101, stale[node(2)['id']]['servicesObservedAt'])
+        revoked = self.document(members={node(1)['id']: self.member(1)})
+        without_revoked = f.refresh_catalog(self.root, revoked, node(1)['id'])
+        self.assertNotIn(node(2)['id'], without_revoked)
 
     def test_live_refresh_reads_signed_catalogs_from_enrolled_nodes(self):
         members = {node(1)['id']: self.member(1), node(2)['id']: self.member(2)}
@@ -299,6 +334,17 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('printer', result['nodes'][node(1)['id']]['hosts'][0]['name'])
         self.assertEqual('camera', result['nodes'][node(2)['id']]['hosts'][0]['name'])
         self.assertTrue(result['nodes'][node(1)['id']]['reachable'])
+
+    def test_revocation_removes_cached_service_reports(self):
+        doc = self.document(members={node(1)['id']: self.member(1)})
+        cached = {'services': [{'id': 'camera', 'name': 'Camera', 'hostAddress': '192.168.2.20',
+                               'protocol': 'https', 'port': 8443, 'path': None}],
+                  'servicesObservedAt': 100}
+        f.atomic(self.root / 'reports.json', {node(1)['id']: {'state': 'active'}, node(2)['id']: cached})
+        with patch.object(f, 'peer_status', return_value={'state': 'active'}):
+            reports = f.refresh_reports(self.root, doc)
+        self.assertEqual({node(1)['id']}, set(reports))
+        self.assertNotIn(node(2)['id'], f.read(self.root / 'reports.json'))
 
     def test_mutated_or_expired_plan_cannot_start_deploy(self):
         request = {'action': 'deploy', 'nodes': self.nodes, 'networkId': 'abcdef0123456789',
@@ -806,6 +852,9 @@ class FederationTests(unittest.TestCase):
     def test_periodic_health_uses_handshakes_without_sending_ping(self):
         doc = self.prepare_diagnostics()
         key = self.member(2)['wireguardKey']
+        service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 11434, 'path': None}
+        f.save_local_service(self.root, node(1), service)
         for handshake, state in [(1000, 'active'), (820, 'active'), (819, 'waiting_peers'), (0, 'waiting_peers')]:
             def run(args):
                 if args[-1] == 'public-key':
@@ -821,6 +870,7 @@ class FederationTests(unittest.TestCase):
                     patch.object(f.time, 'time', return_value=1000), patch.object(f, 'ping_sample') as ping:
                 result = f.health(self.root, doc)
                 self.assertEqual(state, result['state'])
+                self.assertEqual(([service], 1000), (result['services'], result['servicesObservedAt']))
                 ping.assert_not_called()
         self.assertFalse((self.root / 'diagnostics.json').exists())
 
