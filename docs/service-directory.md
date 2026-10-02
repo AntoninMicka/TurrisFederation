@@ -1,9 +1,10 @@
 # Zlaté stránky služeb
 
 Stav: místní editor, podepsaná agregace, read-only seznam a otevírání HTTP(S)
-v systémovém prohlížeči jsou implementované v kódu, ale nejsou nasazené ani
-ověřené na skutečných routerech. Uživatelský
-notebook bez místní cache podepsaných reportů zatím katalog automaticky nezíská.
+v systémovém prohlížeči jsou implementované a ověřené v desktopové
+aplikaci i na skutečném Turrisu. Uživatelský notebook bez místní cache
+podepsaných reportů zatím katalog automaticky nezíská; to je samostatný
+navazující úkol.
 
 ## Cíl
 

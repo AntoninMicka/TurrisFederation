@@ -1,6 +1,6 @@
 # Turris Federation — roadmapa a TODO
 
-Aktualizováno: 1. 10. 2026.
+Aktualizováno: 3. 10. 2026.
 
 ## Cíl a podklady
 
@@ -206,6 +206,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   HTTP(S) položky otevírat bezpečně v systémovém prohlížeči; vložené zobrazení
   povolit až po samostatném ověření izolace webview. Návrh dat, oprávnění,
   validace a etap je v [Zlatých stránkách služeb](docs/service-directory.md).
+  Zobrazení, filtrování a otevírání služeb je ověřené v desktopové
+  aplikaci i na skutečném Turrisu; samotné Zlaté stránky jsou uzavřené.
+  Otevřený zůstává jen navazující přenos katalogu na uživatelský notebook.
   - [x] Implementovat přesný formát, validaci vlastnictví LAN adresy, atomické
     místní úložiště a PAM/CSRF WebApps editor na jednotlivém routeru.
   - [x] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
