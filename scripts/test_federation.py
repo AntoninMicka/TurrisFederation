@@ -961,15 +961,36 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(2, len(f.save_local_service(self.root, node(1), second, allow_duplicate=True)))
         self.assertEqual([second], f.delete_local_service(self.root, node(1), first['id']))
 
+    def test_service_editor_hosts_are_observed_or_already_configured(self):
+        service = {'id': 'legacy', 'name': 'Legacy service', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 1234, 'path': None}
+        report = {'hosts': [{'address': '192.168.1.30', 'name': 'current.local'}],
+                  'hostsObservedAt': 100}
+        hosts = f.editable_service_hosts(node(1), report, [service])
+        self.assertEqual([
+            {'address': '192.168.1.20', 'name': None, 'observed': False},
+            {'address': '192.168.1.30', 'name': 'current.local', 'observed': True},
+        ], hosts)
+
     def test_authenticated_web_editor_enforces_csrf_and_exact_service_fields(self):
         self.prepare_diagnostics()
+        report = f.read(self.root / 'report.json')
+        report.update(hosts=[{'address': '192.168.1.20', 'name': 'home.local'}], hostsObservedAt=time.time())
+        f.atomic(self.root / 'report.json', report)
         handler = f.web_handler(self.root)
         page = self.web_request('GET', f.WEB_PATH, handler=handler)
         token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
+        self.assertIn(b'name="editorHost"', page)
+        self.assertNotIn(b'name="hostAddress"', page)
+        selected = self.web_request('GET', f.WEB_PATH + '?editorHost=192.168.1.20', handler=handler)
+        self.assertIn(b'home.local', selected)
+        self.assertIn(b'name="hostAddress" value="192.168.1.20"', selected)
+        self.assertLess(selected.index('Editor služeb'.encode()), selected.index('Zlaté stránky služeb</h2>'.encode()))
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
                    'path': '/lovelace', 'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
+                                ({'hostAddress': '192.168.1.21'}, b'409'),
                                 ({'hostAddress': '192.168.2.20'}, b'409')]:
             response = self.web_request('POST', f.WEB_PATH + 'services/save',
                                         urlencode({**service, **changed}), handler)
@@ -977,7 +998,9 @@ class FederationTests(unittest.TestCase):
         self.assertFalse((self.root / 'services.json').exists())
         response = self.web_request('POST', f.WEB_PATH + 'services/save', urlencode(service), handler)
         self.assertIn(b'303', response)
-        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
+        self.assertIn(b'Location: /turris-federation/?editorHost=192.168.1.20', response)
+        self.assertNotIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
+        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_PATH + '?editorHost=192.168.1.20', handler=handler))
         response = self.web_request('POST', f.WEB_PATH + 'services/delete',
                                     urlencode({'token': token, 'id': 'home-assistant'}), handler)
         self.assertIn(b'303', response)

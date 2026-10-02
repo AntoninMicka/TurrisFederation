@@ -41,8 +41,8 @@ ze svých podepsaných LAN prefixů. Navržená položka obsahuje:
 
 - `id` je stabilní lokální identifikátor pro úpravy a odstranění;
 - `name` je zobrazovaný název bez řídicích znaků;
-- `hostAddress` musí patřit oznamujícímu routeru a nemusí být právě přítomná
-  v pasivním seznamu sousedů;
+- `hostAddress` musí patřit oznamujícímu routeru; editor dovolí novou službu
+  přiřadit pouze hostu z jeho pasivně propagovaného seznamu;
 - `protocol` je v první verzi pouze `tcp`, `http` nebo `https`;
 - `port` je povinný v rozsahu `1–65535`;
 - `path` je volitelná absolutní cesta pouze pro `http` a `https`, bez údajů
@@ -57,7 +57,10 @@ potvrzení správce.
 Místní editor bude součástí přihlášeného WebApps rozhraní daného routeru.
 Zápis vyžaduje PAM přihlášení, CSRF token, přesný tvar požadavku a atomické
 uložení do samostatného souboru vlastněného službou. Nesmí měnit UCI, firewall,
-DNS ani konfiguraci cílového hosta.
+DNS ani konfiguraci cílového hosta. Správce nejdřív vybere propagovaného hosta,
+potom vidí jen jeho služby a může k němu doplnit další. Host s existujícími
+definicemi zůstane v editoru dostupný i při dočasném výpadku z pasivního
+pozorování, aby šlo jeho služby opravit nebo odstranit.
 
 Router přidá validovaný seznam do svého podepsaného provozního reportu vedle
 katalogu hostů. Příjemce ověří podpis routeru, členství, vlastnictví cílové IP,

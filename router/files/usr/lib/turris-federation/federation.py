@@ -931,6 +931,21 @@ def delete_local_service(root, node, service_id):
         return services
 
 
+def editable_service_hosts(node, report, services):
+    """Offer observed hosts, while keeping hosts with existing definitions manageable."""
+    hosts = {}
+    try:
+        catalog = validate_hosts(node, report)
+    except (TypeError, ValueError):
+        catalog = None
+    for host in (catalog or {}).get('hosts', []):
+        hosts[host['address']] = {**host, 'observed': True}
+    for service in services:
+        hosts.setdefault(service['hostAddress'], {
+            'address': service['hostAddress'], 'name': None, 'observed': False})
+    return sorted(hosts.values(), key=lambda host: ipaddress.ip_address(host['address']))
+
+
 def validate_report_services(node, report):
     services = report.get('services')
     observed = report.get('servicesObservedAt')
@@ -1351,12 +1366,18 @@ WEB_SCRIPT = '''document.addEventListener("click",async event=>{const button=eve
 
 def parse_service_filters(query):
     fields = parse_qs(query, keep_blank_values=True)
-    allowed = {'service', 'protocol', 'host', 'router'}
+    allowed = {'service', 'protocol', 'host', 'router', 'editorHost'}
     if set(fields) - allowed or any(len(values) != 1 for values in fields.values()):
         raise ValueError('Neplatný filtr služeb.')
     result = {key: fields.get(key, [''])[0].strip() for key in allowed}
     if result['protocol'] not in SERVICE_PROTOCOLS | {''}:
         raise ValueError('Neplatný filtr protokolu.')
+    if result['editorHost']:
+        try:
+            if ipaddress.ip_address(result['editorHost']).version != 4:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError('Neplatný výběr hosta služeb.') from exc
     if any(len(value) > 120 or any(ord(character) < 32 for character in value)
            for value in result.values()):
         raise ValueError('Neplatný filtr služeb.')
@@ -1417,27 +1438,44 @@ def web_page(root, csrf_token='', service_filters=None):
         diagnostic_form += '<p class="notice">Probíhá měření. Výsledky se zobrazí po dokončení.</p>'
     elif diagnostics.get('state') in ['running', 'error']:
         diagnostic_form += '<p class="notice">Měření nebylo dokončeno. Spusťte diagnostiku znovu.</p>'
+    editable_hosts = editable_service_hosts(own, report, local_definitions) if own else []
+    filters = {key: '' for key in ['service', 'protocol', 'host', 'router', 'editorHost']}
+    filters.update(service_filters or {})
+    editor_host = filters['editorHost'] if any(
+        host['address'] == filters['editorHost'] for host in editable_hosts) else ''
+    selected_definitions = [service for service in local_definitions if service['hostAddress'] == editor_host]
     local_service_rows = ''.join(
         '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
             esc(service['name']), esc(service['id']), esc(service_endpoint(service)),
             esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_PATH,
-            esc(csrf_token), esc(service['id'])) for service in local_definitions)
+            esc(csrf_token), esc(service['id'])) for service in selected_definitions)
+    host_selector = '''<form class="service-form" method="get" action="''' + WEB_PATH + '''">
+<label>Host (uzel v LAN)<select name="editorHost" required><option value="">Vyberte hosta</option>''' + ''.join(
+        '<option value="%s"%s>%s%s</option>' % (
+            esc(host['address']), ' selected' if host['address'] == editor_host else '',
+            esc((host['name'] + ' · ') if host['name'] else ''), esc(host['address']) + ('' if host['observed'] else ' · nyní nepozorován'))
+        for host in editable_hosts) + '''</select></label><button class="button">Vybrat hosta</button></form>''' if editable_hosts else \
+        '<p class="notice">Router zatím nepropaguje žádného hosta, ke kterému lze přidat službu.</p>'
     service_editor = ''
-    if own and csrf_token:
+    if own and csrf_token and editor_host:
         service_editor = '''<form class="service-form" method="post" action="''' + WEB_PATH + '''services/save">
 <input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
+<input type="hidden" name="hostAddress" value="''' + esc(editor_host) + '''">
 <label>ID služby<input name="id" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="ollama-main"></label>
 <label>Název<input name="name" required maxlength="80" placeholder="Ollama"></label>
-<label>IPv4 hosta<input name="hostAddress" required placeholder="192.168.1.20"></label>
 <label>Protokol<select name="protocol"><option value="tcp">tcp</option><option value="http">http</option><option value="https">https</option></select></label>
 <label>Port<input name="port" required type="number" min="1" max="65535"></label>
 <label>Cesta HTTP(S)<input name="path" placeholder="/lovelace"></label>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
 <button class="button">Uložit službu</button></form>'''
-    local_services_section = '''<section><h2>Zlaté stránky služeb · tento router</h2>
-<p class="muted">Místní definice zatím zůstávají pouze na tomto routeru. Nemění firewall, DNS ani cílového hosta.</p>
-<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' + (local_service_rows or '<tr><td colspan="4">Zatím není definovaná žádná služba.</td></tr>') + '''</tbody></table></div>''' + service_editor + '''</section>'''
-    filters = service_filters or {key: '' for key in ['service', 'protocol', 'host', 'router']}
+    selected_host = next((host for host in editable_hosts if host['address'] == editor_host), None)
+    selected_host_label = (selected_host['name'] + ' · ' if selected_host and selected_host['name'] else '') + editor_host
+    selected_services = ('''<h3>Služby hosta ''' + esc(selected_host_label) + '''</h3>
+<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' +
+        (local_service_rows or '<tr><td colspan="4">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
+        '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
+    local_services_section = '''<section><h2>Editor služeb · tento router</h2>
+<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Editor nemění firewall, DNS ani cílového hosta.</p>''' + host_selector + selected_services + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:
@@ -1459,6 +1497,7 @@ def web_page(root, csrf_token='', service_filters=None):
     directory_section = '''<section><h2>Zlaté stránky služeb</h2>
 <p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
 <form class="service-form" method="get" action="''' + WEB_PATH + '''">
+<input type="hidden" name="editorHost" value="''' + esc(editor_host) + '''">
 <label>Služba<input name="service" value="''' + esc(filters['service']) + '''"></label>
 <label>Protokol<select name="protocol"><option value="">všechny</option>''' + ''.join(
         '<option value="%s"%s>%s</option>' % (protocol, ' selected' if filters['protocol'] == protocol else '', protocol)
@@ -1478,7 +1517,7 @@ def web_page(root, csrf_token='', service_filters=None):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + directory_section + local_services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + local_services_section + directory_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1535,6 +1574,7 @@ def web_handler(root):
             if not re.fullmatch('[0-9a-f]{64}', token) or not secrets.compare_digest(token, csrf_token):
                 self.send_error(403)
                 return
+            redirect_location = WEB_PATH
             try:
                 if self.path == WEB_PATH + 'diagnostics':
                     if set(fields) != {'token'} or fields['token'] != [token]:
@@ -1552,7 +1592,11 @@ def web_handler(root):
                         if set(fields) != {'token', 'id'} or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
+                        existing = next((service for service in local_services(root, node)
+                                         if service['id'] == fields['id'][0]), None)
                         delete_local_service(root, node, fields['id'][0])
+                        if existing:
+                            redirect_location += '?editorHost=' + existing['hostAddress']
                     else:
                         expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path', 'confirmDuplicate'}
                         if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
@@ -1568,7 +1612,13 @@ def web_handler(root):
                         service = {'id': fields['id'][0], 'name': fields['name'][0],
                                    'hostAddress': fields['hostAddress'][0], 'protocol': fields['protocol'][0],
                                    'port': port, 'path': fields['path'][0] or None}
+                        definitions = local_services(root, node)
+                        allowed_hosts = {host['address'] for host in editable_service_hosts(
+                            node, read(Path(root) / 'report.json', {}), definitions)}
+                        if service['hostAddress'] not in allowed_hosts:
+                            raise ValueError('Vyberte hosta propagovaného tímto routerem.')
                         save_local_service(root, node, service, fields['confirmDuplicate'][0] == '1')
+                        redirect_location += '?editorHost=' + service['hostAddress']
             except ValueError as error:
                 self.send_error(409, 'Operation unavailable', explain=str(error))
                 return
@@ -1576,7 +1626,7 @@ def web_handler(root):
                 self.send_error(503)
                 return
             self.send_response(303)
-            self.send_header('Location', WEB_PATH)
+            self.send_header('Location', redirect_location)
             self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', '0')
             self.end_headers()
