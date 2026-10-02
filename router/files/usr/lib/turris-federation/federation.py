@@ -1760,7 +1760,7 @@ def installed_artifact_hash(node, credentials):
     return value
 
 
-def ssh(node, credentials, command):
+def ssh(node, credentials, command, input_data=None):
     # Credentials are passed through stdin to this controller and an inherited pipe to sshpass.
     host, user, port = node['sshHost'], node['sshUser'], node['sshPort']
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.:%_-]*', host) or not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]*', user) or not 0 < port < 65536:
@@ -1779,14 +1779,18 @@ def ssh(node, credentials, command):
             os.write(write_fd, (password + '\n').encode())
             os.close(write_fd)
             write_fd = None
-            args = ['sshpass', '-d', str(read_fd), 'ssh', '-F', '/dev/null', '-T', '-n',
+            args = ['sshpass', '-d', str(read_fd), 'ssh', '-F', '/dev/null', '-T']
+            if input_data is None:
+                args.append('-n')
+            args += [
                     '-o', 'StrictHostKeyChecking=yes', '-o', 'GlobalKnownHostsFile=/dev/null',
                     '-o', 'UserKnownHostsFile=' + str(key), '-o', 'ConnectTimeout=10',
                     '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
                     '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1',
                     '-B', lan['device'], '-b', lan['source'],
                     '-p', str(port), '-l', user, '--', lan['host'], command]
-            result = subprocess.run(args, pass_fds=(read_fd,), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+            result = subprocess.run(args, pass_fds=(read_fd,), input=input_data,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
             if result.returncode:
                 # Remote errors only contain our sanitised exception, never shell command or input.
                 detail = result.stderr.decode(errors='replace')[-1500:]
@@ -1995,6 +1999,10 @@ def controller(root, req):
             '; test ! -f ' + REMOTE + '/pending.json; python3 -c ' + shell_quote(check_member))
     else:
         source = Path(__file__).read_bytes()
+        payload = source + INIT.encode()
+        unpack = ('import pathlib,sys;d=sys.stdin.buffer.read();n=%d;assert len(d)==%d;'
+                  'pathlib.Path(%r).write_bytes(d[:n]);pathlib.Path(%r).write_bytes(d[n:])'
+                  % (len(source), len(payload), PROGRAM + '.new', '/etc/init.d/turris-federation.new'))
         installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
         check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
         installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
@@ -2002,11 +2010,12 @@ def controller(root, req):
         installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
         installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
         installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
-        installer += 'printf %s ' + shell_quote(base64.b64encode(source).decode()) + ' | base64 -d > ' + PROGRAM + '.new; '
+        installer += 'trap ' + shell_quote('rm -f ' + PROGRAM + '.new /etc/init.d/turris-federation.new') + ' EXIT; '
+        installer += 'python3 -c ' + shell_quote(unpack) + '; '
         installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
-        installer += 'printf %s ' + shell_quote(base64.b64encode(INIT.encode()).decode()) + ' | base64 -d > /etc/init.d/turris-federation; chmod 755 /etc/init.d/turris-federation'
+        installer += 'chmod 755 /etc/init.d/turris-federation.new; mv /etc/init.d/turris-federation.new /etc/init.d/turris-federation'
         installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
-        ssh(node, credentials, installer)
+        ssh(node, credentials, installer, input_data=payload)
         member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
         members = read(root / 'members.json', {})
         if node['id'] in members and members[node['id']] != member:

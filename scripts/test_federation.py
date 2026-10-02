@@ -422,6 +422,12 @@ class FederationTests(unittest.TestCase):
             args = run.call_args.args[0]
             self.assertEqual('eth0', args[args.index('-B') + 1])
             self.assertEqual('192.168.1.10', args[args.index('-b') + 1])
+            self.assertIn('-n', args)
+            self.assertIsNone(run.call_args.kwargs['input'])
+        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'ok', b'')) as run:
+            self.assertEqual(b'ok', f.ssh(dict(target, _deployLan=lan), credentials, 'consume-stdin', input_data=b'large artifact'))
+            self.assertNotIn('-n', run.call_args.args[0])
+            self.assertEqual(b'large artifact', run.call_args.kwargs['input'])
         with patch.object(f, 'direct_lan', return_value=dict(lan, source='192.168.1.11')), patch.object(f.subprocess, 'run') as run:
             with self.assertRaisesRegex(ValueError, 'změnilo'):
                 f.ssh(dict(target, _deployLan=lan), credentials, 'update')
@@ -536,8 +542,13 @@ class FederationTests(unittest.TestCase):
             f.controller(self.root, req)
         self.assertEqual(['bootstrap', 'apply', 'status'], [c.args[2] for c in remote.call_args_list])
         commands = '\n'.join(c.args[2] for c in ssh.call_args_list)
-        for expected in ['opkg', 'install-web', 'web-check', 'restart', 'base64 -d']:
+        for expected in ['opkg', 'install-web', 'web-check', 'restart', 'python3 -c']:
             self.assertIn(expected, commands)
+        uploads = [c for c in ssh.call_args_list if c.kwargs.get('input_data') is not None]
+        self.assertEqual(1, len(uploads))
+        self.assertEqual(SOURCE.read_bytes() + f.INIT.encode(), uploads[0].kwargs['input_data'])
+        self.assertLess(len(uploads[0].args[2]), 8192)
+        self.assertNotIn(base64.b64encode(SOURCE.read_bytes()).decode(), uploads[0].args[2])
 
     def test_deploy_rejects_unavailable_mode_and_changed_remote_version(self):
         req, plan, lan = self.validation_fixture(None, enrolled=False)
