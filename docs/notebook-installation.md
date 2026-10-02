@@ -111,9 +111,11 @@ přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datovéh
 adresáře. Místní diagnostika může při nedostatečném oprávnění samostatně
 vyžádat pouze read-only příkaz systémového `wg` pro časy handshake. Importovaný
 profil používá rozhraní `tf_notebook`, `never-default`
-pro IPv4 i IPv6 a pouze podepsané routy. Instalace odmítne systém s aktivním
-IPv4 nebo IPv6 forwardingem a před změnou ověří, že podepsaná ZeroTier adresa
-i cesty k endpointům routerů skutečně používají jedno konkrétní rozhraní `zt…`.
+pro IPv4 i IPv6 a pouze podepsané routy. Aktivní nebo neověřitelný systémový
+IPv4 či IPv6 forwarding se v plánu, stavu a diagnostice zobrazí jako varování,
+ale instalaci neblokuje ani toto systémové nastavení nemění. Před změnou se
+ověří, že podepsaná ZeroTier adresa i cesty k endpointům routerů skutečně
+používají jedno konkrétní rozhraní `zt…`.
 Stávající WireGuard profil stejného jména zachová
 jako obnovovací kopii; neúspěšná kontrola adresy nebo rout spustí automatický
 rollback a UI nabízí také výslovný návrat. Tento tok zatím prošel pouze testy
@@ -121,7 +123,7 @@ s nahrazenými systémovými příkazy, nikoli reálným polkit potvrzením a ak
 tunelu.
 
 Explicitní místní kontrola navíc ověřuje aktivní profil, rozhraní, podepsanou
-adresu, všechny očekávané routy a vypnutý forwarding. Pět WireGuard pingů pro
+adresu, všechny očekávané routy a hlásí stav forwardingu. Pět WireGuard pingů pro
 každý router míří jen na cíle z podepsané revize; handshake výstup se mapuje na
 routery bez zveřejnění jejich veřejných klíčů. Výsledek se po 120 sekundách
 označí jako zastaralý a není sdílen jako stav jiných notebooků.

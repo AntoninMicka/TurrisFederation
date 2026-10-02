@@ -229,6 +229,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         <p v-if="topologyRefreshPlan.addedRoutes.length">Přidané routy: <code>{{ topologyRefreshPlan.addedRoutes.join(", ") }}</code></p>
         <p v-if="topologyRefreshPlan.removedRoutes.length">Odebrané routy: <code>{{ topologyRefreshPlan.removedRoutes.join(", ") }}</code></p>
         <p v-if="topologyRefreshPlan.kind === 'revoked'" class="warning">Spravovaný VPN profil i jeho federovaná rollback kopie budou odstraněny; ostatní NetworkManager profily, místní identita, pověření a data zůstanou zachované.</p>
+        <p v-if="topologyRefreshPlan.forwarding && (topologyRefreshPlan.forwarding.ipv4 !== false || topologyRefreshPlan.forwarding.ipv6 !== false)" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Aktualizace ho nemění; předávání provozu mezi fyzickou sítí a VPN není tímto stavem vyloučené.</p>
         <ol><li v-for="step in topologyRefreshPlan.steps" :key="step">{{ step }}</li></ol>
         <label class="trust-check"><input type="checkbox" :checked="topologyRefreshConfirmed" @change="$emit('update:topologyRefreshConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím změnám a potvrzuji použití podepsané revize.</label>
         <button type="button" :disabled="topologyRefreshBusy || !topologyRefreshConfirmed" @click="$emit('topologyRefreshApply')">{{ topologyRefreshPlan.kind === "revoked" ? "Přijmout odvolání a odpojit VPN" : "Aktualizovat topologii a VPN" }}</button>
@@ -247,7 +248,7 @@ function presenceLabel(value: boolean | null, positive: string) {
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
       <template v-if="vpnDiagnostics">
         <p :class="vpnDiagnosticFresh ? '' : 'warning'">Místní kontrola revize {{ vpnDiagnostics.revision }}: profil {{ profileLabel }}, rozhraní {{ presenceLabel(vpnDiagnostics.interfacePresent, "nalezeno") }}, adresa {{ presenceLabel(vpnDiagnostics.addressAssigned, "odpovídá") }}, routy {{ vpnDiagnostics.routesActive }}/{{ vpnDiagnostics.routesExpected }}.</p>
-        <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="error">Nelze potvrdit vypnutý IPv4 a IPv6 forwarding.</p>
+        <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Profil ho nezapíná ani nemění, ale endpoint-only izolace není potvrzená.</p>
         <p v-if="vpnDiagnostics.missingRoutes.length" class="warning">Chybějící routy: <code>{{ vpnDiagnostics.missingRoutes.join(", ") }}</code></p>
         <p v-if="vpnDiagnostics.unknownRoutes.length" class="warning">Routy, které nelze ověřit: <code>{{ vpnDiagnostics.unknownRoutes.join(", ") }}</code></p>
         <p v-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
@@ -256,6 +257,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>
         <p>Routy: <code>{{ vpnPlan.routes.join(", ") || "žádné" }}</code></p>
         <p v-if="vpnPlan.currentConnection" class="warning">Stávající profil bude před změnou zachovaný pro rollback.</p>
+        <p v-if="vpnPlan.forwarding.ipv4 !== false || vpnPlan.forwarding.ipv6 !== false" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Instalace může pokračovat, ale tento stav sama nezmění.</p>
         <ol><li v-for="step in vpnPlan.steps" :key="step">{{ step }}</li></ol>
         <label class="trust-check"><input type="checkbox" :checked="vpnConfirmed" @change="$emit('update:vpnConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím systémovým změnám a chci vyvolat polkit potvrzení instalace.</label>
         <button type="button" :disabled="vpnBusy || !vpnConfirmed" @click="$emit('vpnInstall')">Nainstalovat a aktivovat VPN</button>

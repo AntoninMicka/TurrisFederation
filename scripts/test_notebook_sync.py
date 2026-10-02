@@ -304,7 +304,7 @@ class NotebookTests(unittest.TestCase):
         f.snapshot(self.a.fleet, updated_config, current['members'])
         update = self.a.topology_update_export()
 
-        forwarding = {'ipv4': False, 'ipv6': False}
+        forwarding = {'ipv4': True, 'ipv6': False}
         old_uuid, new_uuid = str(uuid.uuid4()), str(uuid.uuid4())
         managed = {n.VPN_CONNECTION: {'uuid': old_uuid, 'type': 'wireguard'}}
         with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
@@ -315,6 +315,7 @@ class NotebookTests(unittest.TestCase):
                          (plan['kind'], plan['currentRevision'], plan['revision']))
         self.assertEqual(['192.168.2.0/24'], plan['addedRoutes'])
         self.assertEqual(['192.168.1.0/24'], plan['removedRoutes'])
+        self.assertEqual(forwarding, plan['forwarding'])
         self.assertNotIn('update', plan)
         self.assertNotIn('configHash', plan)
 
@@ -467,13 +468,14 @@ class NotebookTests(unittest.TestCase):
 
     def test_vpn_install_uses_reviewed_plan_and_never_passes_private_key_in_arguments(self):
         self.onboard_user()
-        forwarding = {'ipv4': False, 'ipv6': False}
+        forwarding = {'ipv4': True, 'ipv6': False}
         with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
                 patch.object(n, 'nmcli_connections', return_value={}), \
                 patch.object(n, 'verify_underlay', return_value='zt1234'):
             plan = self.b.vpn_plan()
         self.assertEqual(('tf_notebook', '10.203.0.3/32'), (plan['interfaceName'], plan['address']))
         self.assertEqual(['10.203.0.1/32', '192.168.1.0/24'], plan['routes'])
+        self.assertEqual(forwarding, plan['forwarding'])
         self.assertNotIn('configHash', plan)
 
         new_uuid = str(uuid.uuid4())
@@ -517,13 +519,15 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual({'state': 'error', 'error': 'Instalace VPN selhala.', 'rollbackComplete': True},
                          {key: self.b.vpn_status()[key] for key in ['state', 'error', 'rollbackComplete']})
 
-    def test_vpn_plan_blocks_forwarding_and_rollback_requires_confirmation(self):
+    def test_vpn_plan_warns_about_forwarding_and_rollback_requires_confirmation(self):
         self.onboard_user()
         with patch.object(n.Store, 'forwarding_state', return_value={'ipv4': True, 'ipv6': False}), \
-                patch.object(n, 'nmcli_connections') as connections, \
-                self.assertRaisesRegex(ValueError, 'forwarding'):
-            self.b.vpn_plan()
-        connections.assert_not_called()
+                patch.object(n, 'nmcli_connections', return_value={}) as connections, \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.vpn_plan()
+        self.assertEqual({'ipv4': True, 'ipv6': False}, plan['forwarding'])
+        self.assertTrue(any('forwarding' in step for step in plan['steps']))
+        connections.assert_called_once_with()
         with self.assertRaisesRegex(ValueError, 'výslovné potvrzení'):
             n.command(self.b, {'action': 'vpn_rollback'})
 

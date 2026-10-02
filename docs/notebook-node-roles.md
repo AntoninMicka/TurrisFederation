@@ -154,7 +154,7 @@ dostupnost. Výsledek místní kontroly se nepoužívá jako autorita pro změnu
 Read-only přehled spouští místní kontrolu pouze explicitním tlačítkem. Backend
 sám vybere ZeroTier a WireGuard adresy přijatých routerů z ověřené publikované
 revize; UI mu nepředává libovolný cíl. Kontrola ověří NetworkManager profil,
-rozhraní, přidělenou adresu, očekávané routy, vypnutý forwarding, handshake a
+rozhraní, přidělenou adresu, očekávané routy, stav forwardingu, handshake a
 provede pět pingů na každé podepsané routerové adrese. Handshake se nejprve čte
 bez zvýšení oprávnění a při zamítnutí může polkit spustit pouze systémové
 `wg show tf_notebook latest-handshakes`. Privátní klíče se nečtou ani nevracejí

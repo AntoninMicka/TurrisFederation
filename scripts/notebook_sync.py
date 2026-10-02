@@ -214,8 +214,6 @@ def verify_vpn(address, routes):
         found = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', str(destination)]))
         if len(found) != 1 or found[0].get('dev') != VPN_INTERFACE:
             raise ValueError('Po aktivaci chybí očekávaná VPN route: ' + cidr)
-    if any(value is not False for value in Store.forwarding_state().values()):
-        raise ValueError('Po aktivaci nelze potvrdit vypnutý systémový IP forwarding.')
 
 
 def verify_underlay(address, document):
@@ -590,8 +588,6 @@ class Store:
                 'rollbackConnection': managed.get(VPN_BACKUP)}
         if notebook:
             forwarding = self.forwarding_state()
-            if any(value is not False for value in forwarding.values()):
-                raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Aktualizace byla zastavena.')
             underlay = verify_underlay(notebook['zeroTierAddress'], proposed)
             config = self.wireguard_config(proposed, notebook)
             f.atomic(self.root / 'wireguard-refresh.conf', config)
@@ -604,7 +600,7 @@ class Store:
                              'Znovu ověřit podpis, federaci, návaznost a místní WireGuard identitu.',
                              'Přes polkit vytvořit nový NetworkManager profil z nové revize.',
                              'Předchozí profil zachovat jako obnovovací kopii.',
-                             'Ověřit adresu, routy a vypnutý forwarding před přijetím topologie.',
+                             'Ověřit adresu a routy; aktivní systémový forwarding zobrazit jako varování.',
                              'Při selhání obnovit předchozí profil i podepsanou revizi.',
                          ]})
         else:
@@ -656,8 +652,6 @@ class Store:
             raise ValueError('Instalace VPN vyžaduje NetworkManager, polkit a nástroj ip.')
         document, notebook, config, routes = self.wireguard_endpoint()
         forwarding = self.forwarding_state()
-        if any(value is not False for value in forwarding.values()):
-            raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Před instalací jej vypněte.')
         underlay = verify_underlay(notebook['zeroTierAddress'], document)
         current = nmcli_connections().get(VPN_CONNECTION)
         plan = {'id': secrets.token_hex(24), 'expiresAt': time.time() + VPN_PLAN_TTL,
@@ -667,7 +661,7 @@ class Store:
                 'zeroTierAddress': notebook['zeroTierAddress'], 'underlayDevice': underlay, 'routes': routes,
                 'currentConnection': current, 'forwarding': forwarding,
                 'steps': [
-                    'Ověřit podepsanou revizi, lokální WireGuard klíč a vypnutý IP forwarding.',
+                    'Ověřit podepsanou revizi a lokální WireGuard klíč; stav IP forwardingu zaznamenat.',
                     'Přes polkit vytvořit nový NetworkManager profil bez výchozí trasy.',
                     'Předchozí profil zachovat jako obnovovací kopii.',
                     'Aktivovat rozhraní tf_notebook a ověřit adresu i host routy.',
@@ -689,8 +683,6 @@ class Store:
 
     def activate_vpn(self, plan, document, notebook, config, routes, plan_path,
                      commit=None, restore=None):
-        if any(value is not False for value in self.forwarding_state().values()):
-            raise ValueError('Nelze potvrdit vypnutý IPv4 a IPv6 forwarding. Instalace byla zastavena.')
         if plan.get('underlayDevice') != verify_underlay(notebook['zeroTierAddress'], document):
             raise ValueError('ZeroTier podklad se od vytvoření plánu změnil.')
         before = nmcli_connections()
