@@ -1115,6 +1115,9 @@ firewall.vpn_zerotier.network='zt0'
 firewall.vpn_zerotier.input='REJECT'
 firewall.vpn_zerotier.output='ACCEPT'
 firewall.vpn_zerotier.forward='REJECT'
+firewall.custom_include=include
+firewall.custom_include.type='nftables'
+firewall.custom_include.path='/etc/custom.nft'
 """
         network = """network.zt0=interface
 network.zt0.proto='none'

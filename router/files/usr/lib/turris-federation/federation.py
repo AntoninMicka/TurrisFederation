@@ -398,7 +398,7 @@ def firewall_zone_for_device(device):
         if separator:
             entry.setdefault(option, []).extend(values)
         elif len(values) == 1:
-            entry['type'] = values[0]
+            entry['__section_type__'] = values[0]
     network_devices = {}
     for line in run(['uci', 'show', 'network']).decode().splitlines():
         if not line.startswith('network.') or '=' not in line:
@@ -418,7 +418,7 @@ def firewall_zone_for_device(device):
                        for network in zone.get('network', [])))
 
     matches = [entry for entry in sections.values()
-               if entry.get('type') == 'zone' and owns_device(entry)]
+               if entry.get('__section_type__') == 'zone' and owns_device(entry)]
     if len(matches) > 1:
         raise ValueError('ZeroTier zařízení je přiřazeno do více firewallových zón.')
     if not matches:
