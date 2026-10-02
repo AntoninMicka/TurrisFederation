@@ -175,6 +175,31 @@ def nmcli_connections():
             if target in result and result[target]['uuid'] != fields[0]:
                 raise ValueError('NetworkManager obsahuje více spravovaných VPN profilů.')
             result[target] = {'uuid': fields[0], 'type': fields[1]}
+
+    # NetworkManager names an imported profile after the source filename before
+    # we can rename it.  A failed older installation can therefore leave an
+    # autoconnecting profile called e.g. "wireguard".  The interface name is
+    # the stable ownership boundary; no unrelated profile may use our reserved
+    # tf_notebook interface.
+    known_uuids = {profile['uuid'] for profile in result.values()}
+    output = local_command(['/usr/bin/nmcli', '-t', '-f', 'UUID,TYPE', 'connection', 'show'])
+    for line in output.splitlines():
+        fields = line.strip().split(':')
+        if len(fields) != 2 or not valid_uuid(fields[0]):
+            raise ValueError('NetworkManager vrátil neplatný seznam profilů.')
+        profile_uuid, profile_type = fields
+        if profile_type != 'wireguard' or profile_uuid in known_uuids:
+            continue
+        interface_name = local_command([
+            '/usr/bin/nmcli', '-g', 'connection.interface-name',
+            'connection', 'show', 'uuid', profile_uuid
+        ], allow_failure=True).strip()
+        if interface_name != VPN_INTERFACE:
+            continue
+        if VPN_CONNECTION in result and result[VPN_CONNECTION]['uuid'] != profile_uuid:
+            raise ValueError('NetworkManager obsahuje více spravovaných VPN profilů.')
+        result[VPN_CONNECTION] = {'uuid': profile_uuid, 'type': profile_type}
+        known_uuids.add(profile_uuid)
     return result
 
 

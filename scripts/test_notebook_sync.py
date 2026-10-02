@@ -93,6 +93,21 @@ class NotebookTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'více spravovaných'):
             n.nmcli_connections()
 
+    def test_nmcli_connections_recovers_orphan_by_reserved_interface(self):
+        orphan_uuid = str(uuid.uuid4())
+
+        def connection_show(args, **_kwargs):
+            if args[1:6] == ['-t', '-f', 'UUID,TYPE', 'connection', 'show'] and len(args) == 6:
+                return f'{orphan_uuid}:wireguard\n'
+            if args[1:4] == ['-g', 'connection.interface-name', 'connection']:
+                return n.VPN_INTERFACE + '\n'
+            return ''
+
+        with patch.object(n, 'local_command', side_effect=connection_show):
+            self.assertEqual(
+                {n.VPN_CONNECTION: {'uuid': orphan_uuid, 'type': 'wireguard'}},
+                n.nmcli_connections())
+
     def admin_command(self, store, request):
         with patch.object(store, 'access_status', return_value={'state': 'valid', 'role': 'administrator'}):
             return n.command(store, request)
