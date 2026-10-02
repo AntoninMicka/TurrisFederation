@@ -117,7 +117,9 @@ přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datovéh
 adresáře. Místní diagnostika může při nedostatečném oprávnění samostatně
 vyžádat pouze read-only příkaz systémového `wg` pro časy handshake. Importovaný
 profil používá rozhraní `tf_notebook`, `never-default`
-pro IPv4 i IPv6 a pouze podepsané routy. Aktivní nebo neověřitelný systémový
+pro IPv4 i IPv6 a pouze podepsané routy. Federované routy mají vysokou metriku,
+takže právě připojená fyzická LAN stejného prefixu zůstane preferovaná; mimo ni
+se použije VPN. Aktivní nebo neověřitelný systémový
 IPv4 či IPv6 forwarding se v plánu, stavu a diagnostice zobrazí jako varování,
 ale instalaci neblokuje ani toto systémové nastavení nemění. Před změnou se
 ověří, že podepsaná ZeroTier adresa i cesty k endpointům routerů skutečně

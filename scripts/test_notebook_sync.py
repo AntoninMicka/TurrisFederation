@@ -493,6 +493,8 @@ class NotebookTests(unittest.TestCase):
         self.assertIn("'connection', 'import', 'type', 'wireguard', 'file'", arguments)
         self.assertIn("'ipv4.never-default', 'yes'", arguments)
         self.assertIn("'ipv6.never-default', 'yes'", arguments)
+        self.assertIn("'ipv4.route-metric', '2048'", arguments)
+        self.assertIn("'ipv6.route-metric', '2048'", arguments)
         self.assertNotIn((self.b.root / 'wireguard.key').read_text().strip(), arguments)
 
     def test_failed_vpn_activation_restores_previous_profile(self):
@@ -571,8 +573,8 @@ class NotebookTests(unittest.TestCase):
                 return json.dumps([{'ifname': n.VPN_INTERFACE}])
             if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev']:
                 return json.dumps([{'addr_info': [{'family': 'inet', 'local': '10.203.0.3'}]}])
-            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
-                return json.dumps([{'dev': n.VPN_INTERFACE}])
+            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'route', 'show', 'dev']:
+                return json.dumps([{'dst': '10.203.0.1'}, {'dst': '192.168.1.0/24'}])
             if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
                 return f'{router_key}\t{int(now)}\n'
             raise AssertionError(args)
@@ -605,8 +607,8 @@ class NotebookTests(unittest.TestCase):
                 raise ValueError('missing interface')
             if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev']:
                 raise ValueError('missing interface')
-            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
-                return json.dumps([{'dev': 'eth0'}])
+            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'route', 'show', 'dev']:
+                raise ValueError('missing interface')
             if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
                 raise ValueError('permission denied')
             if args[:4] == ['/usr/bin/pkexec', '/usr/bin/wg', 'show', n.VPN_INTERFACE]:

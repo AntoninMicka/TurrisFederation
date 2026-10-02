@@ -104,7 +104,8 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     UI nyní před instalací zobrazí deset minut platný plán a přes polkit spouští
     pouze systémový `nmcli`. Plán nejprve ověří přidělenou ZeroTier adresu a
     cesty k routerům přes konkrétní `zt…` rozhraní. NetworkManager profil
-    nepřidává výchozí trasu; zapnutý nebo neověřitelný IP forwarding je
+    nepřidává výchozí trasu a federované routy mají nižší prioritu než přímo
+    připojená fyzická LAN stejného prefixu. Zapnutý nebo neověřitelný IP forwarding je
     viditelné varování, ale instalaci neblokuje ani ho nemění. Předchozí profil
     zůstává jako obnovovací kopie pro automatický i ruční
     rollback. Tok je pokrytý lokálními testy, ale nebyl spuštěný s reálným

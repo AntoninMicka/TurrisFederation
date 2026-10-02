@@ -208,12 +208,24 @@ def verify_vpn(address, routes):
                 if item.get('family') == 'inet'}
     if address not in assigned:
         raise ValueError('Aktivované rozhraní nemá podepsanou WireGuard adresu.')
+    installed = vpn_route_set()
     for cidr in routes:
-        network = ipaddress.ip_network(cidr)
-        destination = network.network_address + (1 if network.num_addresses > 1 else 0)
-        found = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', str(destination)]))
-        if len(found) != 1 or found[0].get('dev') != VPN_INTERFACE:
+        if str(ipaddress.ip_network(cidr)) not in installed:
             raise ValueError('Po aktivaci chybí očekávaná VPN route: ' + cidr)
+
+
+def vpn_route_set():
+    items = json.loads(local_command(
+        ['/usr/sbin/ip', '-j', '-4', 'route', 'show', 'dev', VPN_INTERFACE]))
+    result = set()
+    for item in items:
+        destination = item.get('dst') if isinstance(item, dict) else None
+        if not isinstance(destination, str) or destination == 'default':
+            continue
+        if '/' not in destination:
+            destination += '/32'
+        result.add(str(ipaddress.ip_network(destination, strict=True)))
+    return result
 
 
 def verify_underlay(address, document):
@@ -711,7 +723,8 @@ class Store:
             privileged_nmcli(['connection', 'modify', 'uuid', new_uuid,
                               'connection.id', VPN_CONNECTION, 'connection.interface-name', VPN_INTERFACE,
                               'connection.autoconnect', 'yes', 'ipv4.never-default', 'yes',
-                              'ipv6.never-default', 'yes', 'wireguard.peer-routes', 'yes'])
+                              'ipv6.never-default', 'yes', 'ipv4.route-metric', '2048',
+                              'ipv6.route-metric', '2048', 'wireguard.peer-routes', 'yes'])
             privileged_nmcli(['connection', 'up', 'uuid', new_uuid])
             verify_vpn(notebook['wireguardAddress'], routes)
             if commit:
@@ -882,17 +895,14 @@ class Store:
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
             address_assigned = None
 
-        missing_routes = []
-        unknown_routes = []
-        for cidr in routes:
-            network = ipaddress.ip_network(cidr)
-            destination = network.network_address + (1 if network.num_addresses > 1 else 0)
-            try:
-                found = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'route', 'get', str(destination)]))
-                if len(found) != 1 or found[0].get('dev') != VPN_INTERFACE:
-                    missing_routes.append(cidr)
-            except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
-                unknown_routes.append(cidr)
+        try:
+            installed_routes = vpn_route_set()
+            missing_routes = [cidr for cidr in routes
+                              if str(ipaddress.ip_network(cidr)) not in installed_routes]
+            unknown_routes = []
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            missing_routes = []
+            unknown_routes = list(routes)
 
         handshakes = wireguard_handshakes()
         handshake_available = handshakes is not None
