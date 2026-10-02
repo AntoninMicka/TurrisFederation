@@ -72,7 +72,7 @@ esac
 
 # Systémové závislosti dle https://v2.tauri.app/start/prerequisites/
 packages=(build-essential pkg-config curl wget file ca-certificates openssh-client sshpass xdg-utils python3 openssl iproute2
-    nftables wireguard-tools network-manager policykit-1
+    nftables wireguard-tools network-manager pkexec
     libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev
     libayatana-appindicator3-dev librsvg2-dev)
 
