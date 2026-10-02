@@ -84,6 +84,7 @@ class NotebookNetworkServiceTests(unittest.TestCase):
         self.assertIn('ProtectHome=true', unit)
         self.assertIn('NoNewPrivileges=true', unit)
         self.assertIn('CAP_NET_ADMIN', unit)
+        self.assertIn('CAP_CHOWN', unit)
         self.assertNotIn('WorkingDirectory=', unit)
         self.assertIn('install_notebook_network_service.py --check --uid "$UID"', runner)
         self.assertIn('sudo python3 scripts/install_notebook_network_service.py --uid "$UID"', runner)
