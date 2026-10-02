@@ -1111,14 +1111,22 @@ class FederationTests(unittest.TestCase):
         doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
         existing = """firewall.vpn_zerotier=zone
 firewall.vpn_zerotier.name='vpn_zerotier'
-firewall.vpn_zerotier.device='zt1234'
+firewall.vpn_zerotier.network='zt0'
 firewall.vpn_zerotier.input='REJECT'
 firewall.vpn_zerotier.output='ACCEPT'
 firewall.vpn_zerotier.forward='REJECT'
 """
+        network = """network.zt0=interface
+network.zt0.proto='none'
+network.zt0.device='zt1234'
+"""
 
         def command(args, *unused, **kwargs):
-            return existing.encode() if args == ['uci', 'show', 'firewall'] else b''
+            if args == ['uci', 'show', 'firewall']:
+                return existing.encode()
+            if args == ['uci', 'show', 'network']:
+                return network.encode()
+            return b''
 
         with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
                 patch.object(f, 'run', side_effect=command), \

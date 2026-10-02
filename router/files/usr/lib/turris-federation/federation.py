@@ -399,8 +399,26 @@ def firewall_zone_for_device(device):
             entry.setdefault(option, []).extend(values)
         elif len(values) == 1:
             entry['type'] = values[0]
+    network_devices = {}
+    for line in run(['uci', 'show', 'network']).decode().splitlines():
+        if not line.startswith('network.') or '=' not in line:
+            continue
+        key, raw = line.split('=', 1)
+        section, separator, option = key[len('network.'):].partition('.')
+        if not separator or option not in {'device', 'ifname'}:
+            continue
+        try:
+            network_devices.setdefault(section, []).extend(shlex.split(raw))
+        except ValueError as exc:
+            raise ValueError('Síť obsahuje nečitelnou UCI konfiguraci.') from exc
+
+    def owns_device(zone):
+        return (device in zone.get('device', [])
+                or any(device in network_devices.get(network, [])
+                       for network in zone.get('network', [])))
+
     matches = [entry for entry in sections.values()
-               if entry.get('type') == 'zone' and device in entry.get('device', [])]
+               if entry.get('type') == 'zone' and owns_device(entry)]
     if len(matches) > 1:
         raise ValueError('ZeroTier zařízení je přiřazeno do více firewallových zón.')
     if not matches:
