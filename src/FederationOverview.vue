@@ -156,7 +156,7 @@ async function copyEndpoint(endpoint: string) {
         <p class="muted">Poslední zaznamenaný stav. Načtení přehledu neprovádí nový audit ani ping sítě.</p>
       </div>
       <button type="button" class="secondary" :disabled="loading" @click="$emit('refresh')">
-        {{ loading ? "Načítám…" : "Obnovit stav" }}
+        {{ loading ? "Načítám…" : notebook?.access.role === "administrator" ? "Obnovit stav routerů" : "Načíst místní přehled" }}
       </button>
     </div>
 
@@ -209,6 +209,7 @@ async function copyEndpoint(endpoint: string) {
           </tbody>
         </table>
       </div>
+      <p v-if="notebook?.access.role === 'user'" class="warning">Uživatelský notebook nyní zobrazuje pouze katalog, který už má v místní ověřené cache. Automatický autentizovaný přenos katalogu bez administrátorské cache zatím není implementovaný.</p>
     </section>
 
     <section class="overview-section">

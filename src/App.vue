@@ -294,14 +294,16 @@ async function refreshDeployment(live = false) {
 async function refreshReadOnlyOverview() {
   overviewLoading.value = true;
   try {
-    readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
     if (isAdministrator.value) {
+      deployment.value = await deploymentAction<DeploymentOverview>("refresh");
       const [freshNodes, freshSettings] = await Promise.all([listNodes(), getZeroTierSettings()]);
       nodes.value = freshNodes;
       ztSettings.value = freshSettings;
-      await refreshDeployment();
     }
-    message.value = "Read-only přehled byl obnoven z ověřené publikované revize.";
+    readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
+    message.value = isAdministrator.value
+      ? "Podepsané reporty routerů byly načteny a přehled byl obnoven."
+      : "Přehled byl znovu načten z místní ověřené cache tohoto notebooku.";
   } catch (error) {
     message.value = `Přehled nelze obnovit: ${String(error)}`;
   } finally {

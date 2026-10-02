@@ -335,6 +335,21 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('camera', result['nodes'][node(2)['id']]['hosts'][0]['name'])
         self.assertTrue(result['nodes'][node(1)['id']]['reachable'])
 
+    def test_live_refresh_populates_desktop_service_directory(self):
+        members = {node(1)['id']: self.member(1)}
+        f.atomic(self.root / 'members.json', members)
+        f.snapshot(self.root, self.config, members)
+        service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 11434, 'path': None}
+        report = {'state': 'active', 'services': [service], 'servicesObservedAt': time.time()}
+        with patch.object(f, 'peer_status', return_value=report):
+            f.controller(self.root, {'action': 'refresh', 'nodes': self.nodes,
+                                     'networkId': self.config['networkId']})
+        overview = f.controller(self.root, {'action': 'read_only_overview', 'nodes': self.nodes,
+                                            'networkId': self.config['networkId']})
+        self.assertEqual('ollama', overview['services'][0]['id'])
+        self.assertEqual('Stanoviště 1', overview['services'][0]['routerName'])
+
     def test_revocation_removes_cached_service_reports(self):
         doc = self.document(members={node(1)['id']: self.member(1)})
         cached = {'services': [{'id': 'camera', 'name': 'Camera', 'hostAddress': '192.168.2.20',
