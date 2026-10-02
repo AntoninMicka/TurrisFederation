@@ -38,6 +38,8 @@ PROGRAM = '/usr/lib/turris-federation/federation.py'
 DHCP_LEASES = Path('/tmp/dhcp.leases')
 HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
+SERVICE_LIMIT = 128
+SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
 
 
 def encode(value):
@@ -856,6 +858,79 @@ def validate_hosts(node, report):
     return {'hosts': normalized, 'hostsObservedAt': observed}
 
 
+def validate_services(node, services):
+    """Validate administrator-authored services owned by this router's LAN."""
+    if not isinstance(services, list) or len(services) > SERVICE_LIMIT:
+        raise ValueError('Neplatný katalog služeb routeru.')
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    normalized, seen = [], set()
+    for service in services:
+        if not isinstance(service, dict) or set(service) != {
+                'id', 'name', 'hostAddress', 'protocol', 'port', 'path'}:
+            raise ValueError('Neplatná položka katalogu služeb.')
+        service_id, name = service['id'], service['name']
+        protocol, port, path = service['protocol'], service['port'], service['path']
+        if (not isinstance(service_id, str) or
+                not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', service_id) or service_id in seen):
+            raise ValueError('Neplatné nebo duplicitní ID služby.')
+        if (not isinstance(name, str) or not 1 <= len(name) <= 80 or name != name.strip()
+                or any(ord(character) < 32 or ord(character) == 127 for character in name)):
+            raise ValueError('Neplatný název služby.')
+        try:
+            host = ipaddress.ip_address(service['hostAddress'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Neplatná adresa hosta služby.') from exc
+        if host.version != 4 or not any(host in network for network in networks):
+            raise ValueError('Služba neleží v LAN sítích tohoto routeru.')
+        if protocol not in SERVICE_PROTOCOLS or type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('Neplatný protokol nebo port služby.')
+        if protocol == 'tcp':
+            if path is not None:
+                raise ValueError('TCP služba nesmí obsahovat cestu.')
+        elif path is not None and (not isinstance(path, str) or not path.startswith('/')
+                                   or '?' in path or '#' in path
+                                   or any(ord(character) < 32 or ord(character) == 127 for character in path)):
+            raise ValueError('Neplatná HTTP cesta služby.')
+        seen.add(service_id)
+        normalized.append({'id': service_id, 'name': name, 'hostAddress': str(host),
+                           'protocol': protocol, 'port': port, 'path': path})
+    normalized.sort(key=lambda service: service['id'])
+    return normalized
+
+
+def local_services(root, node):
+    return validate_services(node, read(Path(root) / 'services.json', []))
+
+
+def save_local_service(root, node, service, allow_duplicate=False):
+    root = Path(root)
+    with locked(root):
+        services = local_services(root, node)
+        validated = validate_services(node, [service])[0]
+        duplicate = next((item for item in services if item['id'] != validated['id'] and
+                          (item['hostAddress'], item['protocol'], item['port'], item['path']) ==
+                          (validated['hostAddress'], validated['protocol'], validated['port'], validated['path'])), None)
+        if duplicate and not allow_duplicate:
+            raise ValueError('Stejný endpoint už má jinou službu; potvrďte duplicitu.')
+        services = [item for item in services if item['id'] != validated['id']] + [validated]
+        services = validate_services(node, services)
+        atomic(root / 'services.json', services)
+        return services
+
+
+def delete_local_service(root, node, service_id):
+    if not isinstance(service_id, str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', service_id):
+        raise ValueError('Neplatné ID služby.')
+    root = Path(root)
+    with locked(root):
+        services = local_services(root, node)
+        if not any(item['id'] == service_id for item in services):
+            raise ValueError('Služba neexistuje.')
+        services = [item for item in services if item['id'] != service_id]
+        atomic(root / 'services.json', services)
+        return services
+
+
 def health(root, doc):
     own_id = read(Path(root) / 'node.json')['nodeId']
     if own_id not in doc['members']:
@@ -1205,7 +1280,10 @@ td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb
 .hosts{margin:0;padding-left:18px;min-width:170px}.hosts li{margin:0 0 6px}.hosts small{display:block}
 .badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
 .signal{white-space:nowrap;font-size:13px}.green{color:#7ee2a8}.yellow{color:#ffda75}.red{color:#ff9292}.unknown{color:#a8bdcc}
-.button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none}
+.button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none;background:#13283a;color:#e6eff6;cursor:pointer}
+.service-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end;margin-top:18px}
+label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select{min-width:0;padding:10px;border:1px solid #517185;border-radius:7px;background:#0c1925;color:#e6eff6}
+.inline-form{display:inline}.danger{border-color:#a96060;color:#ffb4b4}
 @media(max-width:600px){main{padding:24px 14px}section{padding:16px}.cards{grid-template-columns:1fr}}
 '''
 WEB_LABELS = {'pending': 'Čeká na aplikování', 'error': 'Chyba agenta', 'confirming': 'Čeká na potvrzení',
@@ -1223,6 +1301,7 @@ def web_page(root, csrf_token=''):
     doc = validate_document(verify((root / 'root.pub').read_text(), envelope)) if envelope else None
     own_id = read(root / 'node.json', {}).get('nodeId')
     own = next((node for node in doc['config']['nodes'] if node['id'] == own_id), None) if doc else None
+    services = local_services(root, own) if own else []
     state = WEB_LABELS.get(report.get('state'), 'Zatím nenasazeno')
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
@@ -1265,6 +1344,27 @@ def web_page(root, csrf_token=''):
         diagnostic_form += '<p class="notice">Probíhá měření. Výsledky se zobrazí po dokončení.</p>'
     elif diagnostics.get('state') in ['running', 'error']:
         diagnostic_form += '<p class="notice">Měření nebylo dokončeno. Spusťte diagnostiku znovu.</p>'
+    service_rows = ''.join(
+        '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
+            esc(service['name']), esc(service['id']), esc('%s://%s:%s%s' % (
+                service['protocol'], service['hostAddress'], service['port'], service['path'] or '')),
+            esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_PATH,
+            esc(csrf_token), esc(service['id'])) for service in services)
+    service_editor = ''
+    if own and csrf_token:
+        service_editor = '''<form class="service-form" method="post" action="''' + WEB_PATH + '''services/save">
+<input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
+<label>ID služby<input name="id" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="ollama-main"></label>
+<label>Název<input name="name" required maxlength="80" placeholder="Ollama"></label>
+<label>IPv4 hosta<input name="hostAddress" required placeholder="192.168.1.20"></label>
+<label>Protokol<select name="protocol"><option value="tcp">tcp</option><option value="http">http</option><option value="https">https</option></select></label>
+<label>Port<input name="port" required type="number" min="1" max="65535"></label>
+<label>Cesta HTTP(S)<input name="path" placeholder="/lovelace"></label>
+<label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
+<button class="button">Uložit službu</button></form>'''
+    services_section = '''<section><h2>Zlaté stránky služeb · tento router</h2>
+<p class="muted">Místní definice zatím zůstávají pouze na tomto routeru. Nemění firewall, DNS ani cílového hosta.</p>
+<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' + (service_rows or '<tr><td colspan="4">Zatím není definovaná žádná služba.</td></tr>') + '''</tbody></table></div>''' + service_editor + '''</section>'''
     refresh = '<meta http-equiv="refresh" content="2">' if running else ''
     return ('''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">''' + refresh + '''
 <title>Turris Federation</title><style>''' + WEB_STYLE + '''</style></head><body><main>
@@ -1276,7 +1376,7 @@ def web_page(root, csrf_token=''):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1309,25 +1409,57 @@ def web_handler(root):
             self.wfile.write(body)
 
         def do_POST(self):
-            if self.path != WEB_PATH + 'diagnostics':
+            if self.path not in [WEB_PATH + 'diagnostics', WEB_PATH + 'services/save', WEB_PATH + 'services/delete']:
                 self.send_error(405)
                 return
             try:
                 size = int(self.headers.get('Content-Length', '0'))
             except ValueError:
                 size = 0
-            if not 0 < size <= 256 or self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
+            if not 0 < size <= 4096 or self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
                 self.send_error(400)
                 return
-            fields = parse_qs(self.rfile.read(size).decode('ascii', errors='replace'))
+            fields = parse_qs(self.rfile.read(size).decode('utf-8', errors='replace'), keep_blank_values=True)
             token = fields.get('token', [''])[0]
-            if set(fields) != {'token'} or not re.fullmatch('[0-9a-f]{64}', token) or not secrets.compare_digest(token, csrf_token):
+            if not re.fullmatch('[0-9a-f]{64}', token) or not secrets.compare_digest(token, csrf_token):
                 self.send_error(403)
                 return
             try:
-                start_diagnostics(root)
+                if self.path == WEB_PATH + 'diagnostics':
+                    if set(fields) != {'token'} or fields['token'] != [token]:
+                        self.send_error(403)
+                        return
+                    start_diagnostics(root)
+                else:
+                    envelope = read(Path(root) / 'accepted.json')
+                    doc = validate_document(verify((Path(root) / 'root.pub').read_text(), envelope)) if envelope else None
+                    own_id = read(Path(root) / 'node.json', {}).get('nodeId')
+                    node = next((item for item in doc['config']['nodes'] if item['id'] == own_id), None) if doc else None
+                    if not node or own_id not in doc['members']:
+                        raise ValueError('Router nemá platné členství federace.')
+                    if self.path == WEB_PATH + 'services/delete':
+                        if set(fields) != {'token', 'id'} or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        delete_local_service(root, node, fields['id'][0])
+                    else:
+                        expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path', 'confirmDuplicate'}
+                        if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        if fields['confirmDuplicate'][0] not in {'0', '1'}:
+                            self.send_error(400)
+                            return
+                        try:
+                            port = int(fields['port'][0])
+                        except ValueError as exc:
+                            raise ValueError('Neplatný port služby.') from exc
+                        service = {'id': fields['id'][0], 'name': fields['name'][0],
+                                   'hostAddress': fields['hostAddress'][0], 'protocol': fields['protocol'][0],
+                                   'port': port, 'path': fields['path'][0] or None}
+                        save_local_service(root, node, service, fields['confirmDuplicate'][0] == '1')
             except ValueError as error:
-                self.send_error(409, 'Diagnostics unavailable', explain=str(error))
+                self.send_error(409, 'Operation unavailable', explain=str(error))
                 return
             except Exception:
                 self.send_error(503)

@@ -206,6 +206,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   HTTP(S) položky otevírat bezpečně v systémovém prohlížeči; vložené zobrazení
   povolit až po samostatném ověření izolace webview. Návrh dat, oprávnění,
   validace a etap je v [Zlatých stránkách služeb](docs/service-directory.md).
+  - [x] Implementovat přesný formát, validaci vlastnictví LAN adresy, atomické
+    místní úložiště a PAM/CSRF WebApps editor na jednotlivém routeru.
+  - [ ] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
+    zachování stáří při výpadku a odstranění katalogu po odvolání routeru.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 

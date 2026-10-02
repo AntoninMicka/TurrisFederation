@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlencode
 import uuid
 
 SOURCE = Path(__file__).resolve().parents[1] / 'router/files/usr/lib/turris-federation/federation.py'
@@ -847,6 +848,63 @@ class FederationTests(unittest.TestCase):
             result = f.health(self.root, doc)
         self.assertEqual('active', result['state'])
         self.assertEqual([], result['pendingPeers'])
+
+    def test_local_service_catalog_is_strict_atomic_and_router_owned(self):
+        service = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 11434, 'path': None}
+        self.assertEqual([service], f.save_local_service(self.root, node(1), service))
+        self.assertEqual([service], f.local_services(self.root, node(1)))
+        self.assertEqual(0o600, (self.root / 'services.json').stat().st_mode & 0o777)
+
+        invalid = [
+            dict(service, hostAddress='192.168.2.20'),
+            dict(service, port=0),
+            dict(service, port=True),
+            dict(service, protocol='udp'),
+            dict(service, path='/not-for-tcp'),
+            dict(service, id='Bad ID'),
+            dict(service, name=''),
+            {**service, 'unexpected': 'field'},
+        ]
+        for item in invalid:
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                f.validate_services(node(1), [item])
+        for path in ['relative', '/search?q=secret', '/fragment#secret']:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                f.validate_services(node(1), [dict(service, protocol='https', path=path)])
+        self.assertEqual([service], f.local_services(self.root, node(1)))
+
+    def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
+        first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                 'protocol': 'tcp', 'port': 11434, 'path': None}
+        second = dict(first, id='ollama-alias', name='Local model')
+        f.save_local_service(self.root, node(1), first)
+        with self.assertRaisesRegex(ValueError, 'potvrďte duplicitu'):
+            f.save_local_service(self.root, node(1), second)
+        self.assertEqual(2, len(f.save_local_service(self.root, node(1), second, allow_duplicate=True)))
+        self.assertEqual([second], f.delete_local_service(self.root, node(1), first['id']))
+
+    def test_authenticated_web_editor_enforces_csrf_and_exact_service_fields(self):
+        self.prepare_diagnostics()
+        handler = f.web_handler(self.root)
+        page = self.web_request('GET', f.WEB_PATH, handler=handler)
+        token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
+        service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
+                   'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
+                   'path': '/lovelace', 'confirmDuplicate': '0'}
+        for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
+                                ({'hostAddress': '192.168.2.20'}, b'409')]:
+            response = self.web_request('POST', f.WEB_PATH + 'services/save',
+                                        urlencode({**service, **changed}), handler)
+            self.assertIn(status, response)
+        self.assertFalse((self.root / 'services.json').exists())
+        response = self.web_request('POST', f.WEB_PATH + 'services/save', urlencode(service), handler)
+        self.assertIn(b'303', response)
+        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
+        response = self.web_request('POST', f.WEB_PATH + 'services/delete',
+                                    urlencode({'token': token, 'id': 'home-assistant'}), handler)
+        self.assertIn(b'303', response)
+        self.assertEqual([], f.local_services(self.root, node(1)))
 
     def test_web_only_explicit_token_protected_post_starts_diagnostics(self):
         self.prepare_diagnostics()
