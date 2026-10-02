@@ -295,8 +295,11 @@ provedeno ani ověřeno.
 ## Firewall: ZeroTier a federované LAN
 
 `tf_fed` je samostatná WireGuard zóna pro obecný provoz mezi federovanými
-LAN; forwarding `lan ↔ tf_fed` zůstává povolený. `tf_zt` váže konkrétní
-ZeroTier zařízení a má `input=REJECT`, `output=ACCEPT`, `forward=REJECT`.
+LAN; forwarding `lan ↔ tf_fed` zůstává povolený. Pokud ZeroTier zařízení již
+patří právě jedné existující zóně se zásadami `input=REJECT`, `output=ACCEPT`,
+`forward=REJECT`, agent ji bezpečně znovu použije. Jinak vytvoří `tf_zt` se
+stejnými zásadami. Jedno zařízení se nesmí současně objevit ve dvou zónách,
+protože první skok ve vstupním nftables řetězci by obešel pravidla druhé zóny.
 Agent před změnami ověřuje existenci zařízení i očekávanou IP v jádře.
 UDP/51830, TCP/8844 a diagnostický ping (IPv4 ICMP echo-request) povoluje
 pouze z jednotlivých ZeroTier IP přijatých peerů na ZeroTier IP routeru.
@@ -313,7 +316,8 @@ aplikování odstraní spolu s ostatními spravovanými sekcemi `tf_*`.
 
 ZeroTier slouží také explicitně povoleným aplikacím. Vlastní UCI pravidla
 pojmenovávejte mimo vyhrazený prefix `tf_`, aby je agent při aplikování zachoval.
-Pro službu na routeru použijte `src=tf_zt`, konkrétní `src_ip`, `dest_ip`,
+Pro službu na routeru použijte jako `src` zónu vlastnící ZeroTier zařízení
+(typicky `tf_zt` nebo existující `vpn_zerotier`), konkrétní `src_ip`, `dest_ip`,
 protokol a cílový port, `target=ACCEPT`, bez cílové zóny. Pro službu v LAN
 přidejte `dest=lan` a konkrétní cílovou LAN IP. Obecný forwarding mezi
 `tf_zt` a LAN se nevytváří.

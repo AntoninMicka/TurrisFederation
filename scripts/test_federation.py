@@ -1105,6 +1105,46 @@ class FederationTests(unittest.TestCase):
             self.assertEqual('ipv4', rule['family'])
             self.assertNotIn('dest', rule)
 
+    def test_existing_safe_zerotier_zone_is_reused_without_duplicate_device_owner(self):
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'wireguard.key', b'private-test-only')
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        existing = """firewall.vpn_zerotier=zone
+firewall.vpn_zerotier.name='vpn_zerotier'
+firewall.vpn_zerotier.device='zt1234'
+firewall.vpn_zerotier.input='REJECT'
+firewall.vpn_zerotier.output='ACCEPT'
+firewall.vpn_zerotier.forward='REJECT'
+"""
+
+        def command(args, *unused, **kwargs):
+            return existing.encode() if args == ['uci', 'show', 'firewall'] else b''
+
+        with patch.object(f, 'local_check', return_value={'zeroTierDevice': 'zt1234'}), \
+                patch.object(f, 'run', side_effect=command), \
+                patch.object(f, 'owned_sections', return_value=[]), \
+                patch.object(f, 'uci_section') as section:
+            f.render_apply(self.root, doc)
+        firewall = {call.args[1]: (call.args[2], call.args[3]) for call in section.call_args_list
+                    if call.args[0] == 'firewall'}
+        self.assertNotIn('tf_zt_zone', firewall)
+        underlay_rules = [values for kind, values in firewall.values()
+                          if kind == 'rule' and values['src'] != 'tf_fed']
+        self.assertTrue(underlay_rules)
+        self.assertTrue(all(rule['src'] == 'vpn_zerotier' for rule in underlay_rules))
+
+    def test_existing_zerotier_zone_must_have_restrictive_policies(self):
+        existing = """firewall.vpn_zerotier=zone
+firewall.vpn_zerotier.name='vpn_zerotier'
+firewall.vpn_zerotier.device='zt1234'
+firewall.vpn_zerotier.input='ACCEPT'
+firewall.vpn_zerotier.output='ACCEPT'
+firewall.vpn_zerotier.forward='REJECT'
+"""
+        with patch.object(f, 'run', return_value=existing.encode()), \
+                self.assertRaisesRegex(ValueError, 'bezpečné zásady'):
+            f.firewall_zone_for_device('zt1234')
+
     def test_wrong_confirmation_does_not_commit(self):
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
         f.atomic(self.root / 'pending.json', {'token': 'correct', 'deadline': time.time() + 120})

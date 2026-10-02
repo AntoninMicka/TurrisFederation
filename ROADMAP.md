@@ -168,8 +168,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   WireGuard UDP/51830, sync TCP/8844 a diagnostický IPv4 ping povolit pouze z IP přijatých peerů.
   Zachovat `lan ↔ tf_fed`, bez obecného forwardingu `tf_zt ↔ lan`.
   Validovat skutečné ZeroTier zařízení a jeho IP; pokrýt regresními testy.
-- [ ] Na routerech ověřit výsledný firewall, výhradní přiřazení ZeroTier zařízení
-  do `tf_zt` (včetně případné původní `vpn_zerotier`) a explicitní přístup notebooku.
+- [~] Na routerech ověřit výsledný firewall a explicitní přístup notebooku.
+  Cacké odhalilo duplicitní přiřazení ZeroTier zařízení do `vpn_zerotier` a
+  `tf_zt`: první nftables skok obešel pravidla druhé zóny. Generátor nyní bezpečnou
+  existující zónu znovu použije a duplicitního vlastníka nevytvoří; opakovaný
+  deploy a WireGuard handshake na fyzickém routeru ještě zbývá potvrdit.
 - [ ] **P1: Přesměrování pouze v rámci routeru.** Umožnit nastavit lokální
   přesměrování na vybrané kontejnery/služby bez publikování do federovaných LAN.
   Výslovně vybírat vstupní zónu, cílovou IP, protokol a porty; přístup přes

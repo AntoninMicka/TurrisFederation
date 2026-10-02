@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import signal
 import shutil
 import subprocess
@@ -379,6 +380,40 @@ def owned_sections(package):
             if re.fullmatch(package + r'\.tf_[a-zA-Z0-9_]+=[a-zA-Z0-9_]+', line)]
 
 
+def firewall_zone_for_device(device):
+    """Return a safe pre-existing firewall zone which already owns device."""
+    sections = {}
+    for line in run(['uci', 'show', 'firewall']).decode().splitlines():
+        if not line.startswith('firewall.') or '=' not in line:
+            continue
+        key, raw = line.split('=', 1)
+        section, separator, option = key[len('firewall.'):].partition('.')
+        if not section:
+            continue
+        try:
+            values = shlex.split(raw)
+        except ValueError as exc:
+            raise ValueError('Firewall obsahuje nečitelnou UCI konfiguraci.') from exc
+        entry = sections.setdefault(section, {})
+        if separator:
+            entry.setdefault(option, []).extend(values)
+        elif len(values) == 1:
+            entry['type'] = values[0]
+    matches = [entry for entry in sections.values()
+               if entry.get('type') == 'zone' and device in entry.get('device', [])]
+    if len(matches) > 1:
+        raise ValueError('ZeroTier zařízení je přiřazeno do více firewallových zón.')
+    if not matches:
+        return None
+    zone = matches[0]
+    names = zone.get('name', [])
+    if (len(names) != 1 or not re.fullmatch(r'[A-Za-z0-9_]{1,32}', names[0])
+            or zone.get('input') != ['REJECT'] or zone.get('output') != ['ACCEPT']
+            or zone.get('forward') != ['REJECT']):
+        raise ValueError('Existující firewallová zóna ZeroTier nemá bezpečné zásady REJECT/ACCEPT/REJECT.')
+    return names[0]
+
+
 def notebook_endpoints(doc):
     return [notebook for notebook in doc['config'].get('notebooks', [])
             if notebook.get('zeroTierAddress') and notebook.get('wireguardAddress')
@@ -389,6 +424,7 @@ def render_apply(root, doc):
     node = self_node(root, doc)
     own_id = read(Path(root) / 'node.json')['nodeId']
     local = local_check(node, doc['config']['networkId']) if own_id in doc['members'] else None
+    zero_tier_zone = firewall_zone_for_device(local['zeroTierDevice']) if local else None
     # tf_* is an explicitly reserved namespace, checked on first install.
     for package in ['network', 'firewall']:
         for section in owned_sections(package):
@@ -417,28 +453,30 @@ def render_apply(root, doc):
             'allowed_ips': [peer['wireguardAddress'] + '/32']})
     uci_section('firewall', 'tf_zone', 'zone', {'name': 'tf_fed', 'network': ['tf_wg'],
                 'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
-    uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [local['zeroTierDevice']],
-                'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
+    zero_tier_zone = zero_tier_zone or 'tf_zt'
+    if zero_tier_zone == 'tf_zt':
+        uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [local['zeroTierDevice']],
+                    'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
     uci_section('firewall', 'tf_out', 'forwarding', {'src': 'lan', 'dest': 'tf_fed'})
     uci_section('firewall', 'tf_in', 'forwarding', {'src': 'tf_fed', 'dest': 'lan'})
     uci_section('firewall', 'tf_ping', 'rule', {'src': 'tf_fed', 'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
     for index, peer in enumerate(peers):
-        uci_section('firewall', 'tf_zt_ping_%s' % index, 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
+        uci_section('firewall', 'tf_zt_ping_%s' % index, 'rule', {'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'],
                     'dest_ip': node['zeroTierAddress'], 'proto': 'icmp', 'icmp_type': ['echo-request'],
                     'target': 'ACCEPT', 'family': 'ipv4'})
         for suffix, protocol, port in [('wg', 'udp', WG_PORT), ('sync', 'tcp', PORT)]:
-            uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'],
+            uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'],
                         'dest_ip': node['zeroTierAddress'], 'proto': protocol, 'dest_port': str(port), 'target': 'ACCEPT', 'family': 'ipv4'})
     for index, peer in enumerate(notebooks):
         uci_section('firewall', 'tf_wg_notebook_%s' % index, 'rule', {
-            'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+            'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
             'proto': 'udp', 'dest_port': str(WG_PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
         uci_section('firewall', 'tf_ping_notebook_%s' % index, 'rule', {
-            'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+            'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
             'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
         if peer['role'] == 'administrator':
             uci_section('firewall', 'tf_sync_notebook_%s' % index, 'rule', {
-                'src': 'tf_zt', 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
+                'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
                 'proto': 'tcp', 'dest_port': str(PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
     for package in ['network', 'firewall']:
         run(['uci', 'commit', package])
