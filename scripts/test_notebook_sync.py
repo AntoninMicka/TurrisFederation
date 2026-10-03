@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -370,6 +370,27 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual((self.b.id, 'abcdef1234'),
                          (claim['subject'], claim['zeroTierDeviceId']))
         self.assertEqual(f.digest(request), claim['requestHash'])
+
+    def test_enrollment_transport_reports_unreachable_peer_without_raw_oserror(self):
+        connection = Mock()
+        connection.request.side_effect = OSError('connection refused')
+        with patch.object(n.http.client, 'HTTPConnection', return_value=connection), \
+                self.assertRaisesRegex(ValueError, 'neodpovídá na portu 8857'):
+            n.enrollment_post('192.168.50.20', '/join-grant', {'signed': 'test'})
+        connection.close.assert_called_once()
+
+    def test_enrollment_http_listener_survives_unavailable_multicast(self):
+        server = Mock()
+        stopped = threading.Event()
+        stopped.set()
+        with patch.object(n, 'make_enrollment_server', return_value=server), \
+                patch.object(n, 'make_enrollment_udp', side_effect=OSError('no multicast')):
+            n.serve_enrollment(self.b, stopped)
+        listener = f.read(self.b.root / 'network-enrollment-listener.json')
+        self.assertEqual(('http_only', n.ENROLLMENT_PORT),
+                         (listener['state'], listener['port']))
+        server.shutdown.assert_called_once()
+        server.server_close.assert_called_once()
 
     def test_direct_lan_source_excludes_overlay_and_accepts_physical_subnet(self):
         links = json.dumps([

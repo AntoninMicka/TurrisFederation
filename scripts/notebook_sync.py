@@ -338,8 +338,15 @@ def enrollment_post(address, path, payload):
         if result.get('ok') is not True:
             raise ValueError(result.get('error') or 'Protější notebook odmítl přijímací zprávu.')
         return result
+    except json.JSONDecodeError as exc:
+        raise ValueError('Protější notebook vrátil neplatnou přijímací odpověď.') from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise ValueError(
+            'Protější notebook na LAN adrese %s neodpovídá na portu %s. '
+            'Ověřte jeho běžící backend a místní firewall.' % (address, ENROLLMENT_PORT)) from exc
     finally:
-        connection.close()
+        with contextlib.suppress(OSError):
+            connection.close()
 
 
 def public_vpn_plan(plan):
@@ -1735,45 +1742,53 @@ def make_enrollment_server(store):
     return Server(('', ENROLLMENT_PORT), Handler)
 
 
-def serve_enrollment(store, stopped):
-    server = None
-    udp = None
+def make_enrollment_udp():
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        server = make_enrollment_server(store)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         udp.bind(('', ENROLLMENT_PORT))
         udp.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                        socket.inet_aton(GROUP) + socket.inet_aton('0.0.0.0'))
         udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         udp.settimeout(1)
-        f.atomic(store.root / 'network-enrollment-listener.json', {
-            'state': 'listening', 'port': ENROLLMENT_PORT, 'error': None, 'updatedAt': time.time()})
+        return udp
     except OSError:
-        if udp is not None:
-            udp.close()
+        udp.close()
+        raise
+
+
+def serve_enrollment(store, stopped):
+    server = None
+    udp = None
+    try:
+        server = make_enrollment_server(store)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    except OSError:
         if server is not None:
             server.shutdown()
             server.server_close()
-        error = 'Automatické párování v místní síti nelze spustit. Ověřte port 8857 a podporu multicastu.'
+        error = 'Automatické párování v místní síti nelze spustit. Ověřte, zda je TCP port 8857 volný.'
         f.atomic(store.root / 'network-enrollment-listener.json', {
             'state': 'error', 'port': ENROLLMENT_PORT, 'error': error, 'updatedAt': time.time()})
         session = f.read(store.root / 'network-enrollment.json', {})
         if session and session.get('stage') not in ['complete', 'expired']:
             update_enrollment_session(store, error=error)
         return
+    try:
+        udp = make_enrollment_udp()
+        f.atomic(store.root / 'network-enrollment-listener.json', {
+            'state': 'listening', 'port': ENROLLMENT_PORT, 'error': None, 'updatedAt': time.time()})
+    except OSError:
+        f.atomic(store.root / 'network-enrollment-listener.json', {
+            'state': 'http_only', 'port': ENROLLMENT_PORT,
+            'error': 'Multicast discovery není dostupné; backend ponechal přímý přenos na portu 8857 a discovery zkusí obnovit.',
+            'updatedAt': time.time()})
     next_beacon = 0
     next_join_status = 0
+    next_udp_retry = time.monotonic() + 5
     try:
         while not stopped.is_set():
             session = f.read(store.root / 'network-enrollment.json', {})
-            if (session.get('stage') == 'requesting' and session.get('expiresAt', 0) >= time.time()
-                    and time.monotonic() >= next_beacon):
-                packet = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'request': session['request'],
-                          'code': session['code'], 'time': int(time.time())}
-                udp.sendto(f.encode(packet), (GROUP, ENROLLMENT_PORT))
-                next_beacon = time.monotonic() + 3
             if session.get('stage') == 'joining' and session.get('expiresAt', 0) >= time.time():
                 status = {}
                 try:
@@ -1792,7 +1807,25 @@ def serve_enrollment(store, stopped):
                 except ValueError as error:
                     update_enrollment_session(store, expected_stage='joining',
                                               zerotier=status, error=str(error))
+            if udp is None:
+                if time.monotonic() >= next_udp_retry:
+                    try:
+                        udp = make_enrollment_udp()
+                        f.atomic(store.root / 'network-enrollment-listener.json', {
+                            'state': 'listening', 'port': ENROLLMENT_PORT,
+                            'error': None, 'updatedAt': time.time()})
+                    except OSError:
+                        next_udp_retry = time.monotonic() + 5
+                if udp is None:
+                    stopped.wait(0.5)
+                    continue
             try:
+                if (session.get('stage') == 'requesting' and session.get('expiresAt', 0) >= time.time()
+                        and time.monotonic() >= next_beacon):
+                    packet = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'request': session['request'],
+                              'code': session['code'], 'time': int(time.time())}
+                    udp.sendto(f.encode(packet), (GROUP, ENROLLMENT_PORT))
+                    next_beacon = time.monotonic() + 3
                 raw, source = udp.recvfrom(LOCAL_LIMIT + 1)
                 if len(raw) > LOCAL_LIMIT or not direct_lan_source(source[0]):
                     continue
@@ -1812,6 +1845,14 @@ def serve_enrollment(store, stopped):
                     f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
             except (socket.timeout, ValueError, KeyError, TypeError, json.JSONDecodeError):
                 pass
+            except OSError:
+                udp.close()
+                udp = None
+                next_udp_retry = time.monotonic() + 5
+                f.atomic(store.root / 'network-enrollment-listener.json', {
+                    'state': 'http_only', 'port': ENROLLMENT_PORT,
+                    'error': 'Multicast discovery vypadlo; přímý přenos zůstává aktivní a discovery se obnovuje.',
+                    'updatedAt': time.time()})
     finally:
         if udp is not None:
             udp.close()

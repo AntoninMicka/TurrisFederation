@@ -899,7 +899,10 @@ async function submitConnection() {
             <p v-if="candidate.zeroTierAddress">Potvrzená adresa: <code>{{ candidate.zeroTierAddress }}</code></p>
             <p v-if="candidate.error" class="error">{{ candidate.error }}</p>
             <button v-if="candidate.stage === 'requesting'" :disabled="enrollmentBusy" @click="networkEnrollmentOperation('approve-request', candidate.id)">Kód souhlasí – povolit vstup do ZeroTier</button>
-            <p v-else-if="candidate.stage === 'awaiting_address'">Autorizujte uvedené Device ID v ZeroTier Central. Notebook potom automaticky vrátí přidělenou adresu.</p>
+            <template v-else-if="candidate.stage === 'awaiting_address'">
+              <p>Autorizujte uvedené Device ID v ZeroTier Central. Notebook potom automaticky vrátí přidělenou adresu.</p>
+              <button v-if="!candidate.zeroTierDeviceId" class="secondary" :disabled="enrollmentBusy" @click="networkEnrollmentOperation('approve-request', candidate.id)">Znovu odeslat povolení notebooku</button>
+            </template>
             <button v-else-if="candidate.stage === 'awaiting_final'" :disabled="enrollmentBusy" @click="networkEnrollmentOperation('approve-address', candidate.id)">Potvrdit adresu a dokončit členství</button>
             <p v-else-if="candidate.stage === 'complete'"><strong>Připojení dokončeno.</strong></p>
           </article>
