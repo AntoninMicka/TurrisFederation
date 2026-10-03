@@ -143,11 +143,24 @@ class NotebookTests(unittest.TestCase):
         f.atomic(store.fleet / 'members.json', {member['nodeId']: member})
         return f.snapshot(store.fleet, config, {member['nodeId']: member})
 
+    def staged_user_invitation(self, target=None, name='User notebook', address='10.147.0.3'):
+        target = target or self.b
+        if not (self.a.fleet / 'published.json').exists():
+            self.published_federation(self.a)
+        if self.a.access_status().get('role') != 'administrator':
+            self.a.bootstrap_admin_credential()
+        request = target.enrollment_request(name)
+        grant = self.a.issue_user_join_grant(json.dumps(request))
+        target.accept_user_join_grant(json.dumps(grant))
+        addresses = json.dumps([{'ifname': 'zt1234', 'addr_info': [
+            {'family': 'inet', 'local': address, 'prefixlen': 24, 'scope': 'global'}]}])
+        with patch.object(n, 'local_command', return_value=addresses):
+            confirmation = target.enrollment_address_confirmation('abcdef1234')
+        invitation = self.a.issue_user_invitation(json.dumps(confirmation))
+        return request, grant, confirmation, invitation
+
     def onboard_user(self):
-        self.published_federation(self.a)
-        self.a.bootstrap_admin_credential()
-        request = self.b.enrollment_request('User notebook')
-        invitation = self.a.issue_user_invitation(json.dumps(request))
+        _, _, _, invitation = self.staged_user_invitation()
         self.b.accept_user_invitation(json.dumps(invitation))
         return invitation
 
@@ -260,10 +273,10 @@ class NotebookTests(unittest.TestCase):
     def test_admin_issues_one_time_user_invitation_without_private_root(self):
         self.published_federation(self.a)
         self.a.bootstrap_admin_credential()
-        request = self.b.enrollment_request('User notebook')
-        invitation = self.a.issue_user_invitation(json.dumps(request))
+        request, grant, confirmation, invitation = self.staged_user_invitation()
         raw = json.dumps(invitation)
         self.assertNotIn('PRIVATE KEY', raw)
+        self.assertNotIn('PRIVATE KEY', json.dumps(grant))
         self.assertEqual(n.INVITATION_SCHEMA, invitation['schema'])
         published = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
         self.assertEqual(f.NOTEBOOK_WG_VERSION, published['schema'])
@@ -290,10 +303,58 @@ class NotebookTests(unittest.TestCase):
         self.assertNotIn('PostUp', config)
         self.assertNotIn('forward', config.lower())
         self.assertFalse((self.b.root / 'pending-enrollment.json').exists())
-        with self.assertRaisesRegex(ValueError, 'již má'):
+        self.assertFalse((self.b.root / 'pending-join.json').exists())
+        self.assertFalse((self.b.root / 'pending-address-confirmation.json').exists())
+        with self.assertRaisesRegex(ValueError, 'neodpovídá'):
             self.b.accept_user_invitation(raw)
         with self.assertRaisesRegex(ValueError, 'administrátorské pověření'):
             n.command(self.b, {'action': 'pair', 'peer': self.a.id})
+
+    def test_join_grant_waits_for_observed_address_before_publishing_member(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        original = f.read(self.a.fleet / 'published.json')
+        request = self.b.enrollment_request('Travel notebook')
+        grant = self.a.issue_user_join_grant(json.dumps(request))
+        self.assertEqual(original, f.read(self.a.fleet / 'published.json'))
+        self.assertNotIn('credential', grant)
+        accepted = self.b.accept_user_join_grant(json.dumps(grant))
+        self.assertEqual('abcdef0123456789', accepted['networkId'])
+        addresses = json.dumps([{'ifname': 'ztactual1', 'addr_info': [
+            {'family': 'inet', 'local': '10.147.0.59'}]}])
+        with patch.object(n, 'local_command', return_value=addresses):
+            confirmation = self.b.enrollment_address_confirmation('abcdef1234')
+        invitation = self.a.issue_user_invitation(json.dumps(confirmation))
+        document = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
+        endpoint = next(item for item in document['config']['notebooks'] if item['id'] == self.b.id)
+        self.assertEqual('10.147.0.59', endpoint['zeroTierAddress'])
+        self.assertEqual('user', endpoint['role'])
+
+    def test_address_confirmation_requires_one_authorized_zerotier_address_and_device_id(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('User notebook')
+        grant = self.a.issue_user_join_grant(json.dumps(request))
+        self.b.accept_user_join_grant(json.dumps(grant))
+        with patch.object(n, 'local_command', return_value='[]'), \
+                self.assertRaisesRegex(ValueError, 'jednoznačně'):
+            self.b.enrollment_address_confirmation('abcdef1234')
+        addresses = json.dumps([{'ifname': 'zt1234', 'addr_info': [
+            {'family': 'inet', 'local': '10.147.0.59'}]}])
+        with patch.object(n, 'local_command', return_value=addresses), \
+                self.assertRaisesRegex(ValueError, 'Device ID'):
+            self.b.enrollment_address_confirmation('invalid')
+
+    def test_existing_user_can_reenroll_to_replace_incorrect_signed_zerotier_address(self):
+        self.onboard_user()
+        _, _, _, invitation = self.staged_user_invitation(
+            target=self.b, name='User notebook', address='10.147.0.59')
+        status = self.b.accept_user_invitation(json.dumps(invitation))
+        self.assertEqual(('valid', 'user'), (status['state'], status['role']))
+        document = f.validate_document(f.verify(
+            invitation['rootPublic'], f.read(self.b.fleet / 'published.json')))
+        endpoint = next(item for item in document['config']['notebooks'] if item['id'] == self.b.id)
+        self.assertEqual('10.147.0.59', endpoint['zeroTierAddress'])
 
     def test_admin_revokes_user_in_new_revision_without_deleting_local_identity(self):
         invitation = self.onboard_user()
@@ -472,10 +533,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(wireguard, (self.b.root / 'wireguard.key').read_bytes())
 
     def test_user_credential_fails_if_signed_topology_does_not_contain_notebook(self):
-        self.published_federation(self.a)
-        self.a.bootstrap_admin_credential()
-        request = self.b.enrollment_request('User notebook')
-        invitation = self.a.issue_user_invitation(json.dumps(request))
+        _, _, _, invitation = self.staged_user_invitation()
         old_published = self.published_federation(self.c)
         old_public = f.public_key(self.c.fleet / 'root.pem')
         document = f.verify(invitation['rootPublic'], invitation['published'])
@@ -487,10 +545,7 @@ class NotebookTests(unittest.TestCase):
             self.b.accept_user_invitation(json.dumps(invitation))
 
     def test_user_invitation_rejects_wrong_notebook_tampering_and_expiry(self):
-        self.published_federation(self.a)
-        self.a.bootstrap_admin_credential()
-        request = self.b.enrollment_request('User notebook')
-        invitation = self.a.issue_user_invitation(json.dumps(request))
+        _, _, _, invitation = self.staged_user_invitation()
         self.c.enrollment_request('Other notebook')
         with self.assertRaisesRegex(ValueError, 'neodpovídá'):
             self.c.accept_user_invitation(json.dumps(invitation))

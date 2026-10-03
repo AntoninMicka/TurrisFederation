@@ -45,8 +45,12 @@ const enrollmentBusy = ref(false);
 const enrollmentError = ref("");
 const enrollmentName = ref("");
 const enrollmentRequest = ref("");
+const receivedJoinGrant = ref("");
+const addressConfirmation = ref("");
 const receivedInvitation = ref("");
 const requestedUser = ref("");
+const issuedJoinGrant = ref("");
+const requestedAddressConfirmation = ref("");
 const issuedInvitation = ref("");
 const vpnPlan = ref<NotebookVpnPlan | null>(null);
 const vpnStatus = ref<NotebookVpnStatus | null>(null);
@@ -101,19 +105,30 @@ async function bootstrapAdministrator() {
   if (isAdministrator.value) await refreshReadOnlyOverview();
 }
 
-async function enrollmentOperation(action: "request" | "accept" | "issue") {
+async function enrollmentOperation(action: "request" | "accept-grant" | "confirm-address" | "issue-grant" | "issue-final" | "accept-final") {
   enrollmentBusy.value = true;
   enrollmentError.value = "";
   try {
     if (action === "request") {
       const result = await notebookEnrollmentAction<{ request: string }>({ action: "enrollment_request", name: enrollmentName.value });
       enrollmentRequest.value = result.request;
-    } else if (action === "issue") {
-      const result = await notebookEnrollmentAction<{ invitation: string }>({ action: "issue_user_invitation", request: requestedUser.value });
+    } else if (action === "issue-grant") {
+      const result = await notebookEnrollmentAction<{ grant: string }>({ action: "issue_user_join_grant", request: requestedUser.value });
+      issuedJoinGrant.value = result.grant;
+    } else if (action === "accept-grant") {
+      const result = await notebookEnrollmentAction<{ networkId: string; zerotier: ZeroTierStatus }>({ action: "accept_user_join_grant", grant: receivedJoinGrant.value });
+      notebookStatus.value = result.zerotier;
+    } else if (action === "confirm-address") {
+      const result = await notebookEnrollmentAction<{ confirmation: string }>({ action: "enrollment_address_confirmation", deviceId: notebookStatus.value?.deviceId });
+      addressConfirmation.value = result.confirmation;
+    } else if (action === "issue-final") {
+      const result = await notebookEnrollmentAction<{ invitation: string }>({ action: "issue_user_invitation", confirmation: requestedAddressConfirmation.value });
       issuedInvitation.value = result.invitation;
     } else {
       notebookSync.value = await notebookEnrollmentAction<NotebookSyncStatus>({ action: "accept_user_invitation", invitation: receivedInvitation.value });
       receivedInvitation.value = "";
+      receivedJoinGrant.value = "";
+      addressConfirmation.value = "";
       enrollmentRequest.value = "";
       await refreshReadOnlyOverview();
       await loadVpnStatus();
@@ -642,9 +657,10 @@ async function submitConnection() {
 <template>
   <main class="shell">
     <header><p class="kicker">Turris Omnia</p><h1>Federace routerů</h1><p>Správa routerů, řídicích notebooků a společné sítě.</p></header>
-    <section v-if="notebookSync && !isAdministrator && notebookSync.access.role !== 'user'" class="panel access-gate" role="status">
-      <div><p class="kicker">Pověření notebooku</p><h2>Notebook není připojen k federaci</h2></div>
+    <section v-if="notebookSync && !isAdministrator" class="panel access-gate" role="status">
+      <div><p class="kicker">Pověření notebooku</p><h2>{{ notebookSync.access.role === 'user' ? 'Připojení uživatelského notebooku' : 'Notebook není připojen k federaci' }}</h2></div>
       <p v-if="notebookSync.access.state === 'invalid'" class="error">{{ notebookSync.access.error }}</p>
+      <p v-else-if="notebookSync.access.role === 'user'">Notebook má uživatelské pověření. Následující tok použijte také k opravě dříve podepsané ZeroTier adresy; identita a role zůstanou zachované.</p>
       <p v-else>Pro administrační funkce chybí platné podepsané pověření. Zlaté stránky a přehled zůstávají pouze pro čtení.</p>
       <button v-if="notebookSync.access.canBootstrapAdmin" :disabled="syncBusy" @click="bootstrapAdministrator">
         Převést tento řídicí notebook na administrátorskou roli
@@ -654,9 +670,14 @@ async function submitConnection() {
         <label>Název uživatelského notebooku<input v-model="enrollmentName" maxlength="80" placeholder="Notebook uživatele" /></label>
         <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="enrollmentOperation('request')">Vytvořit podepsanou žádost</button>
         <label v-if="enrollmentRequest">Žádost pro administrátora<textarea class="pairing-data" readonly :value="enrollmentRequest"></textarea></label>
-        <label>Pozvánka vydaná administrátorem<textarea v-model="receivedInvitation" class="pairing-data" placeholder="Vložte celou pozvánku"></textarea></label>
-        <button :disabled="enrollmentBusy || !receivedInvitation.trim()" @click="enrollmentOperation('accept')">Ověřit a přijmout uživatelské pověření</button>
-        <small>Žádost ani pozvánka neobsahují privátní klíč notebooku nebo federace. Pozvánka je platná 15 minut a pouze pro tuto žádost.</small>
+        <label>Povolení připojení vydané administrátorem<textarea v-model="receivedJoinGrant" class="pairing-data" placeholder="Vložte podepsané povolení s Network ID"></textarea></label>
+        <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('accept-grant')">Ověřit povolení a připojit ZeroTier</button>
+        <p v-if="notebookStatus" :class="{ error: notebookStatus.state === 'error' || notebookStatus.state === 'not_installed' }">{{ notebookStatus.summary }}<template v-if="notebookStatus.deviceId"> · Device ID <code>{{ notebookStatus.deviceId }}</code></template></p>
+        <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('confirm-address')">Načíst autorizovanou adresu a vytvořit potvrzení</button>
+        <label v-if="addressConfirmation">Potvrzení skutečné ZeroTier adresy pro administrátora<textarea class="pairing-data" readonly :value="addressConfirmation"></textarea></label>
+        <label>Finální pozvánka vydaná administrátorem<textarea v-model="receivedInvitation" class="pairing-data" placeholder="Vložte finální pozvánku"></textarea></label>
+        <button :disabled="enrollmentBusy || !receivedInvitation.trim()" @click="enrollmentOperation('accept-final')">Ověřit a přijmout uživatelské pověření</button>
+        <small>Nejdřív administrátor povolí vstup do ZeroTier. Po autorizaci Device ID se skutečná adresa vrátí administrátorovi a teprve jeho druhé potvrzení vytvoří členství federace.</small>
       </div>
     </section>
     <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ readOnlyOverview?.notebooks.length ?? (1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0)) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
@@ -793,14 +814,18 @@ async function submitConnection() {
       <div><p class="kicker">Discovery a synchronizace</p><h2>Správa federace z více notebooků</h2></div>
       <p>Spárované notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Změny se přenášejí přímo a šifrovaně při spuštěné aplikaci.</p>
       <details>
-        <summary>Vydat pozvánku uživatelskému notebooku</summary>
+        <summary>Přijmout uživatelský notebook</summary>
         <div class="connection-form">
-          <p>Vložte podepsanou žádost z cílového notebooku. Vydání přidá notebook jako uživatelský koncový uzel do nové podepsané revize a předá mu pouze veřejnou kotvu, topologii a časově omezené pověření.</p>
+          <p>První potvrzení předá pouze podepsané Network ID. Notebook se připojí do ZeroTier a po ruční autorizaci vrátí svou skutečnou adresu. Až druhé potvrzení jej zapíše do topologie a vydá pověření.</p>
           <label>Žádost notebooku<textarea v-model="requestedUser" class="pairing-data"></textarea></label>
-          <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue')">Ověřit žádost a vydat pozvánku</button>
+          <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue-grant')">Ověřit žádost a vydat povolení ZeroTier</button>
           <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
-          <label v-if="issuedInvitation">Pozvánka pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
-          <small>Před předáním porovnejte otisk notebooku z žádosti s údajem zobrazeným přímo na cílovém zařízení.</small>
+          <label v-if="issuedJoinGrant">Povolení připojení pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedJoinGrant"></textarea></label>
+          <p>Po vložení povolení na cílovém notebooku autorizujte jeho Device ID v ZeroTier Central. Potom sem vložte potvrzení skutečné adresy.</p>
+          <label>Potvrzení adresy notebooku<textarea v-model="requestedAddressConfirmation" class="pairing-data"></textarea></label>
+          <button :disabled="enrollmentBusy || !requestedAddressConfirmation.trim()" @click="enrollmentOperation('issue-final')">Ověřit adresu a vydat finální pozvánku</button>
+          <label v-if="issuedInvitation">Finální pozvánka pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
+          <small>Před oběma potvrzeními porovnejte otisk notebooku a při autorizaci také jeho ZeroTier Device ID.</small>
         </div>
       </details>
       <details>

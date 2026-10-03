@@ -187,8 +187,11 @@ Podepsané schéma 2 zachovává routery v `nodes` a přidává samostatný sezn
 `notebooks`. Notebook má otisk své TLS identity, název, roli a volitelné
 ZeroTier/WireGuard adresy; formát pro něj vůbec nepřijímá LAN prefixy. Starší
 routerové dokumenty schématu 1 zůstávají validní. Jednorázový bootstrap
-administrátora jej zapíše do nové revize a vydání uživatelské pozvánky nejprve
-idempotentně publikuje oba notebooky, potom vydá pověření svázané s členstvím.
+administrátora jej zapíše do nové revize. Uživatelské přijetí je vícefázové:
+první odpověď předá pouze podepsané Network ID a veřejnou kotvu. Notebook
+se připojí do ZeroTier, správce autorizuje jeho Device ID a notebook podepíše
+skutečně přidělenou adresu. Teprve druhé potvrzení administrátora publikuje
+notebook a vydá pověření svázané s členstvím.
 Schéma 3 doplňuje veřejný WireGuard klíč a vyžaduje endpoint buď celý
 (ZeroTier adresa, WireGuard adresa a klíč), nebo dosud nepřidělený. Privátní
 klíč vzniká a zůstává na cílovém notebooku. Router vytvoří notebookovému peeru
@@ -205,11 +208,12 @@ vydat vlastní administrátorské pověření jen explicitní jednorázovou migr
 z existující kořenové identity a publikované revize. Read-only UI už používá
 samostatné členské API sestavené pouze z podepsané revize; neobsahuje SSH cíle,
 uživatele, veřejné endpointy, plány, fingerprint kotvy ani interní chyby agenta.
-Bez platného členského pověření je odmítnuté. Pozvánky pro nové uživatelské
-notebooky používají podepsanou žádost cílového TLS klíče a administrátorem
-vydaný balíček s veřejnou kotvou, podepsanou topologií a uživatelským pověřením.
-Balíček je svázaný s jednorázovým nonce a lze jej přijmout do 15 minut; nikdy
-neobsahuje kořenový privátní klíč. Odvolání a ručně přenositelná bezpečná
+Bez platného členského pověření je odmítnuté. Přijetí nového uživatelského
+notebooku používá podepsanou žádost cílového TLS klíče, dočasné povolení
+vstupu do konkrétní ZeroTier sítě, podepsané potvrzení skutečné adresy a
+finální pozvánku. Každá fáze je svázaná s jednorázovým nonce a původní
+identitou; nedokončený pokus notebook do topologie nezapíše a nikdy nepředá
+kořenový privátní klíč. Odvolání a ručně přenositelná bezpečná
 aktualizace topologie jsou implementované a lokálně otestované; zbývá jejich
 ověření se skutečným routerem, NetworkManagerem, polkit agentem a VPN.
 

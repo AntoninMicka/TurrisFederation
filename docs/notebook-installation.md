@@ -102,15 +102,17 @@ Průvodce prvním spuštěním provede tyto oddělené kroky:
    Úspěch instalace a úspěch připojení zobrazí jako dva oddělené výsledky.
 8. Spustí klienta stavové lišty a otevře UI odpovídající podepsané roli.
 
-První implementace kroků 2 až 5 používá přenositelný JSON: cílový notebook
-vytvoří žádost podepsanou svým TLS klíčem, administrátor ji vloží do svého UI
-a vydá uživatelskou pozvánku platnou 15 minut. Pozvánka je svázaná s TLS
-otiskem a jednorázovým nonce a obsahuje pouze veřejnou kotvu, podepsanou
-topologii a uživatelské pověření. Přijetí nejprve ověří všechny podpisy a vazby
-a teprve potom zapíše data; `root.pem` se uživatelskému notebooku nepředává.
-Žádost obsahuje také pouze veřejný WireGuard klíč vytvořený na cílovém
-notebooku. Administrátor přidělí volné adresy z uložených ZeroTier a WireGuard
-subnetů. Po přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
+První implementace kroků 2 až 5 používá přenositelný JSON a dvě potvrzení
+administrátora. Cílový notebook nejprve vytvoří žádost podepsanou svým TLS
+klíčem; nemusí znát federaci ani Network ID. První odpověď obsahuje veřejnou
+kotvu a podepsané Network ID, ale ještě neobsahuje členské pověření ani
+notebook nezapisuje do topologie. Notebook se přes omezenou systémovou službu
+připojí do sítě. Po autorizaci jeho Device ID v ZeroTier Central podepíše
+skutečně přidělenou IPv4 adresu z konkrétního rozhraní `zt…` a vrátí ji
+administrátorovi. Druhé potvrzení zkontroluje vazbu na původní nonce, identitu,
+síť, subnet, veřejný WireGuard klíč a unikátnost adresy. Teprve poté publikuje
+novou topologii a vydá finální pozvánku. `root.pem` se uživatelskému notebooku
+nikdy nepředá. Po finálním přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
 routerovými peery a jejich federovanými LAN prefixy. Soubor se instaluje až po
 samostatném deset minut platném plánu a potvrzení v UI. Instalační tok spouští
 přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datového

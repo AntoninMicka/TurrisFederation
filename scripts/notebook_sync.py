@@ -40,6 +40,8 @@ LOCAL_LIMIT = 16 * 1024
 CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
 USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
 ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-2'
+JOIN_GRANT_SCHEMA = 'tf-notebook-join-grant-1'
+ADDRESS_CONFIRMATION_SCHEMA = 'tf-notebook-address-confirmation-1'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 TOPOLOGY_UPDATE_SCHEMA = 'tf-notebook-topology-update-1'
 ENROLLMENT_TTL = 15 * 60
@@ -272,6 +274,25 @@ def verify_underlay(address, document):
         if len(route) != 1 or route[0].get('dev') != device:
             raise ValueError('Routerový WireGuard endpoint není dostupný přes ZeroTier.')
     return device
+
+
+def observed_zerotier_address(subnet):
+    links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show']))
+    candidates = []
+    for link in links:
+        device = link.get('ifname')
+        if not isinstance(device, str) or not re.fullmatch(r'zt[a-zA-Z0-9]+', device):
+            continue
+        for item in link.get('addr_info', []):
+            address = item.get('local') if item.get('family') == 'inet' else None
+            try:
+                if address and ipaddress.IPv4Address(address) in subnet:
+                    candidates.append((address, device))
+            except ValueError:
+                pass
+    if len(candidates) != 1:
+        raise ValueError('ZeroTier síť zatí nemá jednoznačně přidělenou IPv4 adresu notebooku.')
+    return candidates[0]
 
 
 def public_vpn_plan(plan):
@@ -971,7 +992,8 @@ class Store:
         return result
 
     def enrollment_request(self, name):
-        if self.access_status()['state'] == 'valid':
+        access = self.access_status()
+        if access['state'] == 'valid' and access.get('role') != 'user':
             raise ValueError('Notebook již má platné pověření.')
         name = name.strip()
         if not 0 < len(name) <= 80:
@@ -983,11 +1005,9 @@ class Store:
                    'wireguardKey': self.wireguard_identity()}
         return {'cert': self.cert, 'signed': f.sign(self.root / 'key.pem', payload)}
 
-    def issue_user_invitation(self, raw):
-        if self.access_status().get('role') != 'administrator':
-            raise ValueError('Vydání pozvánky vyžaduje administrátorské pověření.')
-        request = json.loads(raw)
-        if set(request) != {'cert', 'signed'} or fingerprint(request['cert']) == self.id:
+    def validate_enrollment_request(self, request, reject_self=True):
+        if (set(request) != {'cert', 'signed'}
+                or (reject_self and fingerprint(request['cert']) == self.id)):
             raise ValueError('Neplatná žádost notebooku.')
         public = f.run(['openssl', 'x509', '-pubkey', '-noout'], request['cert'].encode()).decode()
         payload = f.verify(public, request['signed'])
@@ -998,39 +1018,126 @@ class Store:
                 or len(base64.b64decode(payload['wireguardKey'], validate=True)) != 32
                 or type(payload['createdAt']) not in [int, float] or not 0 <= time.time() - payload['createdAt'] <= ENROLLMENT_TTL):
             raise ValueError('Žádost notebooku je neplatná nebo vypršela.')
+        return payload
+
+    def issue_user_join_grant(self, raw):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Vydání povolení vyžaduje administrátorské pověření.')
+        request = json.loads(raw)
+        payload = self.validate_enrollment_request(request)
         private = self.fleet / 'root.pem'
         if not private.exists():
             raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
+        root_public = f.public_key(private)
+        document = f.validate_document(f.verify(root_public, f.read(self.fleet / 'published.json')))
         subnets = self.network_subnets()
-        administrator_key = self.wireguard_identity()
+        now = int(time.time())
+        grant = {'schema': JOIN_GRANT_SCHEMA, 'federationId': document['federationId'],
+                 'networkId': document['config']['networkId'], 'zeroTierSubnet': str(subnets[0]),
+                 'subject': payload['subject'], 'name': payload['name'],
+                 'wireguardKey': payload['wireguardKey'], 'enrollmentNonce': payload['nonce'],
+                 'requestHash': f.digest(request), 'issuedAt': now, 'acceptBy': now + ENROLLMENT_TTL}
+        return {'schema': JOIN_GRANT_SCHEMA, 'rootPublic': root_public, 'request': request,
+                'grant': f.sign(private, grant)}
+
+    def accept_user_join_grant(self, raw):
+        package = json.loads(raw)
+        if set(package) != {'schema', 'rootPublic', 'request', 'grant'} or package['schema'] != JOIN_GRANT_SCHEMA:
+            raise ValueError('Neplatné povolení připojení notebooku.')
+        grant = f.verify(package['rootPublic'], package['grant'])
+        request = package['request']
+        pending = f.read(self.root / 'pending-enrollment.json')
+        payload = self.validate_enrollment_request(request, reject_self=False)
+        grant_fields = {'schema', 'federationId', 'networkId', 'zeroTierSubnet', 'subject', 'name',
+                        'wireguardKey', 'enrollmentNonce', 'requestHash', 'issuedAt', 'acceptBy'}
+        if (not pending or set(grant) != grant_fields or grant.get('schema') != JOIN_GRANT_SCHEMA or grant.get('subject') != self.id
+                or grant.get('enrollmentNonce') != pending.get('nonce') or payload['nonce'] != pending.get('nonce')
+                or grant.get('requestHash') != f.digest(request) or grant.get('wireguardKey') != self.wireguard_identity()
+                or grant.get('name') != payload['name'] or grant.get('wireguardKey') != payload['wireguardKey']
+                or not re.fullmatch('[0-9a-f]{16}', grant.get('networkId', ''))
+                or time.time() > grant.get('acceptBy', 0)):
+            raise ValueError('Povolení neodpovídá této platné žádosti notebooku.')
+        try:
+            subnet = ipaddress.ip_network(grant.get('zeroTierSubnet'), strict=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Povolení obsahuje neplatný ZeroTier subnet.') from exc
+        if subnet.version != 4:
+            raise ValueError('Povolení obsahuje neplatný ZeroTier subnet.')
+        f.atomic(self.root / 'pending-join.json', package)
+        return {'networkId': grant['networkId'], 'federationId': grant['federationId'],
+                'name': grant['name'], 'expiresAt': grant['acceptBy']}
+
+    def enrollment_address_confirmation(self, device_id):
+        package = f.read(self.root / 'pending-join.json')
+        if not package:
+            raise ValueError('Nejdřív přijměte povolení pro připojení do ZeroTier.')
+        grant = f.verify(package['rootPublic'], package['grant'])
+        if grant.get('subject') != self.id or time.time() > grant.get('acceptBy', 0):
+            raise ValueError('Povolení připojení vypršelo nebo patří jinému notebooku.')
+        if not isinstance(device_id, str) or not re.fullmatch('[0-9a-f]{10}', device_id):
+            raise ValueError('ZeroTier ještě neposkytl platné Device ID notebooku.')
+        address, device = observed_zerotier_address(ipaddress.ip_network(grant['zeroTierSubnet']))
+        now = int(time.time())
+        payload = {'schema': ADDRESS_CONFIRMATION_SCHEMA, 'subject': self.id,
+                   'federationId': grant['federationId'], 'networkId': grant['networkId'],
+                   'enrollmentNonce': grant['enrollmentNonce'], 'grantHash': f.digest(package['grant']),
+                   'zeroTierAddress': address, 'zeroTierDeviceId': device_id,
+                   'zeroTierInterface': device, 'createdAt': now}
+        confirmation = {'schema': ADDRESS_CONFIRMATION_SCHEMA, 'cert': self.cert,
+                        'joinGrant': package, 'signed': f.sign(self.root / 'key.pem', payload)}
+        f.atomic(self.root / 'pending-address-confirmation.json', confirmation)
+        return confirmation
+
+    def issue_user_invitation(self, raw):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Vydání pozvánky vyžaduje administrátorské pověření.')
+        confirmation = json.loads(raw)
+        if set(confirmation) != {'schema', 'cert', 'joinGrant', 'signed'} or confirmation['schema'] != ADDRESS_CONFIRMATION_SCHEMA:
+            raise ValueError('Neplatné potvrzení ZeroTier adresy.')
+        package = confirmation['joinGrant']
+        if package.get('rootPublic') != f.public_key(self.fleet / 'root.pem'):
+            raise ValueError('Potvrzení patří jiné federaci.')
+        grant = f.verify(package['rootPublic'], package['grant'])
+        public = f.run(['openssl', 'x509', '-pubkey', '-noout'], confirmation['cert'].encode()).decode()
+        claim = f.verify(public, confirmation['signed'])
+        claim_fields = {'schema', 'subject', 'federationId', 'networkId', 'enrollmentNonce',
+                        'grantHash', 'zeroTierAddress', 'zeroTierDeviceId', 'zeroTierInterface', 'createdAt'}
+        if (set(claim) != claim_fields or claim.get('schema') != ADDRESS_CONFIRMATION_SCHEMA or claim.get('subject') != fingerprint(confirmation['cert'])
+                or claim.get('subject') != grant.get('subject') or claim.get('federationId') != grant.get('federationId')
+                or claim.get('networkId') != grant.get('networkId') or claim.get('enrollmentNonce') != grant.get('enrollmentNonce')
+                or claim.get('grantHash') != f.digest(package['grant']) or time.time() > grant.get('acceptBy', 0)
+                or not re.fullmatch('[0-9a-f]{10}', claim.get('zeroTierDeviceId', ''))
+                or not re.fullmatch(r'zt[a-zA-Z0-9]+', claim.get('zeroTierInterface', ''))
+                or type(claim.get('createdAt')) not in [int, float]
+                or not 0 <= time.time() - claim['createdAt'] <= ENROLLMENT_TTL):
+            raise ValueError('Potvrzení adresy neodpovídá vydanému povolení.')
+        private = self.fleet / 'root.pem'
+        subnets = self.network_subnets()
         with f.locked(self.fleet):
-            published = f.read(self.fleet / 'published.json')
-            if not published:
-                raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
             root_public = f.public_key(private)
-            document = f.validate_document(f.verify(root_public, published))
+            document = f.validate_document(f.verify(root_public, f.read(self.fleet / 'published.json')))
+            if document['federationId'] != grant['federationId'] or document['config']['networkId'] != grant['networkId']:
+                raise ValueError('Federace nebo ZeroTier síť se od povolení změnila.')
             administrator = self.endpoint_notebook(document, self.id, self.local_name(), 'administrator',
-                                                   administrator_key, subnets,
+                                                   self.wireguard_identity(), subnets,
                                                    zero_tier_address=self.configured_zerotier_address(subnets))
-            allocation_document = json.loads(f.encode(document))
-            allocation_notebooks = [item for item in allocation_document['config'].get('notebooks', [])
-                                    if item['id'] != self.id]
-            allocation_notebooks.append(administrator)
-            allocation_document['config']['notebooks'] = allocation_notebooks
-            requested = self.endpoint_notebook(allocation_document, payload['subject'], payload['name'], 'user',
-                                               payload['wireguardKey'], subnets)
+            requested = self.endpoint_notebook(document, grant['subject'], grant['name'], 'user',
+                                               grant['wireguardKey'], subnets,
+                                               zero_tier_address=claim.get('zeroTierAddress'))
             published, document = self.publish_notebooks(private, document, [administrator, requested])
             self.write_wireguard_config(document)
             now = int(time.time())
             credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
-                          'subject': payload['subject'], 'role': 'user', 'issuedAt': now,
+                          'subject': grant['subject'], 'role': 'user', 'issuedAt': now,
                           'expiresAt': now + 365 * 24 * 3600, 'serial': str(uuid.uuid4()),
-                          'enrollmentNonce': payload['nonce'], 'acceptBy': now + ENROLLMENT_TTL}
+                          'enrollmentNonce': grant['enrollmentNonce'], 'acceptBy': now + ENROLLMENT_TTL}
             return {'schema': INVITATION_SCHEMA, 'rootPublic': root_public, 'published': published,
                     'credential': f.sign(private, credential)}
 
     def accept_user_invitation(self, raw):
-        if self.access_status()['state'] == 'valid' or (self.fleet / 'root.pem').exists():
+        access = self.access_status()
+        if ((access['state'] == 'valid' and access.get('role') != 'user')
+                or (self.fleet / 'root.pem').exists()):
             raise ValueError('Notebook již má pověření nebo řídicí identitu.')
         invitation = json.loads(raw)
         if set(invitation) != {'schema', 'rootPublic', 'published', 'credential'} or invitation['schema'] != INVITATION_SCHEMA:
@@ -1038,6 +1145,7 @@ class Store:
         credential = f.verify(invitation['rootPublic'], invitation['credential'])
         document = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
         pending = f.read(self.root / 'pending-enrollment.json')
+        confirmation = f.read(self.root / 'pending-address-confirmation.json')
         notebook = next((item for item in document['config'].get('notebooks', [])
                          if item['id'] == self.id), None)
         if (not pending or credential.get('schema') != USER_CREDENTIAL_SCHEMA or credential.get('role') != 'user'
@@ -1047,6 +1155,10 @@ class Store:
             raise ValueError('Pozvánka neodpovídá této platné žádosti notebooku.')
         if notebook.get('wireguardKey') != self.wireguard_identity():
             raise ValueError('Pozvánka obsahuje jiný WireGuard klíč notebooku.')
+        confirmation_public = f.run(['openssl', 'x509', '-pubkey', '-noout'], self.cert.encode()).decode()
+        if (not confirmation or f.verify(confirmation_public, confirmation['signed']).get('zeroTierAddress')
+                != notebook.get('zeroTierAddress')):
+            raise ValueError('Pozvánka neobsahuje potvrzenou ZeroTier adresu notebooku.')
         self.write_wireguard_config(document)
         # All signatures and bindings are checked before publishing any file.
         for path, value in [(self.root / 'federation-root.pub', invitation['rootPublic'].encode()),
@@ -1061,6 +1173,8 @@ class Store:
         if status.get('role') != 'user':
             raise ValueError('Přijaté uživatelské pověření nelze ověřit.')
         (self.root / 'pending-enrollment.json').unlink(missing_ok=True)
+        (self.root / 'pending-join.json').unlink(missing_ok=True)
+        (self.root / 'pending-address-confirmation.json').unlink(missing_ok=True)
         return status
 
     @contextlib.contextmanager
@@ -1508,8 +1622,14 @@ def command(store, req):
         return store.status()
     if action == 'enrollment_request':
         return {'request': json.dumps(store.enrollment_request(req['name']))}
+    if action == 'issue_user_join_grant':
+        return {'grant': json.dumps(store.issue_user_join_grant(req['request']))}
+    if action == 'accept_user_join_grant':
+        return store.accept_user_join_grant(req['grant'])
+    if action == 'enrollment_address_confirmation':
+        return {'confirmation': json.dumps(store.enrollment_address_confirmation(req.get('deviceId')))}
     if action == 'issue_user_invitation':
-        return {'invitation': json.dumps(store.issue_user_invitation(req['request']))}
+        return {'invitation': json.dumps(store.issue_user_invitation(req['confirmation']))}
     if action == 'accept_user_invitation':
         store.accept_user_invitation(req['invitation'])
         return store.public_status()

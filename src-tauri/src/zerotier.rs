@@ -61,6 +61,29 @@ pub fn notebook_status(network_id: Option<&str>) -> Result<Status, String> {
         .map_err(|_| "Systémová síťová služba vrátila neplatný stav ZeroTier.".to_string())
 }
 
+pub fn notebook_join(network_id: &str) -> Result<Status, String> {
+    validate_network_id(network_id)?;
+    let mut socket = UnixStream::connect(NOTEBOOK_NETWORK_SOCKET)
+        .map_err(|_| "Systémová síťová služba notebooku neběží. Spusťte znovu run.sh.".to_string())?;
+    socket.set_read_timeout(Some(Duration::from_secs(20))).map_err(|e| e.to_string())?;
+    socket.set_write_timeout(Some(Duration::from_secs(4))).map_err(|e| e.to_string())?;
+    let request = serde_json::json!({"action": "zerotier_join", "networkId": network_id});
+    socket.write_all(serde_json::to_string(&request).map_err(|e| e.to_string())?.as_bytes())
+        .and_then(|_| socket.write_all(b"\n"))
+        .map_err(|_| "Systémová síťová služba neodpovídá.".to_string())?;
+    let mut raw = Vec::new();
+    socket.take(256 * 1024).read_to_end(&mut raw)
+        .map_err(|_| "Systémová síťová služba neodpovídá.".to_string())?;
+    let response: Value = serde_json::from_slice(&raw)
+        .map_err(|_| "Systémová síťová služba vrátila neplatnou odpověď.".to_string())?;
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(response.get("error").and_then(Value::as_str)
+            .unwrap_or("Připojení k ZeroTier síti selhalo.").to_string());
+    }
+    serde_json::from_value(response.get("zerotier").cloned().unwrap_or(Value::Null))
+        .map_err(|_| "Systémová síťová služba vrátila neplatný stav ZeroTier.".to_string())
+}
+
 pub fn probe(network_id: Option<&str>, setup: bool) -> Result<String, String> {
     if let Some(id) = network_id { validate_network_id(id)?; }
     if setup && network_id.is_none() { return Err("Nejdřív uložte ZeroTier Network ID.".into()); }

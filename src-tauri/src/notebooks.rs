@@ -358,7 +358,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let config_dir = app.path().config_dir().map_err(|e| e.to_string())?;
         let service = app.state::<NotebookService>();
         let action = request["action"].as_str().ok_or("Chybí operace.")?;
-        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_invitation", "accept_user_invitation", "revoke_user_notebook", "topology_update_export", "topology_refresh_plan", "topology_refresh_apply", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "disconnect", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
+        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_join_grant", "accept_user_join_grant", "enrollment_address_confirmation", "issue_user_invitation", "accept_user_invitation", "revoke_user_notebook", "topology_update_export", "topology_refresh_plan", "topology_refresh_apply", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "disconnect", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
             return Err("Neznámá operace notebooku.".into());
         }
         // Serialize commands, including config/status updates, without blocking the UI.
@@ -394,6 +394,11 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             return Ok(result);
         }
         let mut result = script_request(&data, &request)?;
+        if action == "accept_user_join_grant" {
+            let network_id = result["networkId"].as_str().ok_or("Povolení neobsahuje Network ID.")?;
+            let status = crate::zerotier::notebook_join(network_id)?;
+            result["zerotier"] = serde_json::to_value(status).map_err(|e| e.to_string())?;
+        }
         let mut service_error = None;
         if action == "accept_user_invitation" {
             stop(&service)?;

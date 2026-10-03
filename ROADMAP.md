@@ -91,9 +91,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     s TLS identitou a federací, administrátorské mutace bez něj odmítá a UI
     skryje správní záložky. Read-only přehled používá samostatné sanitizované
     API sestavené jen z podepsané revize a nevrací SSH ani deploy metadata.
-    Uživatelský notebook vytvoří podepsanou žádost a administrátor mu vydá
-    patnáct minut platnou pozvánku svázanou s TLS identitou a nonce; přenese se
-    jen veřejná kotva, topologie a uživatelské pověření, nikdy `root.pem`.
+    Uživatelský notebook vytvoří podepsanou žádost bez předchozí znalosti
+    federace. Administrátor mu nejprve vydá dočasné podepsané povolení s
+    Network ID; notebook se připojí do ZeroTier a po autorizaci podepíše svou
+    skutečně přidělenou adresu a Device ID. Teprve druhé potvrzení administrátora
+    publikuje členství a vydá finální pověření. Přenáší se jen veřejná
+    kotva, podepsané zprávy a topologie, nikdy `root.pem`; nedokončený pokus
+    nevytváří člena s odhadnutou adresou.
     Podepsané schéma 2 eviduje routery a zvlášť koncové notebooky s rolí, bez
     možnosti inzerovat notebookovou LAN. Bootstrap zapíše administrátorský
     notebook a vydání pozvánky atomicky publikuje uživatelský notebook v nové
