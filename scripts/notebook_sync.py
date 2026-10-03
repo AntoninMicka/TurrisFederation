@@ -1320,16 +1320,6 @@ class Store:
             candidate.update(stage='awaiting_address', grant=grant, error=None)
             candidates[subject] = candidate
             f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
-        try:
-            enrollment_post(candidate['address'], '/join-grant', grant)
-        except ValueError as error:
-            with f.locked(self.root):
-                candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
-                candidate = candidates.get(subject, candidate)
-                candidate.update(stage='requesting', error=str(error))
-                candidates[subject] = candidate
-                f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
-            raise
         return self.network_enrollment_status()
 
     def network_enrollment_approve_address(self, subject):
@@ -1341,11 +1331,10 @@ class Store:
             if not candidate or not candidate.get('confirmation'):
                 raise ValueError('Notebook ještě nepotvrdil autorizovanou ZeroTier adresu.')
         invitation = self.issue_user_invitation(json.dumps(candidate['confirmation']))
-        enrollment_post(candidate['address'], '/final-invitation', invitation)
         with f.locked(self.root):
             candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
             candidate = candidates.get(subject, candidate)
-            candidate.update(stage='complete', error=None)
+            candidate.update(stage='complete', invitation=invitation, error=None)
             candidates[subject] = candidate
             f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
         return self.network_enrollment_status()
@@ -1669,6 +1658,7 @@ def make_enrollment_server(store):
 
         def do_POST(self):
             try:
+                response_payload = {'ok': True}
                 if not direct_lan_source(self.client_address[0]):
                     self.send_error(403)
                     return
@@ -1720,10 +1710,25 @@ def make_enrollment_server(store):
                     if current.get('stage') != 'complete' or access.get('role') != 'user':
                         store.accept_user_invitation(json.dumps(payload))
                     update_enrollment_session(store, stage='complete', error=None)
+                elif self.path == '/pull':
+                    if store.access_status().get('role') != 'administrator' or set(payload) != {'request'}:
+                        raise ValueError('Výdej přijímací zprávy vyžaduje administrátorský notebook.')
+                    claim = store.validate_enrollment_request(payload['request'])
+                    with f.locked(store.root):
+                        candidate = f.read(store.root / 'network-enrollment-candidates.json', {}).get(claim['subject'])
+                    if (not candidate or candidate.get('address') != self.client_address[0]
+                            or f.digest(payload['request']) != f.digest(candidate.get('request'))):
+                        raise ValueError('Pro tuto žádost není připravená přijímací zpráva.')
+                    if candidate.get('invitation'):
+                        response_payload.update(kind='final-invitation', delivery=candidate['invitation'])
+                    elif candidate.get('grant'):
+                        response_payload.update(kind='join-grant', delivery=candidate['grant'])
+                    else:
+                        raise ValueError('Přijímací zpráva ještě není připravená.')
                 else:
                     self.send_error(404)
                     return
-                body = f.encode({'ok': True})
+                body = f.encode(response_payload)
                 self.send_response(200)
             except ValueError as error:
                 body = f.encode({'ok': False, 'error': str(error)})
@@ -1820,7 +1825,8 @@ def serve_enrollment(store, stopped):
                     stopped.wait(0.5)
                     continue
             try:
-                if (session.get('stage') == 'requesting' and session.get('expiresAt', 0) >= time.time()
+                if (session.get('stage') in ['requesting', 'joining', 'awaiting_final']
+                        and session.get('expiresAt', 0) >= time.time()
                         and time.monotonic() >= next_beacon):
                     packet = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'request': session['request'],
                               'code': session['code'], 'time': int(time.time())}
@@ -1830,6 +1836,25 @@ def serve_enrollment(store, stopped):
                 if len(raw) > LOCAL_LIMIT or not direct_lan_source(source[0]):
                     continue
                 packet = json.loads(raw)
+                if packet.get('schema') == NETWORK_ENROLLMENT_SCHEMA and packet.get('kind') == 'delivery-ready':
+                    session = f.read(store.root / 'network-enrollment.json', {})
+                    if (packet.get('subject') != store.id or not session.get('request')
+                            or packet.get('requestHash') != f.digest(session['request'])
+                            or packet.get('code') != session.get('code')
+                            or abs(time.time() - packet.get('time', 0)) > 30):
+                        continue
+                    pulled = enrollment_post(source[0], '/pull', {'request': session['request']})
+                    if pulled.get('kind') == 'join-grant' and session.get('stage') == 'requesting':
+                        accepted = store.accept_user_join_grant(json.dumps(pulled.get('delivery')))
+                        network = notebook_network_call('zerotier_join', accepted['networkId'])
+                        update_enrollment_session(
+                            store, expected_stage='requesting', stage='joining', adminAddress=source[0],
+                            networkId=accepted['networkId'], zerotier=network.get('zerotier'), error=None)
+                    elif pulled.get('kind') == 'final-invitation' and session.get('stage') == 'awaiting_final':
+                        store.accept_user_invitation(json.dumps(pulled.get('delivery')))
+                        update_enrollment_session(store, expected_stage='awaiting_final',
+                                                  stage='complete', error=None)
+                    continue
                 if (packet.get('schema') != NETWORK_ENROLLMENT_SCHEMA
                         or packet.get('code') != pairing_code(packet.get('request'))
                         or abs(time.time() - packet.get('time', 0)) > 30
@@ -1838,11 +1863,17 @@ def serve_enrollment(store, stopped):
                 payload = store.validate_enrollment_request(packet['request'])
                 with f.locked(store.root):
                     candidates = f.read(store.root / 'network-enrollment-candidates.json', {})
-                    candidates[payload['subject']] = {
+                    candidate = {
                         **candidates.get(payload['subject'], {}), 'name': payload['name'],
                         'address': source[0], 'request': packet['request'], 'code': packet['code'],
                         'seenAt': time.time(), 'stage': candidates.get(payload['subject'], {}).get('stage', 'requesting')}
+                    candidates[payload['subject']] = candidate
                     f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
+                if candidate.get('invitation') or candidate.get('grant'):
+                    notice = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'kind': 'delivery-ready',
+                              'subject': payload['subject'], 'requestHash': f.digest(packet['request']),
+                              'code': packet['code'], 'time': int(time.time())}
+                    udp.sendto(f.encode(notice), (GROUP, ENROLLMENT_PORT))
             except (socket.timeout, ValueError, KeyError, TypeError, json.JSONDecodeError):
                 pass
             except OSError:

@@ -100,7 +100,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     nevytváří člena s odhadnutou adresou.
     Vývojová implementace nyní přenáší jednotlivé fáze automaticky ve stejné
     fyzické LAN: časově omezené multicast discovery, krátký porovnávací kód a
-    TCP/8857 pouze z přímo připojeného fyzického subnetu. Device ID se vrací
+    TCP/8857 pouze z přímo připojeného fyzického subnetu. Cílový notebook si
+    zprávy vyzvedává odchozím spojením od administrátora, takže jeho příchozí
+    firewall nevyžaduje změnu. Device ID se vrací
     podepsané ještě před autorizací a administrátor zachovává obě potvrzení.
     Ruční přenos celých JSON balíčků zůstává jako nouzový fallback. Lokální
     testy prošly; skutečný desktop ↔ uživatelský notebook a firewall LAN ještě

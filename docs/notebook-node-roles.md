@@ -214,8 +214,10 @@ vstupu do konkrétní ZeroTier sítě, podepsané potvrzení skutečné adresy a
 finální pozvánku. Každá fáze je svázaná s jednorázovým nonce a původní
 identitou; nedokončený pokus notebook do topologie nezapíše a nikdy nepředá
 kořenový privátní klíč. Běžný tok tyto zprávy automaticky přenáší pouze mezi
-přímo připojenými adresami stejné fyzické LAN (multicast discovery a TCP/8857),
-ukazuje na obou stranách krátký kód a stále vyžaduje dvě výslovná potvrzení
+přímo připojenými adresami stejné fyzické LAN (multicast discovery a TCP/8857).
+Cílový notebook otevírá TCP spojení směrem k administrátorovi; jeho příchozí
+firewall se kvůli přijetí nemění. Tok ukazuje na obou stranách krátký kód a
+stále vyžaduje dvě výslovná potvrzení
 administrátora. Podepsané balíčky lze ručně přenést jen jako nouzovou cestu.
 Odvolání a ručně přenositelná bezpečná
 aktualizace topologie jsou implementované a lokálně otestované; zbývá jejich

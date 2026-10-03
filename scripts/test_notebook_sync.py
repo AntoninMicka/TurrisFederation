@@ -363,7 +363,8 @@ class NotebookTests(unittest.TestCase):
         with patch.object(n, 'enrollment_post') as post:
             approved = self.a.network_enrollment_approve_request(payload['subject'])
         self.assertEqual('awaiting_address', approved['candidates'][0]['stage'])
-        grant = post.call_args.args[2]
+        post.assert_not_called()
+        grant = f.read(self.a.root / 'network-enrollment-candidates.json')[payload['subject']]['grant']
         self.b.accept_user_join_grant(json.dumps(grant))
         join_status = self.b.enrollment_join_status('abcdef1234')
         claim = self.a.validate_join_status(join_status)
@@ -378,6 +379,35 @@ class NotebookTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'neodpovídá na portu 8857'):
             n.enrollment_post('192.168.50.20', '/join-grant', {'signed': 'test'})
         connection.close.assert_called_once()
+
+    def test_target_pulls_signed_grant_from_administrator(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('Travel notebook')
+        payload = self.a.validate_enrollment_request(request)
+        grant = self.a.issue_user_join_grant(json.dumps(request))
+        f.atomic(self.a.root / 'network-enrollment-candidates.json', {
+            payload['subject']: {'name': payload['name'], 'address': '127.0.0.1',
+                                 'request': request, 'code': n.pairing_code(request),
+                                 'seenAt': time.time(), 'stage': 'awaiting_address', 'grant': grant}})
+        with patch.object(n, 'ENROLLMENT_PORT', 0):
+            server = n.make_enrollment_server(self.a)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            connection = n.http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=2)
+            with patch.object(n, 'direct_lan_source', return_value=True):
+                connection.request('POST', '/pull', f.encode({'request': request}),
+                                   {'Content-Type': 'application/json'})
+                response = connection.getresponse()
+                result = json.loads(response.read())
+            self.assertEqual(200, response.status)
+            self.assertEqual(('join-grant', grant), (result['kind'], result['delivery']))
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            worker.join(2)
 
     def test_enrollment_http_listener_survives_unavailable_multicast(self):
         server = Mock()
