@@ -679,6 +679,29 @@ class NotebookTests(unittest.TestCase):
         self.assertIn("'ipv6.route-metric', '2048'", arguments)
         self.assertNotIn((self.b.root / 'wireguard.key').read_text().strip(), arguments)
 
+    def test_vpn_plan_rebuilds_stale_config_after_topology_sync(self):
+        invitation = self.onboard_user()
+        old_config = (self.b.root / 'wireguard.conf').read_text()
+        self.assertIn('192.168.1.0/24', old_config)
+
+        public = invitation['rootPublic']
+        current = f.validate_document(f.verify(public, f.read(self.a.fleet / 'published.json')))
+        updated_config = copy.deepcopy(current['config'])
+        updated_config['nodes'][0]['lanCidrs'] = ['192.168.2.0/24']
+        published = f.snapshot(self.a.fleet, updated_config, current['members'])
+        f.atomic(self.b.fleet / 'published.json', published)
+
+        with patch.object(n.Store, 'forwarding_state', return_value={'ipv4': False, 'ipv6': False}), \
+                patch.object(n, 'nmcli_connections', return_value={}), \
+                patch.object(n, 'verify_underlay', return_value='zt1234'):
+            plan = self.b.vpn_plan()
+
+        rebuilt = (self.b.root / 'wireguard.conf').read_text()
+        self.assertEqual(current['revision'] + 1, plan['revision'])
+        self.assertIn('192.168.2.0/24', plan['routes'])
+        self.assertIn('192.168.2.0/24', rebuilt)
+        self.assertNotIn('192.168.1.0/24', rebuilt)
+
     def test_failed_vpn_activation_restores_previous_profile(self):
         self.onboard_user()
         forwarding = {'ipv4': False, 'ipv6': False}

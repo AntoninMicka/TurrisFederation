@@ -747,8 +747,11 @@ class Store:
         if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
             raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
         config = self.root / 'wireguard.conf'
-        if not config.exists():
-            self.write_wireguard_config(document)
+        # The signed topology can advance through administrator notebook sync
+        # while an older NetworkManager profile remains active.  Always rebuild
+        # the staged configuration from the document verified above so a new
+        # installation plan cannot silently import routes from an older revision.
+        self.write_wireguard_config(document)
         return document, notebook, config, self.routes_for(document)
 
     @staticmethod
