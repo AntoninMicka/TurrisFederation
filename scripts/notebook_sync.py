@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 import federation as f
 
 PORT = 8856
+ENROLLMENT_PORT = 8857
 GROUP = '239.255.88.56'
 INTERVAL = 30
 MAX = 2 * 1024 * 1024
@@ -41,6 +42,7 @@ CREDENTIAL_SCHEMA = 'tf-notebook-credential-1'
 USER_CREDENTIAL_SCHEMA = 'tf-notebook-credential-2'
 ENROLLMENT_SCHEMA = 'tf-notebook-enrollment-2'
 JOIN_GRANT_SCHEMA = 'tf-notebook-join-grant-1'
+JOIN_STATUS_SCHEMA = 'tf-notebook-join-status-1'
 ADDRESS_CONFIRMATION_SCHEMA = 'tf-notebook-address-confirmation-1'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 TOPOLOGY_UPDATE_SCHEMA = 'tf-notebook-topology-update-1'
@@ -51,10 +53,15 @@ VPN_REPLACED = 'turris-federation-replaced'
 VPN_INTERFACE = 'tf_notebook'
 VPN_PLAN_TTL = 10 * 60
 VPN_HANDSHAKE_MAX_AGE = 180
+NETWORK_ENROLLMENT_SCHEMA = 'tf-notebook-network-enrollment-1'
 
 
 def fingerprint(cert):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert)).hexdigest()
+
+
+def pairing_code(value):
+    return hashlib.sha256(f.encode(value)).hexdigest()[:6].upper()
 
 
 def config_valid(data):
@@ -293,6 +300,46 @@ def observed_zerotier_address(subnet):
     if len(candidates) != 1:
         raise ValueError('ZeroTier síť zatí nemá jednoznačně přidělenou IPv4 adresu notebooku.')
     return candidates[0]
+
+
+def notebook_network_call(action, network_id):
+    request = f.encode({'action': action, 'networkId': network_id}) + b'\n'
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(20)
+    try:
+        connection.connect('/run/turris-federation/notebook-network.sock')
+        connection.sendall(request)
+        response = b''
+        while len(response) <= LOCAL_LIMIT and not response.endswith(b'\n'):
+            part = connection.recv(65536)
+            if not part:
+                break
+            response += part
+    except OSError as exc:
+        raise ValueError('Systémová síťová služba notebooku neběží.') from exc
+    finally:
+        connection.close()
+    result = json.loads(response)
+    if not result.get('ok'):
+        raise ValueError(result.get('error') or 'Síťová služba požadavek odmítla.')
+    return result
+
+
+def enrollment_post(address, path, payload):
+    connection = http.client.HTTPConnection(address, ENROLLMENT_PORT, timeout=8)
+    body = f.encode(payload)
+    try:
+        connection.request('POST', path, body, {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        raw = response.read(LOCAL_LIMIT + 1)
+        if response.status != 200 or len(raw) > LOCAL_LIMIT:
+            raise ValueError('Protější notebook odmítl přijímací zprávu.')
+        result = json.loads(raw)
+        if result.get('ok') is not True:
+            raise ValueError(result.get('error') or 'Protější notebook odmítl přijímací zprávu.')
+        return result
+    finally:
+        connection.close()
 
 
 def public_vpn_plan(plan):
@@ -1096,9 +1143,31 @@ class Store:
         f.atomic(self.root / 'pending-address-confirmation.json', confirmation)
         return confirmation
 
-    def issue_user_invitation(self, raw):
-        if self.access_status().get('role') != 'administrator':
-            raise ValueError('Vydání pozvánky vyžaduje administrátorské pověření.')
+    def enrollment_join_status(self, device_id):
+        package = f.read(self.root / 'pending-join.json')
+        if not package or not isinstance(device_id, str) or not re.fullmatch('[0-9a-f]{10}', device_id):
+            raise ValueError('ZeroTier ještě neposkytl platné Device ID notebooku.')
+        grant = f.verify(package['rootPublic'], package['grant'])
+        payload = {'schema': JOIN_STATUS_SCHEMA, 'subject': self.id,
+                   'requestHash': grant['requestHash'], 'zeroTierDeviceId': device_id,
+                   'createdAt': int(time.time())}
+        return {'cert': self.cert, 'signed': f.sign(self.root / 'key.pem', payload)}
+
+    def validate_join_status(self, raw):
+        if set(raw) != {'cert', 'signed'}:
+            raise ValueError('Neplatný stav připojování notebooku.')
+        public = f.run(['openssl', 'x509', '-pubkey', '-noout'], raw['cert'].encode()).decode()
+        payload = f.verify(public, raw['signed'])
+        if (set(payload) != {'schema', 'subject', 'requestHash', 'zeroTierDeviceId', 'createdAt'}
+                or payload.get('schema') != JOIN_STATUS_SCHEMA
+                or payload.get('subject') != fingerprint(raw['cert'])
+                or not re.fullmatch('[0-9a-f]{10}', payload.get('zeroTierDeviceId', ''))
+                or type(payload.get('createdAt')) not in [int, float]
+                or abs(time.time() - payload['createdAt']) > 90):
+            raise ValueError('Neplatný stav připojování notebooku.')
+        return payload
+
+    def validate_address_confirmation(self, raw):
         confirmation = json.loads(raw)
         if set(confirmation) != {'schema', 'cert', 'joinGrant', 'signed'} or confirmation['schema'] != ADDRESS_CONFIRMATION_SCHEMA:
             raise ValueError('Neplatné potvrzení ZeroTier adresy.')
@@ -1119,6 +1188,12 @@ class Store:
                 or type(claim.get('createdAt')) not in [int, float]
                 or not 0 <= time.time() - claim['createdAt'] <= ENROLLMENT_TTL):
             raise ValueError('Potvrzení adresy neodpovídá vydanému povolení.')
+        return confirmation, grant, claim
+
+    def issue_user_invitation(self, raw):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Vydání pozvánky vyžaduje administrátorské pověření.')
+        confirmation, grant, claim = self.validate_address_confirmation(raw)
         private = self.fleet / 'root.pem'
         subnets = self.network_subnets()
         with f.locked(self.fleet):
@@ -1184,6 +1259,89 @@ class Store:
         (self.root / 'pending-join.json').unlink(missing_ok=True)
         (self.root / 'pending-address-confirmation.json').unlink(missing_ok=True)
         return status
+
+    def network_enrollment_start(self, name):
+        request = self.enrollment_request(name)
+        session = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'stage': 'requesting',
+                   'request': request, 'code': pairing_code(request),
+                   'createdAt': time.time(), 'expiresAt': time.time() + ENROLLMENT_TTL}
+        with f.locked(self.root):
+            f.atomic(self.root / 'network-enrollment.json', session)
+        return self.network_enrollment_status()
+
+    def network_enrollment_status(self):
+        session = f.read(self.root / 'network-enrollment.json', {})
+        if session and session.get('expiresAt', 0) < time.time() and session.get('stage') != 'complete':
+            session = dict(session, stage='expired', error='Přijímací relace vypršela.')
+        candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+        visible = []
+        for subject, item in candidates.items():
+            if time.time() - item.get('seenAt', 0) > ENROLLMENT_TTL:
+                continue
+            visible.append({'id': subject, 'name': item.get('name'), 'address': item.get('address'),
+                            'code': item.get('code'), 'stage': item.get('stage', 'requesting'),
+                            'zeroTierAddress': item.get('zeroTierAddress'),
+                            'zeroTierDeviceId': item.get('zeroTierDeviceId'),
+                            'error': item.get('error')})
+        visible_session = None
+        if session:
+            visible_session = {key: session.get(key) for key in
+                               ['stage', 'code', 'expiresAt', 'error', 'networkId']}
+            network = session.get('zerotier') if isinstance(session.get('zerotier'), dict) else {}
+            visible_session.update(zeroTierDeviceId=network.get('deviceId'),
+                                   zeroTierState=network.get('state'),
+                                   zeroTierSummary=network.get('summary'))
+        listener = f.read(self.root / 'network-enrollment-listener.json', {})
+        visible_listener = {key: listener.get(key) for key in ['state', 'port', 'error']} if listener else None
+        return {'session': visible_session, 'listener': visible_listener,
+                'candidates': sorted(visible, key=lambda item: item['name'] or item['id'])}
+
+    def network_enrollment_approve_request(self, subject):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Přijetí notebooku vyžaduje administrátorské pověření.')
+        with f.locked(self.root):
+            candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+            candidate = candidates.get(subject)
+            if not candidate or time.time() - candidate.get('seenAt', 0) > ENROLLMENT_TTL:
+                raise ValueError('Žádost notebooku už není aktuální.')
+        grant = self.issue_user_join_grant(json.dumps(candidate['request']))
+        with f.locked(self.root):
+            candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+            candidate = candidates.get(subject)
+            if not candidate:
+                raise ValueError('Žádost notebooku už není aktuální.')
+            candidate.update(stage='awaiting_address', grant=grant, error=None)
+            candidates[subject] = candidate
+            f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
+        try:
+            enrollment_post(candidate['address'], '/join-grant', grant)
+        except ValueError as error:
+            with f.locked(self.root):
+                candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+                candidate = candidates.get(subject, candidate)
+                candidate.update(stage='requesting', error=str(error))
+                candidates[subject] = candidate
+                f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
+            raise
+        return self.network_enrollment_status()
+
+    def network_enrollment_approve_address(self, subject):
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Přijetí notebooku vyžaduje administrátorské pověření.')
+        with f.locked(self.root):
+            candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+            candidate = candidates.get(subject)
+            if not candidate or not candidate.get('confirmation'):
+                raise ValueError('Notebook ještě nepotvrdil autorizovanou ZeroTier adresu.')
+        invitation = self.issue_user_invitation(json.dumps(candidate['confirmation']))
+        enrollment_post(candidate['address'], '/final-invitation', invitation)
+        with f.locked(self.root):
+            candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
+            candidate = candidates.get(subject, candidate)
+            candidate.update(stage='complete', error=None)
+            candidates[subject] = candidate
+            f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
+        return self.network_enrollment_status()
 
     @contextlib.contextmanager
     def db(self):
@@ -1466,6 +1624,202 @@ def discover(store, raw, source, network):
             f.atomic(store.root / 'discovered.json', peers)
 
 
+def direct_lan_source(source):
+    try:
+        value = ipaddress.ip_address(source)
+        links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show']))
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return False
+    for link in links:
+        device = link.get('ifname', '')
+        if (not isinstance(device, str) or device == 'lo'
+                or re.match(r'^(zt|tf_|docker|br-|virbr|lxc)', device)):
+            continue
+        for item in link.get('addr_info', []):
+            try:
+                if item.get('family') == 'inet' and value in ipaddress.ip_network(
+                        '%s/%s' % (item['local'], item['prefixlen']), strict=False):
+                    return True
+            except (KeyError, ValueError):
+                pass
+    return False
+
+
+def update_enrollment_session(store, expected_stage=None, **changes):
+    with f.locked(store.root):
+        current = f.read(store.root / 'network-enrollment.json', {})
+        if expected_stage is not None and current.get('stage') != expected_stage:
+            return current
+        current.update(changes)
+        f.atomic(store.root / 'network-enrollment.json', current)
+        return current
+
+
+def make_enrollment_server(store):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            try:
+                if not direct_lan_source(self.client_address[0]):
+                    self.send_error(403)
+                    return
+                size = int(self.headers.get('Content-Length', '0'))
+                if (self.headers.get('Content-Type') != 'application/json'
+                        or not 0 < size <= LOCAL_LIMIT):
+                    self.send_error(400)
+                    return
+                payload = json.loads(self.rfile.read(size))
+                if self.path == '/join-grant':
+                    accepted = store.accept_user_join_grant(json.dumps(payload))
+                    network = notebook_network_call('zerotier_join', accepted['networkId'])
+                    update_enrollment_session(
+                        store, stage='joining', adminAddress=self.client_address[0],
+                        networkId=accepted['networkId'], zerotier=network.get('zerotier'), error=None)
+                elif self.path == '/address-confirmation':
+                    confirmation, grant, claim = store.validate_address_confirmation(json.dumps(payload))
+                    if store.access_status().get('role') != 'administrator':
+                        raise ValueError('Potvrzení adresy smí přijmout jen administrátor.')
+                    with f.locked(store.root):
+                        candidates = f.read(store.root / 'network-enrollment-candidates.json', {})
+                        candidate = candidates.get(claim['subject'])
+                        if (not candidate or candidate.get('address') != self.client_address[0]
+                                or pairing_code(candidate.get('request')) != candidate.get('code')
+                                or grant.get('requestHash') != f.digest(candidate.get('request'))):
+                            raise ValueError('Potvrzení nepatří nalezené žádosti notebooku.')
+                        candidate.update(stage='awaiting_final', confirmation=confirmation,
+                                         zeroTierAddress=claim['zeroTierAddress'],
+                                         zeroTierDeviceId=claim['zeroTierDeviceId'], seenAt=time.time())
+                        candidates[claim['subject']] = candidate
+                        f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
+                elif self.path == '/join-status':
+                    claim = store.validate_join_status(payload)
+                    if store.access_status().get('role') != 'administrator':
+                        raise ValueError('Stav připojování smí přijmout jen administrátor.')
+                    with f.locked(store.root):
+                        candidates = f.read(store.root / 'network-enrollment-candidates.json', {})
+                        candidate = candidates.get(claim['subject'])
+                        if (not candidate or candidate.get('address') != self.client_address[0]
+                                or payload.get('cert') != candidate.get('request', {}).get('cert')
+                                or claim.get('requestHash') != f.digest(candidate.get('request'))):
+                            raise ValueError('Stav připojování nepatří nalezené žádosti notebooku.')
+                        candidate.update(zeroTierDeviceId=claim['zeroTierDeviceId'], seenAt=time.time(), error=None)
+                        candidates[claim['subject']] = candidate
+                        f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
+                elif self.path == '/final-invitation':
+                    current = f.read(store.root / 'network-enrollment.json', {})
+                    access = store.access_status()
+                    if current.get('stage') != 'complete' or access.get('role') != 'user':
+                        store.accept_user_invitation(json.dumps(payload))
+                    update_enrollment_session(store, stage='complete', error=None)
+                else:
+                    self.send_error(404)
+                    return
+                body = f.encode({'ok': True})
+                self.send_response(200)
+            except ValueError as error:
+                body = f.encode({'ok': False, 'error': str(error)})
+                self.send_response(409)
+            except Exception:
+                body = f.encode({'ok': False, 'error': 'Přijímací zprávu nelze zpracovat.'})
+                self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Server(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+    return Server(('', ENROLLMENT_PORT), Handler)
+
+
+def serve_enrollment(store, stopped):
+    server = None
+    udp = None
+    try:
+        server = make_enrollment_server(store)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp.bind(('', ENROLLMENT_PORT))
+        udp.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                       socket.inet_aton(GROUP) + socket.inet_aton('0.0.0.0'))
+        udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        udp.settimeout(1)
+        f.atomic(store.root / 'network-enrollment-listener.json', {
+            'state': 'listening', 'port': ENROLLMENT_PORT, 'error': None, 'updatedAt': time.time()})
+    except OSError:
+        if udp is not None:
+            udp.close()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        error = 'Automatické párování v místní síti nelze spustit. Ověřte port 8857 a podporu multicastu.'
+        f.atomic(store.root / 'network-enrollment-listener.json', {
+            'state': 'error', 'port': ENROLLMENT_PORT, 'error': error, 'updatedAt': time.time()})
+        session = f.read(store.root / 'network-enrollment.json', {})
+        if session and session.get('stage') not in ['complete', 'expired']:
+            update_enrollment_session(store, error=error)
+        return
+    next_beacon = 0
+    next_join_status = 0
+    try:
+        while not stopped.is_set():
+            session = f.read(store.root / 'network-enrollment.json', {})
+            if (session.get('stage') == 'requesting' and session.get('expiresAt', 0) >= time.time()
+                    and time.monotonic() >= next_beacon):
+                packet = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'request': session['request'],
+                          'code': session['code'], 'time': int(time.time())}
+                udp.sendto(f.encode(packet), (GROUP, ENROLLMENT_PORT))
+                next_beacon = time.monotonic() + 3
+            if session.get('stage') == 'joining' and session.get('expiresAt', 0) >= time.time():
+                status = {}
+                try:
+                    status = notebook_network_call('status', session['networkId']).get('zerotier', {})
+                    update_enrollment_session(store, expected_stage='joining',
+                                              zerotier=status, error=None)
+                    if status.get('deviceId') and time.monotonic() >= next_join_status:
+                        enrollment_post(session['adminAddress'], '/join-status',
+                                        store.enrollment_join_status(status['deviceId']))
+                        next_join_status = time.monotonic() + 3
+                    if status.get('networkStatus') == 'OK' and status.get('deviceId'):
+                        confirmation = store.enrollment_address_confirmation(status['deviceId'])
+                        enrollment_post(session['adminAddress'], '/address-confirmation', confirmation)
+                        update_enrollment_session(store, expected_stage='joining',
+                                                  stage='awaiting_final', zerotier=status)
+                except ValueError as error:
+                    update_enrollment_session(store, expected_stage='joining',
+                                              zerotier=status, error=str(error))
+            try:
+                raw, source = udp.recvfrom(LOCAL_LIMIT + 1)
+                if len(raw) > LOCAL_LIMIT or not direct_lan_source(source[0]):
+                    continue
+                packet = json.loads(raw)
+                if (packet.get('schema') != NETWORK_ENROLLMENT_SCHEMA
+                        or packet.get('code') != pairing_code(packet.get('request'))
+                        or abs(time.time() - packet.get('time', 0)) > 30
+                        or store.access_status().get('role') != 'administrator'):
+                    continue
+                payload = store.validate_enrollment_request(packet['request'])
+                with f.locked(store.root):
+                    candidates = f.read(store.root / 'network-enrollment-candidates.json', {})
+                    candidates[payload['subject']] = {
+                        **candidates.get(payload['subject'], {}), 'name': payload['name'],
+                        'address': source[0], 'request': packet['request'], 'code': packet['code'],
+                        'seenAt': time.time(), 'stage': candidates.get(payload['subject'], {}).get('stage', 'requesting')}
+                    f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
+            except (socket.timeout, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                pass
+    finally:
+        if udp is not None:
+            udp.close()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+
 def local_socket_path():
     override = os.environ.get('TF_BACKEND_SOCKET')
     if override:
@@ -1602,6 +1956,8 @@ def serve(store):
     local_worker = threading.Thread(target=local.serve_forever, daemon=True)
     local_worker.start()
     stopped = threading.Event()
+    enrollment_worker = threading.Thread(target=serve_enrollment, args=(store, stopped), daemon=True)
+    enrollment_worker.start()
     try:
         config = f.read(store.root / 'config.json', {})
         if config.get('enabled'):
@@ -1628,6 +1984,14 @@ def command(store, req):
     if action == 'bootstrap_admin':
         store.bootstrap_admin_credential()
         return store.status()
+    if action == 'network_enrollment_start':
+        return store.network_enrollment_start(req['name'])
+    if action == 'network_enrollment_status':
+        return store.network_enrollment_status()
+    if action == 'network_enrollment_approve_request':
+        return store.network_enrollment_approve_request(req['subject'])
+    if action == 'network_enrollment_approve_address':
+        return store.network_enrollment_approve_address(req['subject'])
     if action == 'enrollment_request':
         return {'request': json.dumps(store.enrollment_request(req['name']))}
     if action == 'issue_user_join_grant':

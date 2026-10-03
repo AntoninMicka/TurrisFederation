@@ -345,6 +345,44 @@ class NotebookTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'Device ID'):
             self.b.enrollment_address_confirmation('invalid')
 
+    def test_network_enrollment_uses_short_code_and_sends_signed_join_status(self):
+        state = self.b.network_enrollment_start('Travel notebook')
+        self.assertEqual('requesting', state['session']['stage'])
+        self.assertRegex(state['session']['code'], r'^[0-9A-F]{6}$')
+        session = f.read(self.b.root / 'network-enrollment.json')
+        self.assertEqual(n.pairing_code(session['request']), state['session']['code'])
+
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = session['request']
+        payload = self.a.validate_enrollment_request(request)
+        f.atomic(self.a.root / 'network-enrollment-candidates.json', {
+            payload['subject']: {'name': payload['name'], 'address': '192.168.50.20',
+                                 'request': request, 'code': state['session']['code'],
+                                 'seenAt': time.time(), 'stage': 'requesting'}})
+        with patch.object(n, 'enrollment_post') as post:
+            approved = self.a.network_enrollment_approve_request(payload['subject'])
+        self.assertEqual('awaiting_address', approved['candidates'][0]['stage'])
+        grant = post.call_args.args[2]
+        self.b.accept_user_join_grant(json.dumps(grant))
+        join_status = self.b.enrollment_join_status('abcdef1234')
+        claim = self.a.validate_join_status(join_status)
+        self.assertEqual((self.b.id, 'abcdef1234'),
+                         (claim['subject'], claim['zeroTierDeviceId']))
+        self.assertEqual(f.digest(request), claim['requestHash'])
+
+    def test_direct_lan_source_excludes_overlay_and_accepts_physical_subnet(self):
+        links = json.dumps([
+            {'ifname': 'wlan0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.50.10', 'prefixlen': 24}]},
+            {'ifname': 'ztabc', 'addr_info': [
+                {'family': 'inet', 'local': '10.147.0.2', 'prefixlen': 24}]},
+        ])
+        with patch.object(n, 'local_command', return_value=links):
+            self.assertTrue(n.direct_lan_source('192.168.50.20'))
+            self.assertFalse(n.direct_lan_source('10.147.0.3'))
+            self.assertFalse(n.direct_lan_source('203.0.113.1'))
+
     def test_existing_user_can_reenroll_to_replace_incorrect_signed_zerotier_address(self):
         self.onboard_user()
         _, _, _, invitation = self.staged_user_invitation(

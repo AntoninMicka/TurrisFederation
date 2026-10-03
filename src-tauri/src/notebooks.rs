@@ -358,7 +358,7 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let config_dir = app.path().config_dir().map_err(|e| e.to_string())?;
         let service = app.state::<NotebookService>();
         let action = request["action"].as_str().ok_or("Chybí operace.")?;
-        if !["status", "access_status", "bootstrap_admin", "enrollment_request", "issue_user_join_grant", "accept_user_join_grant", "enrollment_address_confirmation", "issue_user_invitation", "accept_user_invitation", "revoke_user_notebook", "topology_update_export", "topology_refresh_plan", "topology_refresh_apply", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "disconnect", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
+        if !["status", "access_status", "bootstrap_admin", "network_enrollment_start", "network_enrollment_status", "network_enrollment_approve_request", "network_enrollment_approve_address", "enrollment_request", "issue_user_join_grant", "accept_user_join_grant", "enrollment_address_confirmation", "issue_user_invitation", "accept_user_invitation", "revoke_user_notebook", "topology_update_export", "topology_refresh_plan", "topology_refresh_apply", "vpn_plan", "vpn_install", "vpn_rollback", "vpn_status", "vpn_diagnostics", "configure", "stop", "disconnect", "pair", "unpair", "resolve", "manual", "service_install", "service_remove", "backend_status"].contains(&action) {
             return Err("Neznámá operace notebooku.".into());
         }
         // Serialize commands, including config/status updates, without blocking the UI.
@@ -394,6 +394,28 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
             return Ok(result);
         }
         let mut result = script_request(&data, &request)?;
+        if action == "network_enrollment_start" {
+            // The LAN listener must outlive this one-shot command. Prefer the
+            // persistent user unit; if systemd is unavailable, keep the
+            // current desktop session usable through the child backend.
+            stop(&service)?;
+            match install_service(&data, &config_dir) {
+                Err(error) => {
+                    start(&data, &service)?;
+                    result["serviceError"] = json!(format!(
+                        "Automatické párování poběží jen s otevřenou aplikací: {error}"
+                    ));
+                }
+                Ok(()) => {
+                    if let Err(error) = install_tray_autostart(&config_dir) {
+                        result["serviceError"] = json!(format!(
+                            "Backend běží, ale automatický start ikony se nepodařilo nastavit: {error}"
+                        ));
+                    }
+                }
+            }
+            result["service"] = service_state(&config_dir);
+        }
         if action == "accept_user_join_grant" {
             let network_id = result["networkId"].as_str().ok_or("Povolení neobsahuje Network ID.")?;
             let status = crate::zerotier::notebook_join(network_id)?;

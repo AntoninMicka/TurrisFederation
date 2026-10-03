@@ -87,13 +87,14 @@ Průvodce prvním spuštěním provede tyto oddělené kroky:
    `systemd --user`, NetworkManager/polkit a potřebných transportů.
 2. Vytvoří privátní identitu notebooku lokálně s oprávněním `0600`; privátní
    klíč nikdy nevloží do pozvánky ani požadavku na přijetí.
-3. Načte jednorázové, časově omezené pozvání vydané administrátorem. Pozvání
-   určuje federaci, požadovanou roli, ID notebooku nebo nonce, kořenový veřejný
-   klíč a očekávaný otisk administrátora.
+3. Vytvoří časově omezenou podepsanou žádost a nabídne ji administrátorovi ve
+   stejné LAN; při nedostupném síťovém přenosu ji lze předat ručně. Notebook
+   předem nemusí znát federaci ani její Network ID.
 4. Zobrazí přesný plán: roli, federaci, síťové backendy, systémové změny,
    uživatelskou službu, routy a to, že notebook nebude routovat svou fyzickou síť.
-5. Po potvrzení odešle veřejnou identitu a důkaz držení privátního klíče
-   administrátorovi. Teprve jeho výslovné přijetí vydá podepsané pověření člena.
+5. Po porovnání krátkého kódu odešle veřejnou identitu a důkaz držení privátního
+   klíče administrátorovi. První potvrzení povolí vstup do ZeroTier; teprve
+   druhé potvrzení skutečné adresy vydá podepsané pověření člena.
 6. Po ověření podpisu a otisku uloží pověření a topologii, zapne
    `turris-federation-backend.service` v uživatelské relaci a nakonfiguruje
    koncové VPN připojení. Nutné privilegované síťové kroky projdou samostatným
@@ -102,17 +103,28 @@ Průvodce prvním spuštěním provede tyto oddělené kroky:
    Úspěch instalace a úspěch připojení zobrazí jako dva oddělené výsledky.
 8. Spustí klienta stavové lišty a otevře UI odpovídající podepsané roli.
 
-První implementace kroků 2 až 5 používá přenositelný JSON a dvě potvrzení
-administrátora. Cílový notebook nejprve vytvoří žádost podepsanou svým TLS
-klíčem; nemusí znát federaci ani Network ID. První odpověď obsahuje veřejnou
+Implementace kroků 2 až 5 používá primárně automatický přenos ve stejné fyzické
+LAN a dvě potvrzení administrátora. Cílový notebook nejprve vytvoří žádost
+podepsanou svým TLS klíčem; nemusí znát federaci ani Network ID. Po dobu nejvýše
+15 minut ji oznamuje multicastem s krátkým párovacím kódem. Administrátor vidí
+zdrojovou LAN adresu, název a stejný kód. Přenos přijímá pouze zdroje z přímo
+připojené fyzické IPv4 sítě; rozhraní ZeroTier, WireGuard, kontejnery a bridge
+se za místní LAN nepovažují. Podepsané zprávy se mezi notebooky předávají přes
+TCP port 8857 a kód musí správce před prvním potvrzením porovnat na obou
+obrazovkách.
+
+První odpověď obsahuje veřejnou
 kotvu a podepsané Network ID, ale ještě neobsahuje členské pověření ani
 notebook nezapisuje do topologie. Notebook se přes omezenou systémovou službu
-připojí do sítě. Po autorizaci jeho Device ID v ZeroTier Central podepíše
+připojí do sítě a automaticky vrátí podepsané Device ID, aby správce autorizoval
+správného člena v ZeroTier Central. Po autorizaci podepíše
 skutečně přidělenou IPv4 adresu z konkrétního rozhraní `zt…` a vrátí ji
 administrátorovi. Druhé potvrzení zkontroluje vazbu na původní nonce, identitu,
 síť, subnet, veřejný WireGuard klíč a unikátnost adresy. Teprve poté publikuje
 novou topologii a vydá finální pozvánku. `root.pem` se uživatelskému notebooku
-nikdy nepředá. Po finálním přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
+nikdy nepředá. Stejné podepsané JSON balíčky zůstávají v rozhraní jako nouzový
+ruční přenos pro sítě bez multicastu nebo s blokovaným portem 8857. Po finálním
+přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
 routerovými peery a jejich federovanými LAN prefixy. Soubor se instaluje až po
 samostatném deset minut platném plánu a potvrzení v UI. Instalační tok spouští
 přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datového

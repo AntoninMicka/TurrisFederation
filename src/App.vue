@@ -52,6 +52,22 @@ const requestedUser = ref("");
 const issuedJoinGrant = ref("");
 const requestedAddressConfirmation = ref("");
 const issuedInvitation = ref("");
+interface NetworkEnrollmentCandidate {
+  id: string; name?: string; address?: string; code?: string;
+  stage: "requesting" | "awaiting_address" | "awaiting_final" | "complete";
+  zeroTierAddress?: string; zeroTierDeviceId?: string; error?: string;
+}
+interface NetworkEnrollmentState {
+  session: null | {
+    stage?: string; code?: string; expiresAt?: number; error?: string; networkId?: string;
+    zeroTierDeviceId?: string; zeroTierState?: string; zeroTierSummary?: string;
+  };
+  listener?: null | { state?: string; port?: number; error?: string };
+  candidates: NetworkEnrollmentCandidate[];
+  serviceError?: string;
+}
+const networkEnrollment = ref<NetworkEnrollmentState | null>(null);
+const networkEnrollmentPolling = ref(false);
 const vpnPlan = ref<NotebookVpnPlan | null>(null);
 const vpnStatus = ref<NotebookVpnStatus | null>(null);
 const vpnDiagnostics = ref<NotebookVpnDiagnostics | null>(null);
@@ -135,6 +151,39 @@ async function enrollmentOperation(action: "request" | "accept-grant" | "confirm
     }
   } catch (error) { enrollmentError.value = String(error); }
   finally { enrollmentBusy.value = false; }
+}
+
+async function networkEnrollmentOperation(action: "start" | "status" | "approve-request" | "approve-address", subject?: string) {
+  if ((action === "status" && networkEnrollmentPolling.value) || (action !== "status" && enrollmentBusy.value)) return;
+  if (action === "status") networkEnrollmentPolling.value = true;
+  else enrollmentBusy.value = true;
+  if (action !== "status") enrollmentError.value = "";
+  try {
+    const request: Record<string, unknown> = {
+      action: action === "start" ? "network_enrollment_start"
+        : action === "status" ? "network_enrollment_status"
+          : action === "approve-request" ? "network_enrollment_approve_request"
+            : "network_enrollment_approve_address",
+    };
+    if (action === "start") request.name = enrollmentName.value;
+    if (subject) request.subject = subject;
+    const previousServiceError = networkEnrollment.value?.serviceError;
+    const result = await notebookEnrollmentAction<NetworkEnrollmentState>(request);
+    if (previousServiceError && !result.serviceError) result.serviceError = previousServiceError;
+    networkEnrollment.value = result;
+    if (networkEnrollment.value.session?.stage === "complete" && notebookSync.value?.access.state !== "valid") {
+      await notebookOperation();
+      if ((notebookSync.value as NotebookSyncStatus | null)?.access.state === "valid") {
+        await refreshReadOnlyOverview();
+        await loadVpnStatus();
+      }
+    }
+  } catch (error) {
+    if (action !== "status") enrollmentError.value = String(error);
+  } finally {
+    if (action === "status") networkEnrollmentPolling.value = false;
+    else enrollmentBusy.value = false;
+  }
 }
 
 async function revokeUserNotebook(id: string, name: string) {
@@ -246,6 +295,9 @@ async function loadSharedSettings() {
 onMounted(() => {
   notebookPoll = setInterval(() => {
     if ((activeTab.value === "notebooks" || notebookSync.value?.config.enabled) && !syncBusy.value) void notebookOperation();
+    if (notebookSync.value && (activeTab.value === "notebooks" || !isAdministrator.value || networkEnrollment.value?.session)) {
+      void networkEnrollmentOperation("status");
+    }
   }, 5000);
 });
 onUnmounted(() => { if (notebookPoll) clearInterval(notebookPoll); unlistenTrayDisconnect?.(); });
@@ -389,7 +441,10 @@ onMounted(async () => {
     });
   }
   try {
-    if ("__TAURI_INTERNALS__" in window) await notebookOperation();
+    if ("__TAURI_INTERNALS__" in window) {
+      await notebookOperation();
+      await networkEnrollmentOperation("status");
+    }
     if (notebookSync.value?.access.state === "valid") {
       await refreshReadOnlyOverview();
       await loadVpnStatus();
@@ -668,16 +723,34 @@ async function submitConnection() {
       <div v-else class="connection-form">
         <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
         <label>Název uživatelského notebooku<input v-model="enrollmentName" maxlength="80" placeholder="Notebook uživatele" /></label>
-        <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="enrollmentOperation('request')">Vytvořit podepsanou žádost</button>
-        <label v-if="enrollmentRequest">Žádost pro administrátora<textarea class="pairing-data" readonly :value="enrollmentRequest"></textarea></label>
-        <label>Povolení připojení vydané administrátorem<textarea v-model="receivedJoinGrant" class="pairing-data" placeholder="Vložte podepsané povolení s Network ID"></textarea></label>
-        <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('accept-grant')">Ověřit povolení a připojit ZeroTier</button>
-        <p v-if="notebookStatus" :class="{ error: notebookStatus.state === 'error' || notebookStatus.state === 'not_installed' }">{{ notebookStatus.summary }}<template v-if="notebookStatus.deviceId"> · Device ID <code>{{ notebookStatus.deviceId }}</code></template></p>
-        <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('confirm-address')">Načíst autorizovanou adresu a vytvořit potvrzení</button>
-        <label v-if="addressConfirmation">Potvrzení skutečné ZeroTier adresy pro administrátora<textarea class="pairing-data" readonly :value="addressConfirmation"></textarea></label>
-        <label>Finální pozvánka vydaná administrátorem<textarea v-model="receivedInvitation" class="pairing-data" placeholder="Vložte finální pozvánku"></textarea></label>
-        <button :disabled="enrollmentBusy || !receivedInvitation.trim()" @click="enrollmentOperation('accept-final')">Ověřit a přijmout uživatelské pověření</button>
-        <small>Nejdřív administrátor povolí vstup do ZeroTier. Po autorizaci Device ID se skutečná adresa vrátí administrátorovi a teprve jeho druhé potvrzení vytvoří členství federace.</small>
+        <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="networkEnrollmentOperation('start')">Najít administrátora v místní síti</button>
+        <template v-if="networkEnrollment?.session">
+          <p><strong>Párovací kód: <code>{{ networkEnrollment.session.code }}</code></strong></p>
+          <p v-if="networkEnrollment.session.stage === 'requesting'">Čekám, až administrátor ve stejné místní síti potvrdí žádost.</p>
+          <p v-else-if="networkEnrollment.session.stage === 'joining' || networkEnrollment.session.stage === 'awaiting_final'">
+            {{ networkEnrollment.session.zeroTierSummary ?? 'Připojuji ZeroTier a čekám na dokončení administrátorem.' }}
+          </p>
+          <p v-else-if="networkEnrollment.session.stage === 'complete'">Připojení notebooku je dokončené.</p>
+          <p v-else-if="networkEnrollment.session.stage === 'expired'" class="error">Párovací relace vypršela. Spusťte novou.</p>
+          <p v-if="networkEnrollment.session.zeroTierDeviceId">ZeroTier Device ID: <code>{{ networkEnrollment.session.zeroTierDeviceId }}</code></p>
+          <p v-if="networkEnrollment.session.error" class="error">{{ networkEnrollment.session.error }}</p>
+          <p v-if="networkEnrollment.serviceError" class="warning">{{ networkEnrollment.serviceError }}</p>
+        </template>
+        <small>Na administrátorském notebooku porovnejte krátký kód, potvrďte vstup do sítě, autorizujte zobrazené Device ID v ZeroTier Central a potvrďte finální adresu.</small>
+        <details>
+          <summary>Nouzový ruční přenos podepsaných balíčků</summary>
+          <div class="connection-form">
+            <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="enrollmentOperation('request')">Vytvořit podepsanou žádost</button>
+            <label v-if="enrollmentRequest">Žádost pro administrátora<textarea class="pairing-data" readonly :value="enrollmentRequest"></textarea></label>
+            <label>Povolení připojení vydané administrátorem<textarea v-model="receivedJoinGrant" class="pairing-data" placeholder="Vložte podepsané povolení s Network ID"></textarea></label>
+            <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('accept-grant')">Ověřit povolení a připojit ZeroTier</button>
+            <p v-if="notebookStatus">{{ notebookStatus.summary }}<template v-if="notebookStatus.deviceId"> · Device ID <code>{{ notebookStatus.deviceId }}</code></template></p>
+            <button :disabled="enrollmentBusy || !receivedJoinGrant.trim()" @click="enrollmentOperation('confirm-address')">Načíst autorizovanou adresu a vytvořit potvrzení</button>
+            <label v-if="addressConfirmation">Potvrzení skutečné ZeroTier adresy pro administrátora<textarea class="pairing-data" readonly :value="addressConfirmation"></textarea></label>
+            <label>Finální pozvánka vydaná administrátorem<textarea v-model="receivedInvitation" class="pairing-data"></textarea></label>
+            <button :disabled="enrollmentBusy || !receivedInvitation.trim()" @click="enrollmentOperation('accept-final')">Ověřit a přijmout uživatelské pověření</button>
+          </div>
+        </details>
       </div>
     </section>
     <section class="summary"><article><strong>{{ readOnlyOverview?.nodes.length ?? nodes.length }}</strong><span>routerů</span></article><article><strong>{{ readOnlyOverview?.notebooks.length ?? (1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0)) }}</strong><span>notebooků</span></article><article><strong>ZT + WG</strong><span>vrstvy spojení</span></article></section>
@@ -813,19 +886,34 @@ async function submitConnection() {
     <section class="panel">
       <div><p class="kicker">Discovery a synchronizace</p><h2>Správa federace z více notebooků</h2></div>
       <p>Spárované notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Změny se přenášejí přímo a šifrovaně při spuštěné aplikaci.</p>
-      <details>
-        <summary>Přijmout uživatelský notebook</summary>
+      <details open>
+        <summary>Přijmout uživatelský notebook z místní sítě</summary>
         <div class="connection-form">
-          <p>První potvrzení předá pouze podepsané Network ID. Notebook se připojí do ZeroTier a po ruční autorizaci vrátí svou skutečnou adresu. Až druhé potvrzení jej zapíše do topologie a vydá pověření.</p>
-          <label>Žádost notebooku<textarea v-model="requestedUser" class="pairing-data"></textarea></label>
-          <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue-grant')">Ověřit žádost a vydat povolení ZeroTier</button>
+          <p>Žádost se objeví automaticky, pokud jsou oba notebooky ve stejné LAN. Porovnejte krátký kód zobrazený na cílovém notebooku.</p>
+          <p v-if="networkEnrollment?.listener?.error" class="error">{{ networkEnrollment.listener.error }}</p>
           <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
-          <label v-if="issuedJoinGrant">Povolení připojení pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedJoinGrant"></textarea></label>
-          <p>Po vložení povolení na cílovém notebooku autorizujte jeho Device ID v ZeroTier Central. Potom sem vložte potvrzení skutečné adresy.</p>
-          <label>Potvrzení adresy notebooku<textarea v-model="requestedAddressConfirmation" class="pairing-data"></textarea></label>
-          <button :disabled="enrollmentBusy || !requestedAddressConfirmation.trim()" @click="enrollmentOperation('issue-final')">Ověřit adresu a vydat finální pozvánku</button>
-          <label v-if="issuedInvitation">Finální pozvánka pro uživatelský notebook<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
-          <small>Před oběma potvrzeními porovnejte otisk notebooku a při autorizaci také jeho ZeroTier Device ID.</small>
+          <p v-if="!networkEnrollment?.candidates.length" class="muted">Zatím nebyla nalezena žádná aktuální žádost.</p>
+          <article v-for="candidate in networkEnrollment?.candidates ?? []" :key="candidate.id" class="node">
+            <div><h3>{{ candidate.name }}</h3><p>{{ candidate.address }} · kód <code>{{ candidate.code }}</code></p></div>
+            <p v-if="candidate.zeroTierDeviceId">ZeroTier Device ID: <code>{{ candidate.zeroTierDeviceId }}</code></p>
+            <p v-if="candidate.zeroTierAddress">Potvrzená adresa: <code>{{ candidate.zeroTierAddress }}</code></p>
+            <p v-if="candidate.error" class="error">{{ candidate.error }}</p>
+            <button v-if="candidate.stage === 'requesting'" :disabled="enrollmentBusy" @click="networkEnrollmentOperation('approve-request', candidate.id)">Kód souhlasí – povolit vstup do ZeroTier</button>
+            <p v-else-if="candidate.stage === 'awaiting_address'">Autorizujte uvedené Device ID v ZeroTier Central. Notebook potom automaticky vrátí přidělenou adresu.</p>
+            <button v-else-if="candidate.stage === 'awaiting_final'" :disabled="enrollmentBusy" @click="networkEnrollmentOperation('approve-address', candidate.id)">Potvrdit adresu a dokončit členství</button>
+            <p v-else-if="candidate.stage === 'complete'"><strong>Připojení dokončeno.</strong></p>
+          </article>
+          <details>
+            <summary>Nouzový ruční přenos podepsaných balíčků</summary>
+            <div class="connection-form">
+              <label>Žádost notebooku<textarea v-model="requestedUser" class="pairing-data"></textarea></label>
+              <button :disabled="enrollmentBusy || !requestedUser.trim()" @click="enrollmentOperation('issue-grant')">Ověřit žádost a vydat povolení ZeroTier</button>
+              <label v-if="issuedJoinGrant">Povolení připojení<textarea class="pairing-data" readonly :value="issuedJoinGrant"></textarea></label>
+              <label>Potvrzení adresy notebooku<textarea v-model="requestedAddressConfirmation" class="pairing-data"></textarea></label>
+              <button :disabled="enrollmentBusy || !requestedAddressConfirmation.trim()" @click="enrollmentOperation('issue-final')">Ověřit adresu a vydat finální pozvánku</button>
+              <label v-if="issuedInvitation">Finální pozvánka<textarea class="pairing-data" readonly :value="issuedInvitation"></textarea></label>
+            </div>
+          </details>
         </div>
       </details>
       <details>

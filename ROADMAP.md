@@ -98,6 +98,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     publikuje členství a vydá finální pověření. Přenáší se jen veřejná
     kotva, podepsané zprávy a topologie, nikdy `root.pem`; nedokončený pokus
     nevytváří člena s odhadnutou adresou.
+    Vývojová implementace nyní přenáší jednotlivé fáze automaticky ve stejné
+    fyzické LAN: časově omezené multicast discovery, krátký porovnávací kód a
+    TCP/8857 pouze z přímo připojeného fyzického subnetu. Device ID se vrací
+    podepsané ještě před autorizací a administrátor zachovává obě potvrzení.
+    Ruční přenos celých JSON balíčků zůstává jako nouzový fallback. Lokální
+    testy prošly; skutečný desktop ↔ uživatelský notebook a firewall LAN ještě
+    vyžadují akceptaci.
     Podepsané schéma 2 eviduje routery a zvlášť koncové notebooky s rolí, bez
     možnosti inzerovat notebookovou LAN. Bootstrap zapíše administrátorský
     notebook a vydání pozvánky atomicky publikuje uživatelský notebook v nové
