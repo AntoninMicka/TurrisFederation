@@ -1030,6 +1030,14 @@ class Store:
             raise ValueError('Chybí řídicí identita nebo publikovaná revize.')
         root_public = f.public_key(private)
         document = f.validate_document(f.verify(root_public, f.read(self.fleet / 'published.json')))
+        existing = next((item for item in document['config'].get('notebooks', [])
+                         if item['id'] == payload['subject']), None)
+        if existing and existing['role'] != 'user':
+            raise ValueError('Tato identita je již evidovaná jako administrátorský notebook.')
+        if existing:
+            # Re-enrollment repairs the transport address but cannot silently
+            # rename an already signed member.
+            payload = dict(payload, name=existing['name'])
         subnets = self.network_subnets()
         now = int(time.time())
         grant = {'schema': JOIN_GRANT_SCHEMA, 'federationId': document['federationId'],
@@ -1053,7 +1061,7 @@ class Store:
         if (not pending or set(grant) != grant_fields or grant.get('schema') != JOIN_GRANT_SCHEMA or grant.get('subject') != self.id
                 or grant.get('enrollmentNonce') != pending.get('nonce') or payload['nonce'] != pending.get('nonce')
                 or grant.get('requestHash') != f.digest(request) or grant.get('wireguardKey') != self.wireguard_identity()
-                or grant.get('name') != payload['name'] or grant.get('wireguardKey') != payload['wireguardKey']
+                or grant.get('wireguardKey') != payload['wireguardKey']
                 or not re.fullmatch('[0-9a-f]{16}', grant.get('networkId', ''))
                 or time.time() > grant.get('acceptBy', 0)):
             raise ValueError('Povolení neodpovídá této platné žádosti notebooku.')

@@ -348,13 +348,14 @@ class NotebookTests(unittest.TestCase):
     def test_existing_user_can_reenroll_to_replace_incorrect_signed_zerotier_address(self):
         self.onboard_user()
         _, _, _, invitation = self.staged_user_invitation(
-            target=self.b, name='User notebook', address='10.147.0.59')
+            target=self.b, name='Renamed attempt', address='10.147.0.59')
         status = self.b.accept_user_invitation(json.dumps(invitation))
         self.assertEqual(('valid', 'user'), (status['state'], status['role']))
         document = f.validate_document(f.verify(
             invitation['rootPublic'], f.read(self.b.fleet / 'published.json')))
         endpoint = next(item for item in document['config']['notebooks'] if item['id'] == self.b.id)
         self.assertEqual('10.147.0.59', endpoint['zeroTierAddress'])
+        self.assertEqual('User notebook', endpoint['name'])
 
     def test_admin_revokes_user_in_new_revision_without_deleting_local_identity(self):
         invitation = self.onboard_user()
