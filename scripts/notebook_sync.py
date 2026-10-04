@@ -840,6 +840,9 @@ class Store:
                 'address': notebook['wireguardAddress'] + '/32', 'routes': routes,
                 'configHash': config_hash, 'forwarding': self.forwarding_state(),
             })
+            diagnostics = f.read(self.root / 'vpn-diagnostics.json')
+            if diagnostics and diagnostics.get('revision') != document['revision']:
+                (self.root / 'vpn-diagnostics.json').unlink(missing_ok=True)
         return result
 
     @staticmethod
@@ -1102,7 +1105,8 @@ class Store:
         if automation.get('state') == 'error':
             result['automaticError'] = automation.get('error', 'Automatická správa VPN selhala.')
         diagnostics = f.read(self.root / 'vpn-diagnostics.json')
-        if diagnostics:
+        if (diagnostics and (result.get('topologyRevision') is None
+                             or diagnostics.get('revision') == result['topologyRevision'])):
             result['diagnostics'] = diagnostics
         return result
 

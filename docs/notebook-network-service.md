@@ -106,3 +106,7 @@ Na skutečném notebooku je nutné ověřit:
 Body 6 a 7 jsou pokryté lokálními testy s nahrazenými systémovými příkazy.
 Skutečný NetworkManager, změna hotspotu a end-to-end WireGuard provoz zatím
 nejsou fyzicky ověřené.
+
+Úspěšný reconcile na novou podepsanou revizi zahodí uloženou místní diagnostiku
+starší revize. Diagnostika se nepřenáší mezi notebooky a nová kontrola se spouští
+výslovně, aby UI nezaměnilo staré pingy a handshake za aktuální měření.

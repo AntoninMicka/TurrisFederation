@@ -755,6 +755,7 @@ class NotebookTests(unittest.TestCase):
 
     def test_system_vpn_reconcile_uses_only_verified_topology(self):
         self.onboard_user()
+        f.atomic(self.b.root / 'vpn-diagnostics.json', {'revision': 2, 'state': 'complete'})
         with patch.object(n, 'system_network_request', return_value={
                 'ok': True, 'vpn': {'state': 'active', 'revision': 3, 'changed': True}}) as request:
             result = self.b.reconcile_system_vpn()
@@ -769,6 +770,7 @@ class NotebookTests(unittest.TestCase):
         receipt = f.read(self.b.root / 'vpn-state.json')
         self.assertEqual(('installed', 'system-service', 3),
                          (receipt['state'], receipt['managedBy'], receipt['revision']))
+        self.assertFalse((self.b.root / 'vpn-diagnostics.json').exists())
 
     def test_sync_prefers_peer_zerotier_address_from_signed_topology(self):
         self.onboard_user()
