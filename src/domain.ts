@@ -94,6 +94,10 @@ export interface NotebookDiagnostics {
   state: "idle" | "complete";
   nodes: Record<string, { zerotier?: DiagnosticMeasurement }>;
 }
+export interface SoftwareInfo {
+  version: string | null;
+  builtAt: number | null;
+}
 export interface ReadOnlyNode {
   id: string;
   name: string;
@@ -106,6 +110,7 @@ export interface ReadOnlyNode {
   checkedAt?: number;
   hosts: { address: string; name: string | null }[];
   hostsObservedAt?: number;
+  software?: SoftwareInfo | null;
 }
 export interface ReadOnlyNotebook {
   id: string;
@@ -132,6 +137,7 @@ export interface ServiceDirectoryEntry {
 export interface ReadOnlyOverview {
   revision: number;
   networkId: string;
+  availableRouterVersion: string;
   nodes: ReadOnlyNode[];
   notebooks: ReadOnlyNotebook[];
   services: ServiceDirectoryEntry[];

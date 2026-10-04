@@ -1644,6 +1644,7 @@ class Store:
             items.append(item)
         return {'id': self.id, 'name': f.read(self.root / 'config.json', {}).get('name', socket.gethostname()),
                 'access': self.access_status(),
+                'software': software_info(),
                 'config': f.read(self.root / 'config.json', {}), 'peers': sorted(items, key=lambda p: p.get('name', p['id'])),
                 'updatedAt': runtime.get('updatedAt'), 'error': runtime.get('error'),
                 'configurationVersion': f.digest(snapshot['data']),
@@ -1672,7 +1673,30 @@ def server_context(store):
     return context
 
 
-def fetch(store, peer):
+def software_info():
+    source = Path(__file__)
+    try:
+        return {'version': hashlib.sha256(source.read_bytes()).hexdigest(),
+                'builtAt': source.stat().st_mtime}
+    except OSError:
+        return {'version': None, 'builtAt': None}
+
+
+def response_software(response):
+    version = response.getheader('X-TF-Software-Version')
+    built_at = response.getheader('X-TF-Software-Built-At')
+    if not version or not re.fullmatch(r'[0-9a-f]{64}', version) or not built_at:
+        return None
+    try:
+        timestamp = float(built_at)
+    except ValueError:
+        return None
+    if not 0 <= timestamp < 2**53:
+        return None
+    return {'version': version, 'builtAt': timestamp}
+
+
+def fetch(store, peer, include_software=False):
     # Trust only the explicitly paired certificate. Both endpoints present one.
     context = ssl.create_default_context(cadata=peer['cert'])
     context.check_hostname = False
@@ -1688,7 +1712,8 @@ def fetch(store, peer):
         raw = response.read(MAX + 1)
         if response.status != 200 or len(raw) > MAX:
             raise ValueError('Notebook odmítl synchronizaci.')
-        return json.loads(raw)
+        snapshot = json.loads(raw)
+        return (snapshot, response_software(response)) if include_software else snapshot
     finally:
         connection.close()
 
@@ -1733,6 +1758,10 @@ def make_server(store, address):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(payload)))
+                software = software_info()
+                if software['version'] and software['builtAt'] is not None:
+                    self.send_header('X-TF-Software-Version', software['version'])
+                    self.send_header('X-TF-Software-Built-At', str(software['builtAt']))
                 self.end_headers()
                 self.wfile.write(payload)
             except Exception:
@@ -2157,11 +2186,12 @@ def serve_sync(store, stopped):
                     elif peer in discovered and time.time() - discovered[peer]['seenAt'] < 90:
                         item = dict(item, address=discovered[peer]['address'])
                     try:
-                        remote = fetch(store, item)
+                        remote, software = fetch(store, item, include_software=True)
                         if peer not in store.peers():
                             continue
                         state = store.receive(peer, remote)
-                        runtime['peers'][peer] = {'state': state, 'lastSync': time.time(), 'address': item['address']}
+                        runtime['peers'][peer] = {'state': state, 'lastSync': time.time(),
+                                                  'address': item['address'], 'software': software}
                     except Exception as error:
                         runtime['peers'][peer] = {**runtime['peers'].get(peer, {}),
                             'state': 'error', 'address': item['address'],

@@ -96,3 +96,7 @@ button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; out
 @media (max-width: 720px) { .overview-heading, .overview-section-heading { flex-direction: column; align-items: stretch; } .overview-cards { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .service-filters { grid-template-columns:1fr; } }
 .build-info { padding: 4px 8px; color: #607580; font-size: .78rem; text-align: center; overflow-wrap: anywhere; }
+.software-version { display: inline-block; padding: 4px 8px; border-radius: 999px; font-weight: 750; }
+.software-version.green { color: #7ee2a8; background: #123e35; }
+.software-version.red { color: #ffb1b1; background: #4b232b; }
+.software-version.unknown { color: #ffe096; background: #493b1e; }

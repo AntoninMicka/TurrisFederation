@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuditFinding, FederationNode, HostIdentity, NotebookVpnStatus, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, NotebookVpnStatus, SoftwareInfo, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const browserMode = !("__TAURI_INTERNALS__" in window);
 
@@ -78,10 +78,12 @@ export async function checkNotebookZeroTier(): Promise<ZeroTierStatus> {
 export interface NotebookPeer {
   id: string; name: string; address: string; trusted: boolean; seenAt?: number;
   state?: string; lastSync?: number; error?: string; conflictToken?: string;
+  software?: SoftwareInfo | null;
   localNodes?: string[]; remoteNodes?: string[]; localConfig?: unknown; remoteConfig?: unknown;
 }
 export interface NotebookSyncStatus {
   id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
+  software: SoftwareInfo;
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
   serviceError?: string;

@@ -10,6 +10,10 @@ reForisu. Na Omnii nejsou další záložky. Používejte HTTPS webserveru route
 
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
+U každého routeru uvádí otisk verze agenta a čas vytvoření instalované kopie.
+Shodná verze je zelená, rozdílná červená a chybějící údaj ze staršího agenta
+je zvýrazněný jako neznámý. Metadata protějšků pocházejí z jejich podepsaných
+provozních reportů.
 Pod každým přijatým uzlem zobrazuje také jeho podepsaný katalog pasivně známých
 IPv4 sousedů v příslušných LAN sítích a čas pozorování. Jméno se doplní z DHCP
 lease, pokud je dostupné. Agent hosty aktivně neskenuje a mezi routery neposílá

@@ -1105,8 +1105,10 @@ class NotebookTests(unittest.TestCase):
         worker.start()
         try:
             with patch.object(n, 'PORT', server.server_address[1]):
-                snapshot = n.fetch(self.b, self.b.peers()[self.a.id])
+                snapshot, software = n.fetch(self.b, self.b.peers()[self.a.id], include_software=True)
                 self.assertEqual((self.a.fleet / 'root.pem').read_text(), snapshot['data']['fleet']['root.pem'])
+                self.assertRegex(software['version'], r'^[0-9a-f]{64}$')
+                self.assertGreater(software['builtAt'], 0)
                 # C trusts A, but A never authorized C.
                 with self.assertRaises((ssl.SSLError, OSError)):
                     n.fetch(self.c, self.b.peers()[self.a.id])

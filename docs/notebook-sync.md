@@ -103,6 +103,10 @@ Chyba přenosu rozlišuje odmítnutý TCP port, timeout síťové cesty, neshodu
 certifikátu a odmítnuté vzájemné TLS; tyto příčiny se nesmějí slít do obecného
 stavu, protože vyžadují rozdílnou nápravu.
 
+Vzájemně autentizovaný synchronizační kanál předává také otisk verze backendu
+a čas vytvoření instalované kopie. Starší protějšek hlavičky bezpečně ignoruje;
+novější UI zvýrazní chybějící údaj i rozdíl proti místnímu backendu.
+
 Databáze a soubory federace se mění pod společným zámkem s controllerem. Před
 zápisem vzniká záznam obnovy. Po přerušení se přenos dokončí při dalším načtení
 stavu nebo spuštění synchronizace; do té doby controller odmítne deploy.

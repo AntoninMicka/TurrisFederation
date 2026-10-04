@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
-import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, TopologyRefreshPlan } from "./domain";
+import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, SoftwareInfo, TopologyRefreshPlan } from "./domain";
 import { vpnHeadline, vpnPlanLabel } from "./vpnStatus";
 
 const props = defineProps<{
@@ -57,6 +57,25 @@ function membership(node: ReadOnlyNode) {
   if (!node.enrolled) return "Draft";
   if (node.reachable === false) return "Nedostupný · poslední známý stav";
   return deploymentLabels[node.state ?? ""] ?? "Přijatý uzel";
+}
+
+function versionClass(software: SoftwareInfo | null | undefined, expected: string | null | undefined) {
+  if (!software?.version || !expected) return "unknown";
+  return software.version === expected ? "green" : "red";
+}
+
+function versionLabel(software: SoftwareInfo | null | undefined, expected: string | null | undefined) {
+  if (!software?.version) return "● Verze neznámá";
+  return `● ${software.version.slice(0, 12)} · ${software.version === expected ? "shodná" : "jiná verze"}`;
+}
+
+function builtAtLabel(software: SoftwareInfo | null | undefined) {
+  return software?.builtAt ? new Date(software.builtAt * 1000).toLocaleString("cs-CZ") : "čas sestavení neznámý";
+}
+
+function notebookSoftware(id: string) {
+  if (id === props.notebook?.id) return props.notebook.software;
+  return props.notebook?.peers.find(peer => peer.id === id)?.software;
 }
 
 function diagnostic(nodeId: string) {
@@ -162,10 +181,14 @@ function presenceLabel(value: boolean | null, positive: string) {
       <p v-if="!overview?.nodes.length" class="muted">Federace zatím neobsahuje žádné routery.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">
-          <thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead>
+          <thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead>
           <tbody>
             <tr v-for="node in overview?.nodes ?? []" :key="node.id">
               <td><strong>{{ node.name }}</strong></td>
+              <td>
+                <span :class="['overview-signal', 'software-version', versionClass(node.software, overview?.availableRouterVersion)]">{{ versionLabel(node.software, overview?.availableRouterVersion) }}</span>
+                <small class="overview-line">{{ builtAtLabel(node.software) }}</small>
+              </td>
               <td><code>{{ node.zeroTierAddress || "—" }}</code></td>
               <td><code>{{ node.wireguardAddress || "—" }}</code></td>
               <td><span v-for="cidr in node.lanCidrs" :key="cidr" class="overview-line">{{ cidr }}</span><span v-if="!node.lanCidrs.length">—</span></td>
@@ -193,10 +216,14 @@ function presenceLabel(value: boolean | null, positive: string) {
       <p v-if="!overview?.notebooks.length" class="muted">V podepsané topologii zatím není žádný notebook.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">
-          <thead><tr><th>Notebook</th><th>Role</th><th>ZeroTier</th><th>WireGuard</th><th>Dostupnost</th><th v-if="notebook?.access.role === 'administrator'">Správa</th></tr></thead>
+          <thead><tr><th>Notebook</th><th>Verze backendu</th><th>Role</th><th>ZeroTier</th><th>WireGuard</th><th>Dostupnost</th><th v-if="notebook?.access.role === 'administrator'">Správa</th></tr></thead>
           <tbody>
             <tr v-for="item in overview?.notebooks ?? []" :key="item.id">
               <td><strong>{{ item.name }}</strong><small v-if="item.id === notebook?.id" class="overview-line">Tento notebook</small></td>
+              <td>
+                <span :class="['overview-signal', 'software-version', versionClass(notebookSoftware(item.id), notebook?.software.version)]">{{ versionLabel(notebookSoftware(item.id), notebook?.software.version) }}</span>
+                <small class="overview-line">{{ builtAtLabel(notebookSoftware(item.id)) }}</small>
+              </td>
               <td>{{ item.role === "administrator" ? "Administrátor" : "Uživatel" }}</td>
               <td><code>{{ item.zeroTierAddress || "čeká na přidělení" }}</code></td>
               <td><code>{{ item.wireguardAddress || "čeká na přidělení" }}</code></td>

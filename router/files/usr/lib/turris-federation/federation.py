@@ -715,14 +715,22 @@ def read_only_notebook_overview(root):
         state = report.get('state') if report.get('state') in WEB_LABELS else None
         checked = report.get('checkedAt') if isinstance(report.get('checkedAt'), (int, float)) else None
         reachable = report.get('reachable') if type(report.get('reachable')) is bool else None
+        software = None
+        if node['id'] in doc['members']:
+            try:
+                software = validate_software_info(report.get('software'))
+            except (TypeError, ValueError):
+                pass
         nodes.append({'id': node['id'], 'name': node['name'], 'lanCidrs': node['lanCidrs'],
                       'zeroTierAddress': node['zeroTierAddress'], 'wireguardAddress': node['wireguardAddress'],
                       'enrolled': node['id'] in doc['members'], 'state': state, 'reachable': reachable,
-                      'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed})
+                      'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed,
+                      'software': software})
     notebooks = [{'id': item['id'], 'name': item['name'], 'role': item['role'],
                   'zeroTierAddress': item['zeroTierAddress'], 'wireguardAddress': item['wireguardAddress']}
                  for item in doc['config'].get('notebooks', [])]
-    return {'revision': doc['revision'], 'networkId': doc['config']['networkId'], 'nodes': nodes,
+    return {'revision': doc['revision'], 'networkId': doc['config']['networkId'],
+            'availableRouterVersion': artifact_hash(), 'nodes': nodes,
             'notebooks': notebooks, 'services': aggregate_services(doc, reports),
             'diagnostics': notebook_diagnostics_overview(root)}
 
@@ -788,6 +796,21 @@ def diagnostic_badge(measurement, now):
     color, label = ('green', 'Dobré') if percent >= 95 else (('yellow', 'Zhoršené') if percent >= 80 else ('red', 'Výpadky'))
     return ('<span class="signal %s">● %s · %.1f %%</span><br>'
             '<small>%s/%s odpovědí · před %s s</small>') % (color, label, percent, sum(samples), len(samples), int(age))
+
+
+def software_badge(value, expected):
+    try:
+        software = validate_software_info(value)
+    except (TypeError, ValueError):
+        software = None
+    if not software:
+        return '<span class="version version-unknown">● Verze neznámá</span><br><small>čas sestavení neznámý</small>'
+    matching = software['version'] == expected
+    built = (time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(software['builtAt']))
+             if software['builtAt'] is not None else 'čas sestavení neznámý')
+    return ('<span class="version %s">● %s · %s</span><br><small>%s</small>' % (
+            'green' if matching else 'red', software['version'][:12],
+            'shodná' if matching else 'jiná verze', built))
 
 
 def discover_hosts(node):
@@ -970,10 +993,13 @@ def validate_catalog(node, report):
     result = {}
     hosts = validate_hosts(node, report)
     services = validate_report_services(node, report)
+    software = validate_software_info(report.get('software'))
     if hosts is not None:
         result.update(hosts)
     if services is not None:
         result.update(services)
+    if software is not None:
+        result['software'] = software
     return result or None
 
 
@@ -1090,7 +1116,7 @@ def confirm(root, token):
                        'configurationHash': before_hash, 'checkedAt': time.time()})
         atomic(root / 'report.json', result)
         (root / 'pending.json').unlink()
-        return result
+        return {**result, 'software': software_info()}
 
 
 def bootstrap(root, node_id, root_public):
@@ -1141,8 +1167,9 @@ def peer_status(peer, member, signer=None):
     report = payload.get('report')
     if not isinstance(report, dict):
         raise ValueError('Uzel vrátil neplatný provozní stav.')
+    software = validate_software_info(report.get('software'))
     catalog = validate_catalog(peer, report)
-    return {**report, **(catalog or {})}
+    return {**report, **({'software': software} if software else {}), **(catalog or {})}
 
 
 def refresh_catalog(root, current, own_id):
@@ -1154,7 +1181,7 @@ def refresh_catalog(root, current, own_id):
         previous = {}
     catalog = {node['id']: previous[node['id']] for node in nodes if node['id'] in previous}
     own = next((node for node in nodes if node['id'] == own_id), None)
-    own_report = read(root / 'report.json', {})
+    own_report = status_report(root)
     if own:
         own_catalog = validate_catalog(own, own_report)
         if own_catalog is not None:
@@ -1213,7 +1240,7 @@ def serve(root):
                         result = read(root / 'accepted.json')
                     elif re.fullmatch('/status/[0-9a-f]{64}', self.path):
                         result = sign(root / 'identity.pem', {'nonce': self.path.split('/')[-1],
-                                      'nodeId': read(root / 'node.json')['nodeId'], 'report': read(root / 'report.json', {})})
+                                      'nodeId': read(root / 'node.json')['nodeId'], 'report': status_report(root)})
                     else:
                         raise ValueError('Neznámá cesta.')
                 raw = encode(result)
@@ -1367,6 +1394,7 @@ td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb
 .hosts{margin:0;padding-left:18px;min-width:170px}.hosts li{margin:0 0 6px}.hosts small{display:block}
 .badge{display:inline-block;border-radius:20px;padding:5px 10px;background:#244653;font-size:13px}
 .signal{white-space:nowrap;font-size:13px}.green{color:#7ee2a8}.yellow{color:#ffda75}.red{color:#ff9292}.unknown{color:#a8bdcc}
+.version{display:inline-block;white-space:nowrap;padding:4px 8px;border-radius:999px;font-size:13px;font-weight:700;background:#123e35}.version.red{background:#4b232b}.version-unknown{color:#ffe096;background:#493b1e}
 .button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none;background:#13283a;color:#e6eff6;cursor:pointer}.web-tabs{display:flex;justify-content:flex-start;gap:8px}.web-tabs .active{background:#28556a;color:#fff}
 .service-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end;margin-top:18px}
 label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select{min-width:0;padding:10px;border:1px solid #517185;border-radius:7px;background:#0c1925;color:#e6eff6}
@@ -1425,7 +1453,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
         for node in doc['config']['nodes']:
             member = node['id'] in doc['members']
             label = state if node['id'] == own_id else ('Přijatý uzel' if member else 'Draft')
-            catalog_source = report if node['id'] == own_id else shared_catalog.get(node['id'], {})
+            catalog_source = status_report(root) if node['id'] == own_id else shared_catalog.get(node['id'], {})
             try:
                 host_catalog = validate_hosts(node, catalog_source) if member else None
             except (TypeError, ValueError):
@@ -1438,8 +1466,10 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
             measurements = diagnostics.get('nodes', {}).get(node['id'], {}) if (member and own_id in doc['members'] and diagnostics.get('revision') == doc['revision'] and report.get('appliedRevision') == doc['revision']) else {}
             badges = ['—' if node['id'] == own_id else diagnostic_badge(measurements.get(transport, {}), now)
                       for transport in ['zerotier', 'wireguard']]
-            rows.append('<tr><td><strong>%s</strong>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
+            version = software_badge(catalog_source.get('software'), software_info()['version'])
+            rows.append('<tr><td><strong>%s</strong>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td>%s</td><td><span class="badge">%s</span></td><td>%s</td><td>%s</td></tr>' % (
                 esc(node['name']), '<br><small>Tento router</small>' if node['id'] == own_id else '',
+                version,
                 esc(node['zeroTierAddress'] or '—'), esc(node['wireguardAddress'] or '—'),
                 '<br>'.join(esc(cidr) for cidr in node['lanCidrs']) or '—', hosts, esc(label), *badges))
     notices = '<p class="notice">Router ještě nepřijal konfiguraci federace. Dokončete deploy z notebooku přes LAN.</p>' if not doc else ''
@@ -1539,7 +1569,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <article class="card"><span>Přijatá revize</span><strong>''' + esc(doc['revision'] if doc else '—') + '''</strong></article>
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
-<section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
 <p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
@@ -1850,6 +1880,33 @@ def artifact_hash():
     return hashlib.sha256(Path(__file__).read_bytes() + INIT.encode()).hexdigest()
 
 
+def software_info():
+    try:
+        built_at = Path(__file__).stat().st_mtime
+    except OSError:
+        built_at = None
+    return {'version': artifact_hash(), 'builtAt': built_at}
+
+
+def validate_software_info(value):
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {'version', 'builtAt'}
+            or not isinstance(value.get('version'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', value['version'])):
+        raise ValueError('Uzel vrátil neplatnou verzi softwaru.')
+    built_at = value.get('builtAt')
+    if (built_at is not None and (not isinstance(built_at, (int, float))
+                                  or isinstance(built_at, bool) or not math.isfinite(built_at)
+                                  or built_at < 0)):
+        raise ValueError('Uzel vrátil neplatný čas sestavení softwaru.')
+    return {'version': value['version'], 'builtAt': built_at}
+
+
+def status_report(root):
+    return {**read(Path(root) / 'report.json', {}), 'software': software_info()}
+
+
 def installed_artifact_hash(node, credentials):
     # Old agents need no version RPC: read the same bytes included in artifact_hash().
     command = ('set -eu; if test -f ' + PROGRAM + ' && test -f /etc/init.d/turris-federation; then '
@@ -2155,7 +2212,7 @@ def rpc(root, req):
     if action == 'confirm':
         return confirm(root, req['token'])
     if action == 'status':
-        return read(Path(root) / 'report.json', {})
+        return status_report(root)
     raise ValueError('Neznámá akce agenta.')
 
 

@@ -811,6 +811,7 @@ class FederationTests(unittest.TestCase):
         f.snapshot(self.root, config, members)
         f.atomic(self.root / 'reports.json', {node(1)['id']: {
             'state': 'active', 'reachable': True, 'checkedAt': 100,
+            'software': {'version': 'a' * 64, 'builtAt': 99},
             'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100,
             'services': [{'id': 'printer-web', 'name': 'Printer', 'hostAddress': '192.168.1.20',
                           'protocol': 'https', 'port': 8443, 'path': '/status'}], 'servicesObservedAt': 100,
@@ -826,6 +827,9 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(2, len(result['nodes']))
         enrolled, draft = result['nodes']
         self.assertTrue(enrolled['enrolled'])
+        self.assertEqual({'version': 'a' * 64, 'builtAt': 99}, enrolled['software'])
+        self.assertIsNone(draft['software'])
+        self.assertEqual(f.artifact_hash(), result['availableRouterVersion'])
         self.assertEqual([{'address': '192.168.1.20', 'name': 'printer'}], enrolled['hosts'])
         self.assertFalse(draft['enrolled'])
         self.assertEqual([], draft['hosts'])
