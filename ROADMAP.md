@@ -149,15 +149,6 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     routami, včetně Palackého `10.203.0.84/32` a `192.168.1.0/24`. Skutečná
     instalace nového profilu a následný end-to-end provoz zůstávají k fyzickému
     ověření po aktualizaci aplikace a routerů.
-    Následná zkouška mimo lokalitu potvrdila funkční ZeroTier i WireGuard k oběma
-    routerům a přístup do Palackého LAN. Připojená síť však použila stejný prefix
-    `192.168.100.0/24` jako Cackého LAN, takže kernel správně upřednostnil přímo
-    připojenou síť před VPN. Diagnostika proto nově nekontroluje jen přítomnost
-    route na `tf_notebook`, ale také skutečné výstupní rozhraní zvolené kernelem;
-    překryv vypíše samostatně a tray přepne nejvýše do omezeného stavu. Obecný
-    přístup ke dvěma různým sítím se stejnými adresami nelze vyřešit změnou
-    metriky bez ztráty hotspotové brány; vyžaduje jiný prefix podkladové sítě
-    nebo budoucí explicitní překlad/alias adres federované lokality.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

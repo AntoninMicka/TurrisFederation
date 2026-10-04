@@ -242,7 +242,6 @@ fn tray_state_from(response: &Value, now: f64) -> TrayState {
         && diagnostics["interfacePresent"].as_bool() == Some(true)
         && diagnostics["addressAssigned"].as_bool() == Some(true)
         && diagnostics["routesExpected"].as_u64() == diagnostics["routesActive"].as_u64()
-        && diagnostics["shadowedRoutes"].as_array().is_none_or(Vec::is_empty)
         && diagnostics["forwarding"]["ipv4"].as_bool() == Some(false)
         && diagnostics["forwarding"]["ipv6"].as_bool() == Some(false)
         && diagnostics["nodes"].as_object().is_some_and(|nodes| nodes.values().all(|node| {
@@ -541,7 +540,7 @@ mod tests {
             "topologyRevision": 3, "diagnostics": {
             "revision": 3, "state": "complete", "checkedAt": 950.0, "profile": "active",
             "interfacePresent": true, "addressAssigned": true,
-            "routesExpected": 2, "routesActive": 2, "shadowedRoutes": [],
+            "routesExpected": 2, "routesActive": 2,
             "forwarding": {"ipv4": false, "ipv6": false},
             "nodes": {"router": {"handshakeState": "recent", "wireguard": {"successPercent": 100.0}}}
         }}}});
@@ -553,10 +552,6 @@ mod tests {
         let mut stale_revision = healthy.clone();
         stale_revision["status"]["vpn"]["diagnostics"]["revision"] = json!(2);
         assert_eq!(TrayState::Limited, tray_state_from(&stale_revision, 1000.0));
-        let mut shadowed = healthy.clone();
-        shadowed["status"]["vpn"]["diagnostics"]["shadowedRoutes"] =
-            json!([{"cidr": "192.168.100.0/24", "selectedDevice": "wlan0"}]);
-        assert_eq!(TrayState::Limited, tray_state_from(&shadowed, 1000.0));
         let disconnected = json!({"status": {"vpn": {"state": "rolled_back"}}});
         assert_eq!(TrayState::Disconnected, tray_state_from(&disconnected, 1000.0));
         let error = json!({"status": {"error": "sync failed", "vpn": {"state": "installed"}}});

@@ -819,8 +819,6 @@ class NotebookTests(unittest.TestCase):
                 return json.dumps([{'addr_info': [{'family': 'inet', 'local': '10.203.0.3'}]}])
             if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'route', 'show', 'dev']:
                 return json.dumps([{'dst': '10.203.0.1'}, {'dst': '192.168.1.0/24'}])
-            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
-                return json.dumps([{'dev': n.VPN_INTERFACE}])
             if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
                 return f'{router_key}\t{int(now)}\n'
             raise AssertionError(args)
@@ -839,42 +837,11 @@ class NotebookTests(unittest.TestCase):
                          (result['profile'], result['interfacePresent'], result['addressAssigned']))
         self.assertEqual((2, 2, [], []),
                          (result['routesExpected'], result['routesActive'], result['missingRoutes'], result['unknownRoutes']))
-        self.assertEqual([], result['shadowedRoutes'])
         self.assertEqual('recent', result['nodes'][router_id]['handshakeState'])
         self.assertEqual([(('10.203.0.1', n.VPN_INTERFACE), {})],
                          [(call.args, call.kwargs) for call in ping.call_args_list])
         self.assertNotIn(router_key, json.dumps(result))
         self.assertEqual(result, self.b.vpn_status()['diagnostics'])
-
-    def test_local_vpn_diagnostics_detect_route_shadowed_by_hotspot(self):
-        self.onboard_user()
-        profile_uuid = str(uuid.uuid4())
-
-        def local(args, **_kwargs):
-            if args[:5] == ['/usr/sbin/ip', '-j', 'link', 'show', 'dev']:
-                return json.dumps([{'ifname': n.VPN_INTERFACE}])
-            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'dev']:
-                return json.dumps([{'addr_info': [{'family': 'inet', 'local': '10.203.0.3'}]}])
-            if args[:6] == ['/usr/sbin/ip', '-j', '-4', 'route', 'show', 'dev']:
-                return json.dumps([{'dst': '10.203.0.1'}, {'dst': '192.168.1.0/24'}])
-            if args[:5] == ['/usr/sbin/ip', '-j', '-4', 'route', 'get']:
-                device = 'wlan0' if args[-1] == '192.168.1.1' else n.VPN_INTERFACE
-                return json.dumps([{'dev': device}])
-            if args[:3] == ['/usr/bin/wg', 'show', n.VPN_INTERFACE]:
-                return ''
-            raise AssertionError(args)
-
-        with patch.object(n, 'nmcli_connections', return_value={
-                    n.VPN_CONNECTION: {'uuid': profile_uuid, 'type': 'wireguard'}}), \
-                patch.object(n, 'nmcli_active_uuids', return_value={profile_uuid}), \
-                patch.object(n, 'local_command', side_effect=local), \
-                patch.object(n.Store, 'forwarding_state', return_value={'ipv4': False, 'ipv6': False}), \
-                patch.object(f, 'ping_batch', return_value={'samples': []}):
-            result = self.b.vpn_diagnostics()
-
-        self.assertEqual((2, 1), (result['routesExpected'], result['routesActive']))
-        self.assertEqual([{'cidr': '192.168.1.0/24', 'selectedDevice': 'wlan0'}],
-                         result['shadowedRoutes'])
 
     def test_local_vpn_diagnostics_report_unknown_handshake_and_missing_routes(self):
         self.onboard_user()

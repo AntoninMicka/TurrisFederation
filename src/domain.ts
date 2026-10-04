@@ -169,7 +169,6 @@ export interface NotebookVpnDiagnostics {
   routesActive: number;
   missingRoutes: string[];
   unknownRoutes: string[];
-  shadowedRoutes: Array<{ cidr: string; selectedDevice: string }>;
   forwarding: { ipv4: boolean | null; ipv6: boolean | null };
   nodes: Record<string, NotebookVpnDiagnosticNode>;
 }

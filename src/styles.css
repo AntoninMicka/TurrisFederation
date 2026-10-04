@@ -59,6 +59,16 @@ button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; out
 .overview-page .kicker { color: #80e1d7; }
 .overview-page .muted { color: #a8bdcc; line-height: 1.55; }
 .overview-page .secondary { color: #e6eff6; background: #244653; border: 1px solid #517185; }
+.overview-page code { color: #e8fffb; }
+.overview-page .warning { color: #ffd166; }
+.overview-page .setup-preview { color: #f4f8fb; background: #081b29; border: 2px solid #517185; box-shadow: 0 10px 28px #0005; }
+.overview-page .setup-preview strong { color: #fff; font-size: 1.08rem; }
+.overview-page .setup-preview code { display: inline-block; max-width: 100%; padding: 3px 7px; color: #fff; background: #21495a; border: 1px solid #5e8294; border-radius: 6px; overflow-wrap: anywhere; }
+.overview-page .setup-preview .warning { padding: 10px 12px; color: #ffe39a; background: #3b2d0d; border-left: 4px solid #f0b429; border-radius: 6px; }
+.overview-page .setup-preview .trust-check { padding: 12px; color: #fff; background: #17394a; border: 1px solid #66899a; border-radius: 8px; line-height: 1.45; }
+.overview-page .setup-preview .trust-check input { flex: 0 0 auto; width: 1.15rem; height: 1.15rem; accent-color: #22b8a7; }
+.overview-page .setup-preview button:disabled { color: #d2dde3; background: #39515e; opacity: 1; }
+.overview-page .vpn-plan-preview ol { line-height: 1.55; }
 .overview-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .overview-cards article, .overview-section { padding: 22px; background: #13283a; border: 1px solid #2a4355; border-radius: 14px; }
 .overview-cards span { color: #a8bdcc; }

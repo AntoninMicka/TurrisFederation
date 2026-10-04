@@ -257,11 +257,11 @@ function presenceLabel(value: boolean | null, positive: string) {
         <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Profil ho nezapíná ani nemění, ale endpoint-only izolace není potvrzená.</p>
         <p v-if="vpnDiagnostics.missingRoutes.length" class="warning">Chybějící routy: <code>{{ vpnDiagnostics.missingRoutes.join(", ") }}</code></p>
         <p v-if="vpnDiagnostics.unknownRoutes.length" class="warning">Routy, které nelze ověřit: <code>{{ vpnDiagnostics.unknownRoutes.join(", ") }}</code></p>
-        <p v-if="vpnDiagnostics.shadowedRoutes?.length" class="warning">Routy překryté místní sítí: <code>{{ vpnDiagnostics.shadowedRoutes.map(route => `${route.cidr} → ${route.selectedDevice}`).join(", ") }}</code>. Stejný prefix používá aktuální LAN nebo hotspot; provoz proto nejde do federované VPN.</p>
         <p v-if="!vpnDiagnosticFresh && vpnDiagnostics.revision !== overview?.revision" class="muted">Výsledek patří jiné revizi topologie; po aktualizaci VPN spusťte novou místní kontrolu.</p>
         <p v-else-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
       </template>
-      <template v-if="vpnPlan">
+      <div v-if="vpnPlan" class="setup-preview vpn-plan-preview">
+        <strong>Instalační plán VPN</strong>
         <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>
         <p>Routy: <code>{{ vpnPlan.routes.join(", ") || "žádné" }}</code></p>
         <p v-if="vpnPlan.currentConnection" class="warning">Stávající profil bude před změnou zachovaný pro rollback.</p>
@@ -269,7 +269,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         <ol><li v-for="step in vpnPlan.steps" :key="step">{{ step }}</li></ol>
         <label class="trust-check"><input type="checkbox" :checked="vpnConfirmed" @change="$emit('update:vpnConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím systémovým změnám a chci vyvolat polkit potvrzení instalace.</label>
         <button type="button" :disabled="vpnBusy || !vpnConfirmed" @click="$emit('vpnInstall')">Nainstalovat a aktivovat VPN</button>
-      </template>
+      </div>
       <button v-if="vpnStatus?.state === 'installed'" type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnRollback')">Obnovit předchozí VPN profil</button>
       <p class="muted">Instalace nevytváří výchozí trasu, nezapíná forwarding a používá pouze routy z podepsané topologie. Privátní klíč se nepředává v argumentech procesu.</p>
     </section>
