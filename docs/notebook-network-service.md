@@ -46,6 +46,14 @@ překrývající se routy služba odmítne. Backend tento stav odvozuje pouze z
 lokálně ověřené podepsané topologie. Root služba sama podpis neověřuje, proto je
 socket záměrně omezený na jediné instalační UID a root.
 
+Uživatelská jednotka backendu záměrně nepoužívá filesystemové sandboxovací
+direktivy `ProtectSystem`, `ProtectHome` ani `PrivateTmp`. Na Ubuntu s AppArmor
+by pro uživatelskou službu vytvořily profil `unprivileged_userns`, který odmítá
+spojení k rootem vlastněnému socketu jako „disconnected path“, i když skupina a
+režim socketu odpovídají. Backend zůstává neprivilegovaný, používá
+`NoNewPrivileges`, `UMask=0077`, omezené rodiny adres a zákaz vytváření dalších
+namespaces; systémové soubory nadále chrání běžná unixová oprávnění.
+
 Vývojový instalátor uděluje tuto lokální síťovou autoritu jednomu UID, které
 výslovně spustilo `run.sh` a potvrdilo `sudo`. Produkční balíček má stejné
 oprávnění vyjádřit polkit politikou a systémovou skupinou; nesmí rozšířit API na

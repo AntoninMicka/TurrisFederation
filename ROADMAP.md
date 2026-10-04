@@ -164,6 +164,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     Statický polkit plán zůstává dočasný fallback. Lokální testy prošly, ale
     automatické vytvoření profilu, změna hotspotu a end-to-end provoz na `tony`
     ještě vyžadují fyzickou akceptaci.
+    První živé spuštění na `gx10-efde` odhalilo, že Ubuntu AppArmor profil
+    `unprivileged_userns` odmítá backendu spojení k rootem vlastněnému Unix
+    socketu navzdory správné skupině a režimu `0660`. Generovaná uživatelská
+    jednotka proto nepoužívá mount-namespace direktivy `ProtectSystem`,
+    `ProtectHome` ani `PrivateTmp`; ponechává neprivilegovaný proces,
+    `NoNewPrivileges`, omezení síťových rodin a zákaz dalších namespaces.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
