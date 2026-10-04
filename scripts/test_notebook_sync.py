@@ -770,6 +770,12 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(('installed', 'system-service', 3),
                          (receipt['state'], receipt['managedBy'], receipt['revision']))
 
+    def test_sync_prefers_peer_zerotier_address_from_signed_topology(self):
+        self.onboard_user()
+        self.assertEqual('10.147.0.3', self.a.signed_peer_address(self.b.id))
+        self.assertEqual('10.147.0.2', self.b.signed_peer_address(self.a.id))
+        self.assertIsNone(self.a.signed_peer_address(self.c.id))
+
     def test_system_network_request_reports_socket_and_incomplete_response(self):
         client = Mock()
         client.__enter__ = Mock(return_value=client)

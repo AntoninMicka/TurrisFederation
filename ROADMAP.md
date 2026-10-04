@@ -174,6 +174,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     Root síťová služba navíc vytváří dočasný WireGuard import ve svém systemd
     `RuntimeDirectory`, protože obecný `/run` je při `ProtectSystem=strict`
     záměrně jen pro čtení.
+    Synchronizace spárovaných notebooků po jejich přidání do podepsané topologie
+    používá stabilní ZeroTier adresu z této topologie, nikoli historickou LAN
+    adresu zachycenou při prvním párování.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

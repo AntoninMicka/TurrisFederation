@@ -1606,6 +1606,20 @@ class Store:
     def peers(self):
         return f.read(self.root / 'peers.json', {})
 
+    def signed_peer_address(self, peer_id):
+        """Return a paired notebook's stable address only from verified topology."""
+        public_path = self.root / 'federation-root.pub'
+        published = f.read(self.fleet / 'published.json')
+        if not public_path.exists() or not published:
+            return None
+        try:
+            document = f.validate_document(f.verify(public_path.read_text(), published))
+        except Exception:
+            return None
+        endpoint = next((item for item in f.notebook_endpoints(document)
+                         if item['id'] == peer_id), None)
+        return endpoint['zeroTierAddress'] if endpoint else None
+
     def status(self):
         with self.db() as db:
             self.recover(db)
@@ -2110,8 +2124,12 @@ def serve_sync(store, stopped):
                 for peer, item in store.peers().items():
                     if stopped.is_set():
                         break
-                    # Signed beacons allow paired notebooks to change their address.
-                    if peer in discovered and time.time() - discovered[peer]['seenAt'] < 90:
+                    # A signed stable ZeroTier address supersedes the LAN
+                    # address remembered during initial pairing.
+                    signed_address = store.signed_peer_address(peer)
+                    if signed_address:
+                        item = dict(item, address=signed_address)
+                    elif peer in discovered and time.time() - discovered[peer]['seenAt'] < 90:
                         item = dict(item, address=discovered[peer]['address'])
                     try:
                         remote = fetch(store, item)
@@ -2120,7 +2138,9 @@ def serve_sync(store, stopped):
                         state = store.receive(peer, remote)
                         runtime['peers'][peer] = {'state': state, 'lastSync': time.time(), 'address': item['address']}
                     except Exception:
-                        runtime['peers'][peer] = {**runtime['peers'].get(peer, {}), 'state': 'error', 'error': 'Přenos se nezdařil. Ověřte vzájemné párování, dostupnost a shodu federace.'}
+                        runtime['peers'][peer] = {**runtime['peers'].get(peer, {}),
+                            'state': 'error', 'address': item['address'],
+                            'error': 'Přenos se nezdařil. Ověřte vzájemné párování, dostupnost a shodu federace.'}
             except Exception:
                 runtime['error'] = 'Discovery není dostupné na vybraném rozhraní.'
             f.atomic(store.root / 'runtime.json', runtime)

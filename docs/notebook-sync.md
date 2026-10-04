@@ -94,6 +94,12 @@ polkit plán zůstává do fyzické akceptace fallback. Současné offline
 publikování ze dvou notebooků může na routerech narazit na konflikt stejné
 revize; nejde o distribuovaný konsenzus.
 
+LAN adresa zachycená při prvním párování není trvalou transportní identitou.
+Jakmile je protější notebook uvedený v ověřené podepsané topologii,
+synchronizace používá jeho stabilní ZeroTier adresu. Čerstvý podepsaný LAN
+beacon zůstává fallback pouze pro administrátorský peer, který ještě v
+topologii není. Změna Wi-Fi tak sama nevytvoří novou větev konfigurace.
+
 Databáze a soubory federace se mění pod společným zámkem s controllerem. Před
 zápisem vzniká záznam obnovy. Po přerušení se přenos dokončí při dalším načtení
 stavu nebo spuštění synchronizace; do té doby controller odmítne deploy.
