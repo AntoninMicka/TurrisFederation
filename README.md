@@ -67,11 +67,13 @@ ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
 uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
 autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).
 
-V současné implementaci je v inventáři automaticky uveden také **Tento
-notebook**, pouze jako řídicí uzel s ruční kontrolou místního ZeroTier
-členství. Zatím se nepřidává do WireGuardu; rozdělení rolí a plnohodnotné
-koncové členství notebooků je navazující práce.
-Kontrola vyžaduje přístup místního uživatele k ZeroTier službě.
+Notebooky jsou v podepsané topologii samostatné koncové WireGuard uzly s rolí
+administrátora nebo uživatele. Neinzerují fyzickou LAN a router pro každý z nich
+přijímá pouze jeho tunelovou `/32`. Změna podepsané topologie sama nepřepisuje
+aktivní NetworkManager profil: aplikace zobrazí, že VPN vyžaduje aktualizaci,
+vypíše očekávané routy a výměnu profilu provede až po výslovném potvrzení přes
+polkit. Kontrola místního ZeroTier a VPN stavu vyžaduje přístup místního
+uživatele k příslušným systémovým službám.
 
 **Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;
 oprava je zatím v [TODO](ROADMAP.md). Implementovaný deploy byl zkontrolován

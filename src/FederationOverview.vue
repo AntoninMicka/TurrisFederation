@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { NotebookSyncStatus } from "./backend";
 import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, TopologyRefreshPlan } from "./domain";
+import { vpnHeadline, vpnPlanLabel } from "./vpnStatus";
 
 const props = defineProps<{
   overview: ReadOnlyOverview | null;
@@ -241,18 +242,23 @@ function presenceLabel(value: boolean | null, positive: string) {
       <div class="overview-section-heading">
         <h3>VPN tohoto notebooku</h3>
         <button type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnPreview')">
-          {{ vpnBusy ? "Pracuji…" : "Zobrazit instalační plán" }}
+          {{ vpnPlanLabel(vpnStatus, vpnBusy) }}
         </button>
       </div>
       <p v-if="vpnError" class="error">{{ vpnError }}</p>
-      <p><strong>{{ vpnStatus?.state === "installed" ? "VPN profil je nainstalovaný" : vpnStatus?.state === "rolled_back" ? "Předchozí profil byl obnoven" : vpnStatus?.state === "revoked" ? "Členství bylo odvoláno a spravovaná VPN odstraněna" : vpnStatus?.state === "error" ? "Poslední instalace selhala" : "VPN profil zatím není nainstalovaný" }}</strong></p>
+      <p><strong>{{ vpnHeadline(vpnStatus) }}</strong></p>
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
+      <div v-if="vpnStatus?.updateAvailable" class="warning">
+        <p>Nainstalovaný profil používá revizi {{ vpnStatus.revision ?? "—" }}, podepsaná topologie je revize {{ vpnStatus.topologyRevision ?? "—" }}. Dokud aktualizaci nepotvrdíte, nové uzly a sítě se neroutují.</p>
+        <p>Očekávané routy: <code>{{ vpnStatus.expectedRoutes?.join(", ") || "žádné" }}</code></p>
+      </div>
       <template v-if="vpnDiagnostics">
         <p :class="vpnDiagnosticFresh ? '' : 'warning'">Místní kontrola revize {{ vpnDiagnostics.revision }}: profil {{ profileLabel }}, rozhraní {{ presenceLabel(vpnDiagnostics.interfacePresent, "nalezeno") }}, adresa {{ presenceLabel(vpnDiagnostics.addressAssigned, "odpovídá") }}, routy {{ vpnDiagnostics.routesActive }}/{{ vpnDiagnostics.routesExpected }}.</p>
         <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Profil ho nezapíná ani nemění, ale endpoint-only izolace není potvrzená.</p>
         <p v-if="vpnDiagnostics.missingRoutes.length" class="warning">Chybějící routy: <code>{{ vpnDiagnostics.missingRoutes.join(", ") }}</code></p>
         <p v-if="vpnDiagnostics.unknownRoutes.length" class="warning">Routy, které nelze ověřit: <code>{{ vpnDiagnostics.unknownRoutes.join(", ") }}</code></p>
-        <p v-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
+        <p v-if="!vpnDiagnosticFresh && vpnDiagnostics.revision !== overview?.revision" class="muted">Výsledek patří jiné revizi topologie; po aktualizaci VPN spusťte novou místní kontrolu.</p>
+        <p v-else-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
       </template>
       <template v-if="vpnPlan">
         <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>

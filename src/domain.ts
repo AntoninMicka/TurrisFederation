@@ -175,10 +175,14 @@ export interface NotebookVpnDiagnostics {
 export interface NotebookVpnStatus {
   state: "unconfigured" | "ready" | "installed" | "rolled_back" | "revoked" | "error";
   revision?: number;
+  topologyRevision?: number;
   installedAt?: number;
   rolledBackAt?: number;
   address?: string;
+  expectedAddress?: string;
   routes?: string[];
+  expectedRoutes?: string[];
+  updateAvailable: boolean;
   forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
   error?: string;
   rollbackComplete?: boolean;

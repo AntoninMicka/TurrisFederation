@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuditFinding, FederationNode, HostIdentity, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, NotebookVpnStatus, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const browserMode = !("__TAURI_INTERNALS__" in window);
 
@@ -86,6 +86,7 @@ export interface NotebookSyncStatus {
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
   serviceError?: string;
   service?: { installed: boolean; enabled: boolean; active: boolean; unit: string };
+  vpn?: NotebookVpnStatus;
   access: { state: "unconnected" | "valid" | "invalid"; role: "administrator" | "user" | null; canBootstrapAdmin: boolean; error?: string; federationId?: string; subject?: string; issuedAt?: number; expiresAt?: number | null };
 }
 export async function notebookAction(request: Record<string, unknown>): Promise<NotebookSyncStatus> {

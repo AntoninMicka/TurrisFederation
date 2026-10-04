@@ -93,6 +93,10 @@ async function notebookOperation(request: Record<string, unknown> = { action: "s
     if (notebookSync.value && notebookSync.value.configurationVersion !== result.configurationVersion) sharedSettingsChanged.value = true;
     if (!notebookSync.value) Object.assign(syncDraft, { name: result.name, address: result.config.address ?? "" });
     notebookSync.value = result;
+    if (result.vpn) {
+      vpnStatus.value = result.vpn;
+      vpnDiagnostics.value = result.vpn.diagnostics ?? null;
+    }
     if (request.action === "manual") manualInvitation.value = "";
   } catch (error) { syncError.value = String(error); }
   finally { syncBusy.value = false; }

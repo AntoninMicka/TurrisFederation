@@ -233,7 +233,11 @@ fn tray_state_from(response: &Value, now: f64) -> TrayState {
     }
     let diagnostics = &status["vpn"]["diagnostics"];
     let fresh = diagnostics["checkedAt"].as_f64().is_some_and(|checked| now - checked <= 120.0);
-    let healthy = diagnostics["state"].as_str() == Some("complete")
+    let topology_matches = status["vpn"]["topologyRevision"].as_u64()
+        .is_none_or(|revision| diagnostics["revision"].as_u64() == Some(revision));
+    let healthy = status["vpn"]["updateAvailable"].as_bool() != Some(true)
+        && topology_matches
+        && diagnostics["state"].as_str() == Some("complete")
         && diagnostics["profile"].as_str() == Some("active")
         && diagnostics["interfacePresent"].as_bool() == Some(true)
         && diagnostics["addressAssigned"].as_bool() == Some(true)
@@ -532,8 +536,9 @@ mod tests {
 
     #[test]
     fn tray_state_requires_fresh_healthy_local_diagnostics() {
-        let healthy = json!({"status": {"vpn": {"state": "installed", "diagnostics": {
-            "state": "complete", "checkedAt": 950.0, "profile": "active",
+        let healthy = json!({"status": {"vpn": {"state": "installed", "updateAvailable": false,
+            "topologyRevision": 3, "diagnostics": {
+            "revision": 3, "state": "complete", "checkedAt": 950.0, "profile": "active",
             "interfacePresent": true, "addressAssigned": true,
             "routesExpected": 2, "routesActive": 2,
             "forwarding": {"ipv4": false, "ipv6": false},
@@ -541,6 +546,12 @@ mod tests {
         }}}});
         assert_eq!(TrayState::Connected, tray_state_from(&healthy, 1000.0));
         assert_eq!(TrayState::Limited, tray_state_from(&healthy, 1100.0));
+        let mut update = healthy.clone();
+        update["status"]["vpn"]["updateAvailable"] = json!(true);
+        assert_eq!(TrayState::Limited, tray_state_from(&update, 1000.0));
+        let mut stale_revision = healthy.clone();
+        stale_revision["status"]["vpn"]["diagnostics"]["revision"] = json!(2);
+        assert_eq!(TrayState::Limited, tray_state_from(&stale_revision, 1000.0));
         let disconnected = json!({"status": {"vpn": {"state": "rolled_back"}}});
         assert_eq!(TrayState::Disconnected, tray_state_from(&disconnected, 1000.0));
         let error = json!({"status": {"error": "sync failed", "vpn": {"state": "installed"}}});

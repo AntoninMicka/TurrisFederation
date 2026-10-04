@@ -670,6 +670,7 @@ class NotebookTests(unittest.TestCase):
                 patch.object(n, 'verify_vpn') as verify:
             state = self.b.vpn_install(plan['id'])
         self.assertEqual('installed', state['state'])
+        self.assertFalse(state['updateAvailable'])
         verify.assert_called_once_with('10.203.0.3', plan['routes'])
         arguments = repr(calls)
         self.assertIn("'connection', 'import', 'type', 'wireguard', 'file'", arguments)
@@ -690,6 +691,16 @@ class NotebookTests(unittest.TestCase):
         updated_config['nodes'][0]['lanCidrs'] = ['192.168.2.0/24']
         published = f.snapshot(self.a.fleet, updated_config, current['members'])
         f.atomic(self.b.fleet / 'published.json', published)
+        f.atomic(self.b.root / 'vpn-state.json', {
+            'state': 'installed', 'revision': current['revision'],
+            'address': '10.203.0.3/32',
+            'routes': ['10.203.0.1/32', '192.168.1.0/24'],
+        })
+
+        status = self.b.vpn_status()
+        self.assertTrue(status['updateAvailable'])
+        self.assertEqual(current['revision'] + 1, status['topologyRevision'])
+        self.assertEqual(['10.203.0.1/32', '192.168.2.0/24'], status['expectedRoutes'])
 
         with patch.object(n.Store, 'forwarding_state', return_value={'ipv4': False, 'ipv6': False}), \
                 patch.object(n, 'nmcli_connections', return_value={}), \
@@ -701,6 +712,33 @@ class NotebookTests(unittest.TestCase):
         self.assertIn('192.168.2.0/24', plan['routes'])
         self.assertIn('192.168.2.0/24', rebuilt)
         self.assertNotIn('192.168.1.0/24', rebuilt)
+
+    def test_vpn_status_does_not_mark_matching_profile_for_update(self):
+        self.onboard_user()
+        document, notebook, routes = self.b.verified_vpn_target()
+        config_hash = __import__('hashlib').sha256(
+            self.b.wireguard_config(document, notebook)).hexdigest()
+        f.atomic(self.b.root / 'vpn-state.json', {
+            'state': 'installed', 'revision': document['revision'],
+            'address': notebook['wireguardAddress'] + '/32', 'routes': routes,
+            'configHash': config_hash,
+        })
+
+        status = self.b.vpn_status()
+
+        self.assertFalse(status['updateAvailable'])
+        self.assertEqual(document['revision'], status['topologyRevision'])
+        self.assertEqual(routes, status['expectedRoutes'])
+
+    def test_vpn_status_requires_one_update_for_legacy_receipt_without_config_hash(self):
+        self.onboard_user()
+        document, notebook, routes = self.b.verified_vpn_target()
+        f.atomic(self.b.root / 'vpn-state.json', {
+            'state': 'installed', 'revision': document['revision'],
+            'address': notebook['wireguardAddress'] + '/32', 'routes': routes,
+        })
+
+        self.assertTrue(self.b.vpn_status()['updateAvailable'])
 
     def test_failed_vpn_activation_restores_previous_profile(self):
         self.onboard_user()

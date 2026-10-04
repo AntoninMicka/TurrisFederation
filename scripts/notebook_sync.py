@@ -734,7 +734,7 @@ class Store:
             raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
         f.atomic(self.root / 'wireguard.conf', self.wireguard_config(document, notebook))
 
-    def wireguard_endpoint(self):
+    def verified_vpn_target(self):
         status = self.access_status()
         if status.get('state') != 'valid' or status.get('role') not in ['administrator', 'user']:
             raise ValueError('Instalace VPN vyžaduje platné pověření člena federace.')
@@ -746,13 +746,17 @@ class Store:
         notebook = next((item for item in f.notebook_endpoints(document) if item['id'] == self.id), None)
         if not notebook or notebook['wireguardKey'] != self.wireguard_identity():
             raise ValueError('Podepsaná topologie neobsahuje síťový endpoint tohoto notebooku.')
+        return document, notebook, self.routes_for(document)
+
+    def wireguard_endpoint(self):
+        document, notebook, routes = self.verified_vpn_target()
         config = self.root / 'wireguard.conf'
         # The signed topology can advance through administrator notebook sync
         # while an older NetworkManager profile remains active.  Always rebuild
         # the staged configuration from the document verified above so a new
         # installation plan cannot silently import routes from an older revision.
         self.write_wireguard_config(document)
-        return document, notebook, config, self.routes_for(document)
+        return document, notebook, config, routes
 
     @staticmethod
     def forwarding_state():
@@ -839,7 +843,8 @@ class Store:
                 committed = True
             receipt = {'state': 'installed', 'revision': document['revision'], 'installedAt': time.time(),
                        'activeUuid': new_uuid, 'backupUuid': backup_uuid, 'address': plan['address'],
-                       'routes': routes, 'forwarding': self.forwarding_state()}
+                       'routes': routes, 'configHash': hashlib.sha256(config.read_bytes()).hexdigest(),
+                       'forwarding': self.forwarding_state()}
             f.atomic(self.root / 'vpn-state.json', receipt)
             plan_path.unlink(missing_ok=True)
             return self.vpn_status()
@@ -973,7 +978,23 @@ class Store:
 
     def vpn_status(self):
         state = f.read(self.root / 'vpn-state.json', {'state': 'ready' if (self.root / 'wireguard.conf').exists() else 'unconfigured'})
-        result = {key: value for key, value in state.items() if key not in ['activeUuid', 'backupUuid']}
+        result = {key: value for key, value in state.items()
+                  if key not in ['activeUuid', 'backupUuid', 'configHash']}
+        try:
+            document, notebook, routes = self.verified_vpn_target()
+        except (OSError, ValueError, KeyError):
+            pass
+        else:
+            address = notebook['wireguardAddress'] + '/32'
+            config_hash = hashlib.sha256(self.wireguard_config(document, notebook)).hexdigest()
+            result.update(topologyRevision=document['revision'], expectedRoutes=routes,
+                          expectedAddress=address)
+            result['updateAvailable'] = state.get('state') == 'installed' and (
+                state.get('revision') != document['revision']
+                or state.get('address') != address
+                or set(state.get('routes', [])) != set(routes)
+                or state.get('configHash') != config_hash)
+        result.setdefault('updateAvailable', False)
         diagnostics = f.read(self.root / 'vpn-diagnostics.json')
         if diagnostics:
             result['diagnostics'] = diagnostics
