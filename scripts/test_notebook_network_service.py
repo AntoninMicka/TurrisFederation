@@ -31,6 +31,14 @@ class NotebookNetworkServiceTests(unittest.TestCase):
                            'endpoint': '10.43.192.54:51830',
                            'allowedIps': ['10.203.0.54/32', '192.168.100.0/24']}]}
 
+    def test_command_failures_are_actionable(self):
+        with patch.object(s.subprocess, 'run', side_effect=s.subprocess.TimeoutExpired(['ip'], 1)), \
+                self.assertRaisesRegex(ValueError, 'neodpověděl včas'):
+            s.run(['/usr/sbin/ip'])
+        with patch.object(s.subprocess, 'run', side_effect=PermissionError(13, 'denied')), \
+                self.assertRaisesRegex(ValueError, 'errno 13'):
+            s.run(['/usr/sbin/ip'])
+
     def test_guard_is_scoped_to_forwarded_notebook_traffic(self):
         script = s.guard_script().decode()
         self.assertIn('hook forward', script)

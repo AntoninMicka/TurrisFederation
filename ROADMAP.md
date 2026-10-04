@@ -169,7 +169,8 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     socketu navzdory správné skupině a režimu `0660`. Generovaná uživatelská
     jednotka proto nepoužívá mount-namespace direktivy `ProtectSystem`,
     `ProtectHome` ani `PrivateTmp`; ponechává neprivilegovaný proces,
-    `NoNewPrivileges`, omezení síťových rodin a zákaz dalších namespaces.
+    `NoNewPrivileges`, omezení síťových rodin včetně `AF_NETLINK` potřebného
+    nástrojem `ip` a zákaz dalších namespaces.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

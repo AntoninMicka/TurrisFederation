@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from pathlib import Path
 
 SOCKET_PATH = Path('/run/turris-federation/notebook-network.sock')
@@ -51,8 +52,14 @@ def command_path(candidates):
 
 
 def run(args, data=None, check=True, timeout=15):
-    result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            timeout=timeout, check=False)
+    try:
+        result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError('Systémový síťový příkaz neodpověděl včas.') from error
+    except OSError as error:
+        suffix = f' (errno {error.errno})' if error.errno is not None else ''
+        raise ValueError('Systémový síťový příkaz nelze spustit' + suffix + '.') from error
     if check and result.returncode:
         raise ValueError('Systémový síťový příkaz selhal.')
     return result
@@ -496,7 +503,11 @@ class Service:
                         raise ValueError('Neplatná délka požadavku.')
                     result = {'ok': True, **service.dispatch(json.loads(raw), uid)}
                 except Exception as error:
-                    result = {'ok': False, 'error': str(error) if type(error) is ValueError else 'Síťový požadavek selhal.'}
+                    if not isinstance(error, ValueError):
+                        traceback.print_exc()
+                    detail = (str(error) if isinstance(error, ValueError)
+                              else f'Síťový požadavek selhal ({type(error).__name__}).')
+                    result = {'ok': False, 'error': detail}
                 self.wfile.write((json.dumps(result, separators=(',', ':')) + '\n').encode())
 
         class Server(socketserver.UnixStreamServer):

@@ -45,7 +45,7 @@ fn quote_unit_path(path: &Path) -> Result<String, String> {
 fn unit_contents(data: &Path, script: &Path) -> Result<String, String> {
     let python = Path::new("/usr/bin/python3");
     if !python.exists() { return Err("Chybí /usr/bin/python3 pro uživatelskou službu.".into()); }
-    Ok(format!("[Unit]\nDescription=Turris Federation notebook backend\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} {} serve {}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nRuntimeDirectory=turris-federation\nEnvironment=TF_BACKEND_SOCKET=%t/turris-federation/backend.sock\nNoNewPrivileges=true\nRestrictNamespaces=true\nRestrictSUIDSGID=true\nLockPersonality=true\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\n[Install]\nWantedBy=default.target\n",
+    Ok(format!("[Unit]\nDescription=Turris Federation notebook backend\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} {} serve {}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nRuntimeDirectory=turris-federation\nEnvironment=TF_BACKEND_SOCKET=%t/turris-federation/backend.sock\nNoNewPrivileges=true\nRestrictNamespaces=true\nRestrictSUIDSGID=true\nLockPersonality=true\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n\n[Install]\nWantedBy=default.target\n",
         quote_unit_path(python)?, quote_unit_path(script)?, quote_unit_path(data)?))
 }
 
@@ -493,7 +493,7 @@ mod tests {
         assert!(unit.contains("UMask=0077"));
         assert!(unit.contains("NoNewPrivileges=true"));
         assert!(unit.contains("RestrictNamespaces=true"));
-        assert!(unit.contains("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"));
+        assert!(unit.contains("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"));
         assert!(!unit.contains("ProtectSystem="));
         assert!(!unit.contains("ProtectHome="));
         assert!(!unit.contains("PrivateTmp="));

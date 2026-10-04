@@ -51,7 +51,8 @@ direktivy `ProtectSystem`, `ProtectHome` ani `PrivateTmp`. Na Ubuntu s AppArmor
 by pro uživatelskou službu vytvořily profil `unprivileged_userns`, který odmítá
 spojení k rootem vlastněnému socketu jako „disconnected path“, i když skupina a
 režim socketu odpovídají. Backend zůstává neprivilegovaný, používá
-`NoNewPrivileges`, `UMask=0077`, omezené rodiny adres a zákaz vytváření dalších
+`NoNewPrivileges`, `UMask=0077`, omezené rodiny adres včetně `AF_NETLINK`
+potřebného pro read-only síťové kontroly příkazem `ip` a zákaz vytváření dalších
 namespaces; systémové soubory nadále chrání běžná unixová oprávnění.
 
 Vývojový instalátor uděluje tuto lokální síťovou autoritu jednomu UID, které
