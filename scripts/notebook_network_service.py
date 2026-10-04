@@ -389,7 +389,10 @@ def apply_vpn_plan(raw_plan, state_path=VPN_STATE_PATH):
                  'connection.id', VPN_BACKUP])
             run([nmcli_path(), 'connection', 'down', 'uuid', current], check=False)
         before = all_connection_uuids()
-        descriptor, temporary = tempfile.mkstemp(prefix='tf-vpn-', suffix='.conf', dir='/run')
+        # ProtectSystem=strict makes the generic /run mount read-only. systemd
+        # explicitly keeps this service's RuntimeDirectory writable.
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='tf-vpn-', suffix='.conf', dir=SOCKET_PATH.parent)
         try:
             os.write(descriptor, config)
             os.close(descriptor)

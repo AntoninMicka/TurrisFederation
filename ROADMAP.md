@@ -171,6 +171,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     `ProtectHome` ani `PrivateTmp`; ponechává neprivilegovaný proces,
     `NoNewPrivileges`, omezení síťových rodin včetně `AF_NETLINK` potřebného
     nástrojem `ip` a zákaz dalších namespaces.
+    Root síťová služba navíc vytváří dočasný WireGuard import ve svém systemd
+    `RuntimeDirectory`, protože obecný `/run` je při `ProtectSystem=strict`
+    záměrně jen pro čtení.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

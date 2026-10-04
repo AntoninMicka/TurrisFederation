@@ -83,6 +83,9 @@ stav včetně privátního klíče je pouze pro root v
 jen revizi, hash a očekávané routy. Pravidla jsou v
 samostatné tabulce `inet turris_federation_notebook` a jejich nahrazení probíhá
 jednou nft transakcí. Služba cizí nftables tabulky nemění.
+Dočasný WireGuard import vzniká s režimem `0600` pouze uvnitř zapisovatelného
+`RuntimeDirectory` a po importu se vždy odstraní; obecný `/run` zůstává díky
+`ProtectSystem=strict` jen pro čtení.
 
 ## Akceptace
 

@@ -156,11 +156,13 @@ class NotebookNetworkServiceTests(unittest.TestCase):
                     patch.object(s, 'active_uuids', return_value=set()), \
                     patch.object(s, 'nmcli_path', return_value='/usr/bin/nmcli'), \
                     patch.object(s, 'verify_vpn_runtime'), \
-                    patch.object(s.tempfile, 'mkstemp', side_effect=temporary_config), \
+                    patch.object(s.tempfile, 'mkstemp', side_effect=temporary_config) as mkstemp, \
                     patch.object(s, 'run', side_effect=lambda args, **kwargs: calls.append(args) or Result()):
                 result = s.apply_vpn_plan(self.vpn_plan(), state)
 
             self.assertTrue(result['changed'])
+            self.assertEqual(s.SOCKET_PATH.parent,
+                             mkstemp.call_args.kwargs['dir'])
             self.assertIn(['/usr/bin/nmcli', 'connection', 'up', 'uuid', 'new-uuid'], calls)
             persisted = json.loads(state.read_text())
             self.assertEqual(3, persisted['revision'])
