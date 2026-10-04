@@ -95,3 +95,4 @@ button:focus-visible, .tab-panel:focus-visible { outline: 3px solid #b87816; out
 .overview-page .service-filters input,.overview-page .service-filters select { border-color:#517185; background:#0c1925; color:#e6eff6; }
 @media (max-width: 720px) { .overview-heading, .overview-section-heading { flex-direction: column; align-items: stretch; } .overview-cards { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .service-filters { grid-template-columns:1fr; } }
+.build-info { padding: 4px 8px; color: #607580; font-size: .78rem; text-align: center; overflow-wrap: anywhere; }

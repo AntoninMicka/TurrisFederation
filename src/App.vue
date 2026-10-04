@@ -19,6 +19,12 @@ const tabs = [
 ] as const;
 type TabId = typeof tabs[number]['id'];
 const activeTab = ref<TabId>('services');
+const appVersion = __APP_VERSION__;
+const buildCommit = __BUILD_COMMIT__;
+const buildTimeIso = __BUILD_TIME__;
+const buildTime = new Date(buildTimeIso).toLocaleString('cs-CZ', {
+  dateStyle: 'medium', timeStyle: 'medium',
+});
 const notebookSync = ref<NotebookSyncStatus | null>(null);
 const isAdministrator = computed(() => notebookSync.value?.access.role === "administrator" && notebookSync.value.access.state === "valid");
 const visibleTabs = computed(() => isAdministrator.value ? tabs : tabs.filter(tab => tab.id === "services" || tab.id === "overview"));
@@ -1131,5 +1137,8 @@ async function submitConnection() {
       </section>
     </div>
     <p v-if="message" class="message" role="status">{{ message }}</p>
+    <footer class="build-info" :title="`Sestaveno ${buildTimeIso}`">
+      Turris Federation v{{ appVersion }} · {{ buildCommit }} · sestavení {{ buildTime }}
+    </footer>
   </main>
 </template>
