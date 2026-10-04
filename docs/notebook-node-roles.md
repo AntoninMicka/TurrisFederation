@@ -3,8 +3,8 @@
 Stav: schválený směr návrhu. Základ trvalé uživatelské služby, lokálního
 stavového socketu a ovládání ze stavové lišty je implementovaný na feature
 větvi. Podepsaný model už odděluje routery od notebooků a eviduje roli
-notebooku. Koncová VPN konfigurace i potvrzovaný instalační tok jsou
-implementované; zbývá ověření na skutečných zařízeních.
+notebooku. Koncová VPN konfigurace i automatický reconcile v systémové službě
+jsou implementované; zbývá ověření na skutečných zařízeních.
 
 Notebook je plnohodnotný koncový uzel federované VPN, nikoli router lokality.
 Má vlastní identitu a tunelovou adresu a může používat služby dostupné ve
@@ -33,9 +33,10 @@ discovery.
 Na každém notebooku běží backend jako uživatelská služba operačního systému,
 odděleně od okna aplikace. Na Linuxu ji spravuje `systemd --user`; spouští se
 automaticky po přihlášení uživatele, při pádu se řízeně restartuje a nepotřebuje
-trvale běžet jako `root`. Úvodní instalace nebo potvrzená změna systémové VPN
-konfigurace může použít NetworkManager/polkit nebo úzce omezený instalační krok
-s vyšším oprávněním; privilegium se nesmí přenést na běžné API backendu. Běh
+trvale běžet jako `root`. Úvodní instalace přidá úzce omezenou systémovou
+síťovou službu; ta potom přes NetworkManager průběžně sjednocuje VPN profil s
+ověřenou podepsanou topologií. Privilegium se nesmí přenést na běžné API
+backendu. Běh
 bez přihlášené uživatelské relace pomocí lingeru je
 samostatná, výslovně zapínaná volba, ne vedlejší efekt instalace.
 
@@ -47,7 +48,8 @@ diagnostiku a stav připojení. U administrátorského notebooku navíc obsluhuj
 Privilegované síťové operace jsou oddělené do systémové
 `turris-federation-network.service`. Ta poskytuje sanitizovaný stav a omezenou
 správu ZeroTier, udržuje nftables guard proti transitnímu provozu přes
-`tf_notebook` a nesmí obsahovat identitu federace ani obecné root API. Podrobný
+`tf_notebook` a spravuje jediný omezený WireGuard profil. Nesmí obsahovat
+kořenovou identitu federace ani obecné root API. Podrobný
 kontrakt je v dokumentu [síťová služba notebooku](notebook-network-service.md).
 
 Uživatelský notebook neukládá adresu aktuální Wi-Fi ani fyzické LAN jako svou
@@ -233,8 +235,9 @@ Zbývající kroky:
 3. [~] Generovat notebooku koncovou WireGuard konfiguraci a na routerech přijmout
    pro notebook jen jeho `/32`, bez LAN prefixů a bez pravidel pro transit.
    Generování, podepsané adresy, routerová konfigurace a potvrzovaný lokální
-   NetworkManager/polkit instalační tok s rollbackem i místní diagnostika jsou
-   hotové; zbývá end-to-end ověření tunelu na skutečných zařízeních.
+   automatický NetworkManager reconcile s rollbackem i místní diagnostika jsou
+   hotové; ruční polkit tok zůstává fallback a zbývá end-to-end ověření tunelu
+   na skutečných zařízeních.
 4. Přidat lokální instalaci, aktualizaci, obnovu a rollback uživatelské backendové
    služby a konfigurace VPN notebooku bez vzdáleného deploye přes SSH. VPN část
    je implementovaná; balíčkovaná aktualizace a rollback backendu ještě ne.

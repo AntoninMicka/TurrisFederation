@@ -241,23 +241,25 @@ function presenceLabel(value: boolean | null, positive: string) {
     <section class="overview-section">
       <div class="overview-section-heading">
         <h3>VPN tohoto notebooku</h3>
-        <button type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnPreview')">
+        <button v-if="!vpnStatus?.automatic" type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnPreview')">
           {{ vpnPlanLabel(vpnStatus, vpnBusy) }}
         </button>
       </div>
       <p v-if="vpnError" class="error">{{ vpnError }}</p>
       <p><strong>{{ vpnHeadline(vpnStatus) }}</strong></p>
+      <p v-if="vpnStatus?.automatic" class="overview-signal green">● Profil průběžně spravuje systémová síťová služba.</p>
+      <p v-if="vpnStatus?.automaticError" class="error">Automatická správa VPN: {{ vpnStatus.automaticError }}</p>
       <div v-if="vpnStatus?.profileState === 'missing'" class="setup-preview vpn-required">
         <strong>Notebook ještě nemá systémový VPN profil</strong>
-        <p>Členství a ZeroTier samy federované routy nevytvoří. Dokončete jednorázovou instalaci přes polkit; profil se nastaví na automatické připojení a při dalších změnách Wi‑Fi už nebude potřeba nový plán.</p>
+        <p>Systémová síťová služba jej má sama vytvořit z podepsané topologie. Pokud stav přetrvá, aktualizujte nebo zkontrolujte službu; ruční polkit plán je pouze nouzová cesta.</p>
       </div>
       <div v-else-if="vpnStatus?.profileState === 'inactive'" class="setup-preview vpn-required">
         <strong>Trvalý VPN profil je uložený, ale není aktivní</strong>
-        <p>Připravte opravný plán. Po aktivaci zůstane profil nastavený na automatické připojení při změně Wi‑Fi nebo hotspotu.</p>
+        <p>Systémová síťová služba jej má automaticky znovu aktivovat. Ruční opravný plán použijte jen jako nouzovou cestu.</p>
       </div>
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
       <div v-if="vpnStatus?.updateAvailable" class="warning">
-        <p>Nainstalovaný profil používá revizi {{ vpnStatus.revision ?? "—" }}, podepsaná topologie je revize {{ vpnStatus.topologyRevision ?? "—" }}. Dokud aktualizaci nepotvrdíte, nové uzly a sítě se neroutují.</p>
+        <p>Nainstalovaný profil používá revizi {{ vpnStatus.revision ?? "—" }}, podepsaná topologie je revize {{ vpnStatus.topologyRevision ?? "—" }}. Automatický reconcile ještě neskončil; do té doby se nové uzly a sítě neroutují.</p>
         <p>Očekávané routy: <code>{{ vpnStatus.expectedRoutes?.join(", ") || "žádné" }}</code></p>
       </div>
       <template v-if="vpnDiagnostics">
@@ -269,7 +271,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         <p v-else-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
       </template>
       <div v-if="vpnPlan" class="setup-preview vpn-plan-preview">
-        <strong>Instalační plán VPN</strong>
+        <strong>Nouzový ruční instalační plán VPN</strong>
         <p>Revize {{ vpnPlan.revision }} · podklad <code>{{ vpnPlan.underlayDevice }}</code> · rozhraní <code>{{ vpnPlan.interfaceName }}</code> · adresa <code>{{ vpnPlan.address }}</code></p>
         <p>Routy: <code>{{ vpnPlan.routes.join(", ") || "žádné" }}</code></p>
         <p v-if="vpnPlan.currentConnection" class="warning">Stávající profil bude před změnou zachovaný pro rollback.</p>
@@ -278,8 +280,8 @@ function presenceLabel(value: boolean | null, positive: string) {
         <label class="trust-check"><input type="checkbox" :checked="vpnConfirmed" @change="$emit('update:vpnConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím systémovým změnám a chci vyvolat polkit potvrzení instalace.</label>
         <button type="button" :disabled="vpnBusy || !vpnConfirmed" @click="$emit('vpnInstall')">Nainstalovat a aktivovat VPN</button>
       </div>
-      <button v-if="vpnStatus?.state === 'installed'" type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnRollback')">Obnovit předchozí VPN profil</button>
-      <p class="muted">Instalace nevytváří výchozí trasu, nezapíná forwarding a používá pouze routy z podepsané topologie. Privátní klíč se nepředává v argumentech procesu.</p>
+      <button v-if="vpnStatus?.state === 'installed' && !vpnStatus.automatic" type="button" class="secondary" :disabled="vpnBusy" @click="$emit('vpnRollback')">Obnovit předchozí VPN profil</button>
+      <p class="muted">Systémová služba průběžně odvozuje profil pouze z ověřené podepsané topologie, nevytváří výchozí trasu a nezapíná forwarding. Privátní klíč se nepředává v argumentech procesu.</p>
     </section>
   </section>
 </template>

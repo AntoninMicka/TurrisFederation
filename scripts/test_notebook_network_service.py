@@ -1,5 +1,7 @@
 import importlib.util
+import base64
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,14 @@ class Result:
 
 
 class NotebookNetworkServiceTests(unittest.TestCase):
+    def vpn_plan(self):
+        return {'action': 'vpn_reconcile', 'schema': s.VPN_SCHEMA, 'revision': 3,
+                'address': '10.203.0.2/32',
+                'privateKey': base64.b64encode(b'k' * 32).decode(),
+                'peers': [{'publicKey': base64.b64encode(b'p' * 32).decode(),
+                           'endpoint': '10.43.192.54:51830',
+                           'allowedIps': ['10.203.0.54/32', '192.168.100.0/24']}]}
+
     def test_guard_is_scoped_to_forwarded_notebook_traffic(self):
         script = s.guard_script().decode()
         self.assertIn('hook forward', script)
@@ -76,6 +86,88 @@ class NotebookNetworkServiceTests(unittest.TestCase):
         for value in ['', 'xyz', '154a350c865f967f;', '154A350C865F967F']:
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'Network ID'):
                 s.zerotier_membership('join', value)
+
+    def test_vpn_plan_is_bounded_and_renders_without_commands(self):
+        plan = s.normalize_vpn_plan(self.vpn_plan())
+        config = s.render_wireguard(plan).decode()
+        self.assertIn('Address = 10.203.0.2/32', config)
+        self.assertIn('Endpoint = 10.43.192.54:51830', config)
+        self.assertNotIn('PostUp', config)
+        invalid = self.vpn_plan()
+        invalid['peers'][0]['allowedIps'] = ['0.0.0.0/0']
+        with self.assertRaisesRegex(ValueError, 'privátní'):
+            s.normalize_vpn_plan(invalid)
+        overlapping = self.vpn_plan()
+        overlapping['peers'].append({
+            'publicKey': base64.b64encode(b'q' * 32).decode(),
+            'endpoint': '10.43.192.84:51830', 'allowedIps': ['192.168.100.1/32']})
+        with self.assertRaisesRegex(ValueError, 'překrývají'):
+            s.normalize_vpn_plan(overlapping)
+
+    def test_vpn_runtime_requires_address_and_every_signed_route(self):
+        responses = [
+            Result(value=json.dumps([{'addr_info': [{'local': '10.203.0.2'}]}]).encode()),
+            Result(value=json.dumps([{'dst': '10.203.0.54'},
+                                     {'dst': '192.168.100.0/24'}]).encode()),
+        ]
+        with patch.object(s, 'command_path', return_value='/usr/sbin/ip'), \
+                patch.object(s, 'run', side_effect=responses):
+            runtime = s.verify_vpn_runtime(s.normalize_vpn_plan(self.vpn_plan()))
+        self.assertEqual(['10.203.0.54/32', '192.168.100.0/24'], runtime['routes'])
+
+        responses[-1] = Result(value=json.dumps([{'dst': '10.203.0.54/32'}]).encode())
+        with patch.object(s, 'command_path', return_value='/usr/sbin/ip'), \
+                patch.object(s, 'run', side_effect=responses), \
+                self.assertRaisesRegex(ValueError, 'chybí očekávané VPN routy'):
+            s.verify_vpn_runtime(s.normalize_vpn_plan(self.vpn_plan()))
+
+    def test_dispatch_reconciles_only_validated_vpn_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / 'config.json'
+            state = Path(temporary) / 'state.json'
+            config.write_text('{"allowedUid":1000}')
+            service = s.Service(config, Path(temporary) / 'service.sock', state)
+            with patch.object(s, 'apply_vpn_plan', return_value={
+                    'state': 'active', 'revision': 3, 'changed': True}) as reconcile, \
+                    patch.object(s, 'guard_status', return_value={'active': True}):
+                result = service.dispatch(self.vpn_plan(), 1000)
+            self.assertEqual('active', result['vpn']['state'])
+            reconcile.assert_called_once_with(self.vpn_plan())
+
+    def test_vpn_reconcile_imports_once_then_reactivates_persisted_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / 'vpn.json'
+            config = Path(temporary) / 'wireguard.conf'
+
+            def temporary_config(**_kwargs):
+                return os.open(config, os.O_CREAT | os.O_RDWR, 0o600), str(config)
+
+            calls = []
+            with patch.object(s, 'nmcli_connections', return_value={}), \
+                    patch.object(s, 'all_connection_uuids', side_effect=[set(), {'new-uuid'}]), \
+                    patch.object(s, 'active_uuids', return_value=set()), \
+                    patch.object(s, 'nmcli_path', return_value='/usr/bin/nmcli'), \
+                    patch.object(s, 'verify_vpn_runtime'), \
+                    patch.object(s.tempfile, 'mkstemp', side_effect=temporary_config), \
+                    patch.object(s, 'run', side_effect=lambda args, **kwargs: calls.append(args) or Result()):
+                result = s.apply_vpn_plan(self.vpn_plan(), state)
+
+            self.assertTrue(result['changed'])
+            self.assertIn(['/usr/bin/nmcli', 'connection', 'up', 'uuid', 'new-uuid'], calls)
+            persisted = json.loads(state.read_text())
+            self.assertEqual(3, persisted['revision'])
+            self.assertEqual(self.vpn_plan()['privateKey'], persisted['plan']['privateKey'])
+            self.assertNotIn(self.vpn_plan()['privateKey'], json.dumps(result))
+
+            calls = []
+            with patch.object(s, 'nmcli_connections', return_value={s.VPN_CONNECTION: 'new-uuid'}), \
+                    patch.object(s, 'active_uuids', return_value=set()), \
+                    patch.object(s, 'nmcli_path', return_value='/usr/bin/nmcli'), \
+                    patch.object(s, 'verify_vpn_runtime'), \
+                    patch.object(s, 'run', side_effect=lambda args, **kwargs: calls.append(args) or Result()):
+                repeated = s.apply_vpn_plan(self.vpn_plan(), state)
+            self.assertFalse(repeated['changed'])
+            self.assertIn(['/usr/bin/nmcli', 'connection', 'up', 'uuid', 'new-uuid'], calls)
 
     def test_unit_is_hardened_and_run_script_installs_versioned_service(self):
         unit = (ROOT / 'packaging/turris-federation-network.service').read_text()

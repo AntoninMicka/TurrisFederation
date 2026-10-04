@@ -510,18 +510,16 @@ class NotebookTests(unittest.TestCase):
         f.atomic(self.b.root / 'vpn-state.json', {'state': 'installed', 'activeUuid': old_uuid,
                  'backupUuid': None, 'revision': current['revision'], 'address': '10.203.0.3/32',
                  'routes': ['10.203.0.1/32', '192.168.1.0/24']})
-        calls = []
         with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
-                patch.object(n, 'verify_underlay', return_value='zt1234'), \
-                patch.object(n, 'nmcli_connections', return_value=managed), \
-                patch.object(n, 'nmcli_uuids', side_effect=[{old_uuid}, {old_uuid, new_uuid}]), \
-                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
-                patch.object(n, 'verify_vpn') as verify:
+                patch.object(n, 'system_network_request', return_value={
+                    'ok': True, 'vpn': {'state': 'active', 'revision': current['revision'] + 1,
+                                        'changed': True}}) as reconcile:
             result = n.command(self.b, {'action': 'topology_refresh_apply',
                                         'planId': plan['id'], 'confirm': True})
         self.assertEqual(('update', current['revision'] + 1, 'valid', 'installed'),
                          (result['kind'], result['revision'], result['access']['state'], result['vpn']['state']))
-        verify.assert_called_once_with('10.203.0.3', ['10.203.0.1/32', '192.168.2.0/24'])
+        applied = reconcile.call_args.args[0]
+        self.assertEqual(['10.203.0.1/32', '192.168.2.0/24'], applied['peers'][0]['allowedIps'])
         self.assertNotEqual(old_config, (self.b.root / 'wireguard.conf').read_bytes())
         self.assertEqual(identity, (self.b.root / 'key.pem').read_bytes())
         accepted = f.validate_document(f.verify(public, f.read(self.b.fleet / 'published.json')))
@@ -574,20 +572,16 @@ class NotebookTests(unittest.TestCase):
                 raise OSError('receipt failed')
             return real_atomic(path, value)
 
-        calls = []
         with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
-                patch.object(n, 'verify_underlay', return_value='zt1234'), \
-                patch.object(n, 'nmcli_connections', return_value=managed), \
-                patch.object(n, 'nmcli_uuids', side_effect=[{old_uuid}, {old_uuid, new_uuid}]), \
-                patch.object(n, 'privileged_nmcli', side_effect=lambda args, **kwargs: calls.append(args) or ''), \
-                patch.object(n, 'verify_vpn'), patch.object(f, 'atomic', side_effect=fail_receipt), \
+                patch.object(n, 'system_network_request', return_value={
+                    'ok': True, 'vpn': {'state': 'active', 'revision': current['revision'] + 1,
+                                        'changed': True}}) as reconcile, \
+                patch.object(f, 'atomic', side_effect=fail_receipt), \
                 self.assertRaisesRegex(ValueError, 'předchozí profil byl obnoven'):
             self.b.topology_refresh_apply(plan['id'])
         self.assertEqual(old_envelope, f.read(self.b.fleet / 'published.json'))
         self.assertEqual(old_config, (self.b.root / 'wireguard.conf').read_bytes())
-        self.assertIn(['connection', 'delete', 'uuid', new_uuid], calls)
-        self.assertIn(['connection', 'modify', 'uuid', old_uuid,
-                       'connection.id', n.VPN_CONNECTION], calls)
+        self.assertEqual(2, reconcile.call_count)
 
     def test_signed_revocation_disconnects_vpn_but_preserves_identity(self):
         self.onboard_user()
@@ -758,6 +752,23 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual('inactive', status['profileState'])
         self.assertFalse(status['setupRequired'])
         self.assertTrue(status['repairRequired'])
+
+    def test_system_vpn_reconcile_uses_only_verified_topology(self):
+        self.onboard_user()
+        with patch.object(n, 'system_network_request', return_value={
+                'ok': True, 'vpn': {'state': 'active', 'revision': 3, 'changed': True}}) as request:
+            result = self.b.reconcile_system_vpn()
+
+        plan = request.call_args.args[0]
+        self.assertEqual(n.SYSTEM_VPN_SCHEMA, plan['schema'])
+        self.assertEqual('10.203.0.3/32', plan['address'])
+        self.assertEqual(1, len(plan['peers']))
+        self.assertEqual('10.147.0.1:51830', plan['peers'][0]['endpoint'])
+        self.assertEqual(['10.203.0.1/32', '192.168.1.0/24'], plan['peers'][0]['allowedIps'])
+        self.assertEqual('active', result['state'])
+        receipt = f.read(self.b.root / 'vpn-state.json')
+        self.assertEqual(('installed', 'system-service', 3),
+                         (receipt['state'], receipt['managedBy'], receipt['revision']))
 
     def test_vpn_status_requires_one_update_for_legacy_receipt_without_config_hash(self):
         self.onboard_user()

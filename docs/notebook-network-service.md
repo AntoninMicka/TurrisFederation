@@ -12,10 +12,17 @@ jen následující úzký rozsah:
 - nftables guard, který zahazuje každý forwardovaný paket vstupující nebo
   vystupující přes `tf_notebook`;
 - čtení přítomnosti `tf_notebook`, jeho IPv4 rout a systémového forwardingu;
-- průběžnou obnovu chybějících nebo změněných pravidel guardu.
+- průběžnou obnovu chybějících nebo změněných pravidel guardu;
+- vytvoření a průběžný reconcile jediného NetworkManager/WireGuard profilu
+  `turris-federation` z požadovaného stavu předaného notebookovým backendem;
+- automatickou aktivaci profilu po restartu služby, ztrátě profilu nebo změně
+  fyzického připojení notebooku.
 
-Služba neobsahuje kořenový klíč federace, notebookové TLS/WireGuard privátní
-klíče, SSH údaje ani obecné rozhraní pro spouštění příkazů. Neautorizuje zařízení
+Služba neobsahuje kořenový klíč federace, notebookové TLS klíče, SSH údaje ani
+obecné rozhraní pro spouštění příkazů. WireGuard privátní klíč potřebný pro
+spravovaný profil přijme pouze přes lokální socket od povoleného UID a uloží jej
+do root-only požadovaného stavu; nepředává jej v argumentech procesu.
+Neautorizuje zařízení
 v ZeroTier Central a nemění forwarding pro ostatní rozhraní. Docker, libvirt a
 jiné lokální sítě proto mohou dál používat systémový forwarding; guard blokuje
 jen transit, jehož vstupem nebo výstupem je `tf_notebook`. Provoz místního hostu
@@ -26,9 +33,18 @@ v řetězcích input/output pravidla nemění.
 Socket je `/run/turris-federation/notebook-network.sock`. Vlastní jej `root` a
 primární skupina UID z `/etc/turris-federation/notebook-network.json`, má režim
 `0660` a server každý požadavek znovu ověřuje pomocí `SO_PEERCRED`. Povolené
-akce jsou pouze `status`, `reconcile`, `zerotier_join` a `zerotier_leave`.
+akce jsou pouze `status`, `reconcile`, `zerotier_join`, `zerotier_leave` a
+`vpn_reconcile`.
 Požadavek je jeden JSON řádek s limitem 64 KiB. Služba neimplementuje shell ani
 nepřijímá cesty či argumenty systémových příkazů.
+
+`vpn_reconcile` přijímá jen přesné schéma `tf-notebook-system-vpn-1`: klíče
+WireGuard, jednu privátní IPv4 `/32`, revizi a nejvýše 128 peerů. Endpoint musí
+být privátní číselná IPv4 na pevném portu 51830. Každý peer smí mít nejvýše 64
+nepřekrývajících se privátních IPv4 prefixů; výchozí, veřejné, IPv6 a
+překrývající se routy služba odmítne. Backend tento stav odvozuje pouze z
+lokálně ověřené podepsané topologie. Root služba sama podpis neověřuje, proto je
+socket záměrně omezený na jediné instalační UID a root.
 
 Vývojový instalátor uděluje tuto lokální síťovou autoritu jednomu UID, které
 výslovně spustilo `run.sh` a potvrdilo `sudo`. Produkční balíček má stejné
@@ -52,7 +68,10 @@ povolí pro start systému a restartuje ji. Instaluje:
 - `/etc/turris-federation/notebook-network.json`.
 
 Runtime socket vytváří systemd `RuntimeDirectory`; poslední sanitizovaná účtenka
-je v `/var/lib/turris-federation-notebook-network/state.json`. Pravidla jsou v
+je v `/var/lib/turris-federation-notebook-network/state.json`. Požadovaný VPN
+stav včetně privátního klíče je pouze pro root v
+`/var/lib/turris-federation-notebook-network/vpn.json`; uživatelský stav obsahuje
+jen revizi, hash a očekávané routy. Pravidla jsou v
 samostatné tabulce `inet turris_federation_notebook` a jejich nahrazení probíhá
 jednou nft transakcí. Služba cizí nftables tabulky nemění.
 
@@ -66,4 +85,12 @@ Na skutečném notebooku je nutné ověřit:
 4. pravidla přežijí restart a služba je po ručním odstranění obnoví;
 5. host dosáhne z `tf_notebook` na povolené cíle, ale pakety se mezi
    `tf_notebook` a fyzickým/Docker rozhraním nepřeposílají;
-6. vypnutí nebo chyba služby nesmaže existující guard pravidla.
+6. změna Wi-Fi/hotspotu nevyžaduje nový instalační plán a profil se automaticky
+   znovu aktivuje;
+7. změna podepsané topologie atomicky vymění profil, ověří jeho `/32` i všechny
+   routy a při chybě obnoví předchozí profil;
+8. vypnutí nebo chyba služby nesmaže existující guard pravidla.
+
+Body 6 a 7 jsou pokryté lokálními testy s nahrazenými systémovými příkazy.
+Skutečný NetworkManager, změna hotspotu a end-to-end WireGuard provoz zatím
+nejsou fyzicky ověřené.

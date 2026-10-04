@@ -186,6 +186,8 @@ export interface NotebookVpnStatus {
   profileState: "active" | "inactive" | "missing" | "unknown";
   setupRequired: boolean;
   repairRequired: boolean;
+  automatic: boolean;
+  automaticError?: string;
   forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
   error?: string;
   rollbackComplete?: boolean;

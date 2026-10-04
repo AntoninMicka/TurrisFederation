@@ -155,10 +155,15 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     Wi-Fi trasu. Stav VPN nově porovnává instalační záznam se skutečným profilem
     NetworkManageru a rozlišuje `active`, `inactive`, `missing` a `unknown`.
     Chybějící nebo neaktivní profil zobrazí jako nedokončené/porouchané místní
-    nastavení a tray jej nesmí vydávat za připojení. Jednorázová instalace stále
-    vyžaduje polkit potvrzení; vytvořený profil má ověřené
-    `connection.autoconnect=yes`, takže samotná změna Wi-Fi nebo hotspotu další
-    plán ani otevření aplikace nevyžaduje.
+    nastavení a tray jej nesmí vydávat za připojení. Nová vývojová implementace
+    přesouvá instalaci i průběžnou opravu profilu do omezené systémové síťové
+    služby. Uživatelský backend jí po lokálním ověření podpisu posílá pouze
+    přesné schéma s jednou `/32`, privátními endpointy a nepřekrývajícími se
+    privátními routami; služba zakazuje default route, zapíná autoconnect,
+    kontroluje skutečnou adresu a routy a při chybě obnoví předchozí profil.
+    Statický polkit plán zůstává dočasný fallback. Lokální testy prošly, ale
+    automatické vytvoření profilu, změna hotspotu a end-to-end provoz na `tony`
+    ještě vyžadují fyzickou akceptaci.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální
@@ -167,8 +172,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     [instalace notebooku](docs/notebook-installation.md).
   - [~] Oddělit privilegovanou síťovou vrstvu notebooku do systémové služby.
     Vývojová implementace poskytuje sanitizovaný ZeroTier stav, omezené
-    join/leave, nftables guard a instalaci/aktualizaci z `run.sh`; zbývá fyzická
-    akceptace, polkit politika produkčního balíčku a napojení všech VPN změn.
+    join/leave, nftables guard, automatický reconcile NetworkManager/WireGuard
+    profilu a instalaci/aktualizaci z `run.sh`; zbývá fyzická akceptace,
+    produkční oprávnění socketu a ověření odvolání členství.
     Návrh: [síťová služba notebooku](docs/notebook-network-service.md).
 - [ ] **P0: Nasazení ZeroTier podle hlášení uživatele nefunguje.** Získat výstup
   selhání a verzi Turris OS, reprodukovat, opravit instalaci/nastavení a ověřit

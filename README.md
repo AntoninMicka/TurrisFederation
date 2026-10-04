@@ -69,11 +69,12 @@ autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md
 
 Notebooky jsou v podepsané topologii samostatné koncové WireGuard uzly s rolí
 administrátora nebo uživatele. Neinzerují fyzickou LAN a router pro každý z nich
-přijímá pouze jeho tunelovou `/32`. Změna podepsané topologie sama nepřepisuje
-aktivní NetworkManager profil: aplikace zobrazí, že VPN vyžaduje aktualizaci,
-vypíše očekávané routy a výměnu profilu provede až po výslovném potvrzení přes
-polkit. Kontrola místního ZeroTier a VPN stavu vyžaduje přístup místního
-uživatele k příslušným systémovým službám.
+přijímá pouze jeho tunelovou `/32`. Po jednorázové instalaci úzce omezené
+systémové služby uživatelský backend průběžně odvozuje požadovaný VPN profil z
+ověřené podepsané topologie. Služba jej vytvoří, aktivuje a obnovuje při změně
+Wi-Fi, hotspotu nebo restartu; nevytváří výchozí trasu ani forwarding. Ruční
+polkit instalační tok dočasně zůstává jako nouzová cesta do fyzické akceptace
+automatického reconcile.
 
 **Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;
 oprava je zatím v [TODO](ROADMAP.md). Implementovaný deploy byl zkontrolován

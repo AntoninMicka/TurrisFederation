@@ -97,8 +97,8 @@ Průvodce prvním spuštěním provede tyto oddělené kroky:
    druhé potvrzení skutečné adresy vydá podepsané pověření člena.
 6. Po ověření podpisu a otisku uloží pověření a topologii, zapne
    `turris-federation-backend.service` v uživatelské relaci a nakonfiguruje
-   koncové VPN připojení. Nutné privilegované síťové kroky projdou samostatným
-   potvrzením polkit; backend nezíská obecné oprávnění `root`.
+   koncové VPN připojení. Jednorázově nainstalovaná omezená systémová služba
+   potom profil automaticky udržuje; backend nezíská obecné oprávnění `root`.
 7. Spustí místní kontrolu transportu, WireGuardu, rout a povoleného cíle.
    Úspěch instalace a úspěch připojení zobrazí jako dva oddělené výsledky.
 8. Spustí klienta stavové lišty a otevře UI odpovídající podepsané roli.
@@ -128,9 +128,10 @@ nikdy nepředá. Stejné podepsané JSON balíčky zůstávají v rozhraní jako
 ruční přenos pro sítě bez multicastu nebo s blokovaným portem 8857. Po finálním
 přijetí vznikne soukromý soubor `wireguard.conf` s adresou `/32`,
 routerovými peery a jejich federovanými LAN prefixy. Soubor se instaluje až po
-samostatném deset minut platném plánu a potvrzení v UI. Instalační tok spouští
-přes polkit pouze systémový `nmcli`, nikoli skript z uživatelského datového
-adresáře. Místní diagnostika může při nedostatečném oprávnění samostatně
+ověření podepsané topologie. Backend předá přes lokální socket pouze omezený
+požadovaný stav; systémová služba sama importuje profil přes `nmcli`, zapne
+autoconnect a průběžně jej obnovuje. Starší deset minut platný polkit plán
+zůstává do fyzické akceptace nouzovou cestou. Místní diagnostika může při nedostatečném oprávnění samostatně
 vyžádat pouze read-only příkaz systémového `wg` pro časy handshake. Importovaný
 profil používá rozhraní `tf_notebook`, `never-default`
 pro IPv4 i IPv6 a pouze podepsané routy. Federované routy mají vysokou metriku,
@@ -142,9 +143,9 @@ ověří, že podepsaná ZeroTier adresa i cesty k endpointům routerů skutečn
 používají jedno konkrétní rozhraní `zt…`.
 Stávající WireGuard profil stejného jména zachová
 jako obnovovací kopii; neúspěšná kontrola adresy nebo rout spustí automatický
-rollback a UI nabízí také výslovný návrat. Tento tok zatím prošel pouze testy
-s nahrazenými systémovými příkazy, nikoli reálným polkit potvrzením a aktivací
-tunelu.
+rollback; u nouzového ručního toku UI nabízí také výslovný návrat. Automatický
+tok zatím prošel pouze testy s nahrazenými systémovými příkazy, nikoli reálnou
+aktivací tunelu ani změnou hotspotu.
 
 Explicitní místní kontrola navíc ověřuje aktivní profil, rozhraní, podepsanou
 adresu, všechny očekávané routy a hlásí stav forwardingu. Pět WireGuard pingů pro

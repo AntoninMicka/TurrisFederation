@@ -4,7 +4,7 @@ import { vpnHeadline, vpnPlanLabel } from "./vpnStatus";
 
 function status(overrides: Partial<NotebookVpnStatus> = {}): NotebookVpnStatus {
   return { state: "installed", updateAvailable: false, profileState: "active",
-    setupRequired: false, repairRequired: false, ...overrides };
+    setupRequired: false, repairRequired: false, automatic: true, ...overrides };
 }
 
 describe("notebook VPN update state", () => {

@@ -53,6 +53,8 @@ VPN_REPLACED = 'turris-federation-replaced'
 VPN_INTERFACE = 'tf_notebook'
 VPN_PLAN_TTL = 10 * 60
 VPN_HANDSHAKE_MAX_AGE = 180
+SYSTEM_NETWORK_SOCKET = Path('/run/turris-federation/notebook-network.sock')
+SYSTEM_VPN_SCHEMA = 'tf-notebook-system-vpn-1'
 NETWORK_ENROLLMENT_SCHEMA = 'tf-notebook-network-enrollment-1'
 
 
@@ -216,6 +218,31 @@ def privileged_nmcli(args):
     if any(not isinstance(value, str) or '\x00' in value or '\n' in value for value in args):
         raise ValueError('Neplatný parametr NetworkManageru.')
     return local_command(['/usr/bin/pkexec', '/usr/bin/nmcli', *args])
+
+
+def system_network_request(request):
+    raw = f.encode(request) + b'\n'
+    if len(raw) > LOCAL_LIMIT:
+        raise ValueError('Systémový síťový požadavek je příliš velký.')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(35)
+        client.connect(str(SYSTEM_NETWORK_SOCKET))
+        client.sendall(raw)
+        response = b''
+        while not response.endswith(b'\n'):
+            chunk = client.recv(min(65536, LOCAL_LIMIT + 1 - len(response)))
+            if not chunk:
+                break
+            response += chunk
+            if len(response) > LOCAL_LIMIT:
+                raise ValueError('Systémová síťová služba vrátila příliš velkou odpověď.')
+    try:
+        result = json.loads(response)
+    except json.JSONDecodeError as error:
+        raise ValueError('Systémová síťová služba vrátila neplatnou odpověď.') from error
+    if result.get('ok') is not True:
+        raise ValueError(result.get('error', 'Systémová síťová služba odmítla VPN plán.'))
+    return result
 
 
 def wireguard_handshakes():
@@ -686,10 +713,9 @@ class Store:
 
     def topology_refresh_plan(self, raw):
         update, current_envelope, current, proposed, notebook = self.validate_topology_update(raw)
-        required = ['/usr/bin/nmcli', '/usr/bin/pkexec'] + (['/usr/sbin/ip'] if notebook else [])
-        if not all(Path(path).exists() for path in required):
-            raise ValueError('Aktualizace topologie vyžaduje NetworkManager a polkit.')
-        managed = nmcli_connections()
+        if not notebook and not all(Path(path).exists() for path in ['/usr/bin/nmcli', '/usr/bin/pkexec']):
+            raise ValueError('Odvolání členství vyžaduje NetworkManager a polkit.')
+        managed = nmcli_connections() if not notebook else {}
         current_routes = self.routes_for(current)
         proposed_routes = self.routes_for(proposed) if notebook else []
         kind = 'update' if notebook else 'revoked'
@@ -703,19 +729,18 @@ class Store:
                 'rollbackConnection': managed.get(VPN_BACKUP)}
         if notebook:
             forwarding = self.forwarding_state()
-            underlay = verify_underlay(notebook['zeroTierAddress'], proposed)
             config = self.wireguard_config(proposed, notebook)
             f.atomic(self.root / 'wireguard-refresh.conf', config)
             plan.update({'configHash': hashlib.sha256(config).hexdigest(),
                          'connectionName': VPN_CONNECTION, 'interfaceName': VPN_INTERFACE,
                          'address': notebook['wireguardAddress'] + '/32',
-                         'zeroTierAddress': notebook['zeroTierAddress'], 'underlayDevice': underlay,
+                         'zeroTierAddress': notebook['zeroTierAddress'],
                          'forwarding': forwarding,
                          'steps': [
                              'Znovu ověřit podpis, federaci, návaznost a místní WireGuard identitu.',
-                             'Přes polkit vytvořit nový NetworkManager profil z nové revize.',
-                             'Předchozí profil zachovat jako obnovovací kopii.',
-                             'Ověřit adresu a routy; aktivní systémový forwarding zobrazit jako varování.',
+                             'Předat omezený požadovaný stav systémové síťové službě.',
+                             'Atomicky vytvořit profil a předchozí zachovat jako obnovovací kopii.',
+                             'Ověřit adresu a všechny routy; aktivní forwarding pouze zobrazit.',
                              'Při selhání obnovit předchozí profil i podepsanou revizi.',
                          ]})
         else:
@@ -757,6 +782,47 @@ class Store:
         # installation plan cannot silently import routes from an older revision.
         self.write_wireguard_config(document)
         return document, notebook, config, routes
+
+    def system_vpn_plan(self, document=None, notebook=None):
+        if document is None or notebook is None:
+            document, notebook, routes = self.verified_vpn_target()
+        else:
+            routes = self.routes_for(document)
+        peers = []
+        for router in document['config']['nodes']:
+            member = document['members'].get(router['id'])
+            if not member:
+                continue
+            peers.append({
+                'publicKey': member['wireguardKey'],
+                'endpoint': router['zeroTierAddress'] + ':' + str(f.WG_PORT),
+                'allowedIps': [router['wireguardAddress'] + '/32'] + router['lanCidrs'],
+            })
+        if not peers:
+            raise ValueError('Podepsaná topologie neobsahuje žádný VPN router.')
+        return {'action': 'vpn_reconcile', 'schema': SYSTEM_VPN_SCHEMA,
+                'revision': document['revision'],
+                'address': notebook['wireguardAddress'] + '/32',
+                'privateKey': (self.root / 'wireguard.key').read_text().strip(),
+                'peers': peers, 'routes': routes}
+
+    def reconcile_system_vpn(self, document=None, notebook=None, write_receipt=True):
+        plan = self.system_vpn_plan(document, notebook)
+        routes = plan.pop('routes')
+        # Routes are derived above for local comparison, but the privileged
+        # service derives them again exclusively from the bounded peer list.
+        result = system_network_request(plan)['vpn']
+        if result.get('state') == 'active' and write_receipt:
+            if document is None or notebook is None:
+                document, notebook, _ = self.verified_vpn_target()
+            config_hash = hashlib.sha256(self.wireguard_config(document, notebook)).hexdigest()
+            f.atomic(self.root / 'vpn-state.json', {
+                'state': 'installed', 'revision': document['revision'],
+                'installedAt': time.time(), 'managedBy': 'system-service',
+                'address': notebook['wireguardAddress'] + '/32', 'routes': routes,
+                'configHash': config_hash, 'forwarding': self.forwarding_state(),
+            })
+        return result
 
     @staticmethod
     def forwarding_state():
@@ -918,18 +984,6 @@ class Store:
             raise ValueError('Připravená VPN konfigurace se změnila.')
         old_config = (self.root / 'wireguard.conf').read_bytes() if (self.root / 'wireguard.conf').exists() else None
 
-        def commit():
-            try:
-                f.atomic(self.root / 'wireguard.conf', config.read_bytes())
-                f.atomic(self.fleet / 'published.json', update['published'])
-            except Exception:
-                if old_config is None:
-                    (self.root / 'wireguard.conf').unlink(missing_ok=True)
-                else:
-                    f.atomic(self.root / 'wireguard.conf', old_config)
-                f.atomic(self.fleet / 'published.json', current_envelope)
-                raise
-
         def restore():
             if old_config is None:
                 (self.root / 'wireguard.conf').unlink(missing_ok=True)
@@ -937,11 +991,29 @@ class Store:
                 f.atomic(self.root / 'wireguard.conf', old_config)
             f.atomic(self.fleet / 'published.json', current_envelope)
 
-        vpn = self.activate_vpn(plan, proposed, notebook, config, routes, plan_path,
-                                commit=commit, restore=restore)
+        try:
+            f.atomic(self.root / 'wireguard.conf', config.read_bytes())
+            f.atomic(self.fleet / 'published.json', update['published'])
+            self.reconcile_system_vpn(proposed, notebook)
+        except Exception as error:
+            restore_errors = []
+            try:
+                restore()
+            except Exception as restore_error:
+                restore_errors.append(str(restore_error))
+            try:
+                old_notebook = next(item for item in f.notebook_endpoints(current)
+                                    if item['id'] == self.id)
+                self.reconcile_system_vpn(current, old_notebook, write_receipt=False)
+            except Exception as restore_error:
+                restore_errors.append(str(restore_error))
+            raise ValueError('Aktualizace VPN selhala; ' +
+                             ('předchozí profil byl obnoven.' if not restore_errors
+                              else 'automatickou obnovu se nepodařilo dokončit.')) from error
+        plan_path.unlink(missing_ok=True)
         config.unlink(missing_ok=True)
         (self.root / 'vpn-diagnostics.json').unlink(missing_ok=True)
-        return {'access': self.access_status(), 'vpn': vpn,
+        return {'access': self.access_status(), 'vpn': self.vpn_status(),
                 'revision': proposed['revision'], 'kind': 'update'}
 
     def vpn_rollback(self):
@@ -1007,6 +1079,10 @@ class Store:
         result.setdefault('updateAvailable', False)
         result.setdefault('setupRequired', False)
         result.setdefault('repairRequired', False)
+        automation = f.read(self.root / 'vpn-reconcile.json', {})
+        result['automatic'] = automation.get('state') == 'active'
+        if automation.get('state') == 'error':
+            result['automaticError'] = automation.get('error', 'Automatická správa VPN selhala.')
         diagnostics = f.read(self.root / 'vpn-diagnostics.json')
         if diagnostics:
             result['diagnostics'] = diagnostics
@@ -2066,6 +2142,20 @@ def serve(store):
     stopped = threading.Event()
     enrollment_worker = threading.Thread(target=serve_enrollment, args=(store, stopped), daemon=True)
     enrollment_worker.start()
+    def reconcile_vpn():
+        while not stopped.is_set():
+            runtime = {'checkedAt': time.time(), 'state': 'idle'}
+            try:
+                access = store.access_status()
+                if access.get('state') == 'valid' and access.get('role') in ['administrator', 'user']:
+                    runtime.update(store.reconcile_system_vpn(), state='active')
+            except Exception as error:
+                runtime.update(state='error', error=str(error) if type(error) is ValueError
+                               else 'Automatická správa VPN selhala.')
+            f.atomic(store.root / 'vpn-reconcile.json', runtime)
+            stopped.wait(10)
+    vpn_worker = threading.Thread(target=reconcile_vpn, name='vpn-reconcile', daemon=True)
+    vpn_worker.start()
     try:
         config = f.read(store.root / 'config.json', {})
         if config.get('enabled'):
@@ -2076,6 +2166,7 @@ def serve(store):
                 time.sleep(3600)
     finally:
         stopped.set()
+        vpn_worker.join(timeout=2)
         local.shutdown()
         local.server_close()
         local.socket_path.unlink(missing_ok=True)

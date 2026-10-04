@@ -86,11 +86,11 @@ historie. Pokud některé chybějí, nejdřív slučte návrhy běžným importe
 Pokud obě větve publikovaly různé podepsané revize, řešení konfliktu vynutí při
 příštím publikování vyšší číslo než obě větve. Po vyřešení použijte běžnou akci
 **Podepsat a synchronizovat opravy**. Samotný notebookový sync nespouští deploy
-ani publikování do routerů a bez potvrzení nemění aktivní systémový VPN profil.
-Pokud synchronizovaná podepsaná topologie obsahuje jiné routy než nainstalovaný
-profil, přehled označí VPN jako vyžadující aktualizaci a nabídne nový plán se
-seznamem očekávaných rout. Teprve potvrzená instalace přes polkit vymění profil;
-stavová lišta do té doby nesmí hlásit plné připojení. Současné offline
+ani publikování do routerů. Pokud však přenese platnou podepsanou topologii,
+uživatelský backend z ní automaticky odvodí požadovaný VPN profil a omezená
+systémová služba jej atomicky sjednotí s NetworkManagerem. Při chybě ponechá či
+obnoví předchozí profil a stavová lišta nesmí hlásit plné připojení. Ruční
+polkit plán zůstává do fyzické akceptace fallback. Současné offline
 publikování ze dvou notebooků může na routerech narazit na konflikt stejné
 revize; nejde o distribuovaný konsenzus.
 

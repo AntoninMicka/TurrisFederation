@@ -2,7 +2,11 @@
 """Privileged, narrowly scoped network service for a federation notebook."""
 
 import argparse
+import base64
+import binascii
 import datetime
+import hashlib
+import ipaddress
 import json
 import os
 import pwd
@@ -11,6 +15,7 @@ import socket
 import socketserver
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -18,10 +23,18 @@ from pathlib import Path
 SOCKET_PATH = Path('/run/turris-federation/notebook-network.sock')
 CONFIG_PATH = Path('/etc/turris-federation/notebook-network.json')
 STATE_PATH = Path('/var/lib/turris-federation-notebook-network/state.json')
+VPN_STATE_PATH = Path('/var/lib/turris-federation-notebook-network/vpn.json')
 VPN_INTERFACE = 'tf_notebook'
+VPN_CONNECTION = 'turris-federation'
+VPN_BACKUP = 'turris-federation-rollback'
+VPN_SCHEMA = 'tf-notebook-system-vpn-1'
+WG_PORT = 51830
 NFT_TABLE = 'turris_federation_notebook'
 LIMIT = 64 * 1024
 NETWORK_ID = re.compile(r'^[0-9a-f]{16}$')
+WG_KEY = re.compile(r'^[A-Za-z0-9+/]{43}=$')
+PRIVATE_V4 = tuple(ipaddress.ip_network(value) for value in [
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'])
 
 
 def atomic_json(path, value):
@@ -188,6 +201,223 @@ def network_status(network_id=None):
             'forwarding': forwarding}
 
 
+def wireguard_key(value):
+    if not isinstance(value, str) or not WG_KEY.fullmatch(value):
+        raise ValueError('Neplatný WireGuard klíč.')
+    try:
+        if len(base64.b64decode(value, validate=True)) != 32:
+            raise ValueError('Neplatný WireGuard klíč.')
+    except (ValueError, binascii.Error) as error:
+        raise ValueError('Neplatný WireGuard klíč.') from error
+    return value
+
+
+def private_ipv4(value, prefix=None):
+    if not isinstance(value, str):
+        raise ValueError('VPN plán obsahuje neplatnou IPv4 adresu.')
+    try:
+        item = ipaddress.ip_interface(value) if '/' in value else ipaddress.ip_address(value)
+    except ValueError as error:
+        raise ValueError('VPN plán obsahuje neplatnou IPv4 adresu.') from error
+    address = item.ip if isinstance(item, ipaddress.IPv4Interface) else item
+    if address.version != 4 or not any(address in network for network in PRIVATE_V4):
+        raise ValueError('VPN plán smí používat pouze privátní IPv4 adresy.')
+    if prefix is not None and (not isinstance(item, ipaddress.IPv4Interface) or item.network.prefixlen != prefix):
+        raise ValueError('VPN adresa notebooku musí být host route /32.')
+    return str(item)
+
+
+def normalize_vpn_plan(request):
+    if not isinstance(request, dict) or set(request) != {
+            'action', 'schema', 'revision', 'address', 'privateKey', 'peers'}:
+        raise ValueError('Neplatný formát systémového VPN plánu.')
+    if request['action'] != 'vpn_reconcile' or request['schema'] != VPN_SCHEMA:
+        raise ValueError('Neplatné schéma systémového VPN plánu.')
+    if not isinstance(request['revision'], int) or request['revision'] < 1:
+        raise ValueError('Neplatná revize VPN plánu.')
+    address = private_ipv4(request['address'], 32)
+    private_key = wireguard_key(request['privateKey'])
+    peers = request['peers']
+    if not isinstance(peers, list) or not 1 <= len(peers) <= 128:
+        raise ValueError('VPN plán musí obsahovat omezený seznam routerů.')
+    normalized, networks = [], []
+    for peer in peers:
+        if not isinstance(peer, dict) or set(peer) != {'publicKey', 'endpoint', 'allowedIps'}:
+            raise ValueError('Neplatný WireGuard peer.')
+        public_key = wireguard_key(peer['publicKey'])
+        try:
+            host, port = peer['endpoint'].rsplit(':', 1)
+        except (AttributeError, ValueError) as error:
+            raise ValueError('Neplatný WireGuard endpoint.') from error
+        private_ipv4(host)
+        if port != str(WG_PORT):
+            raise ValueError('WireGuard endpoint používá nepovolený port.')
+        allowed = peer['allowedIps']
+        if not isinstance(allowed, list) or not 1 <= len(allowed) <= 64:
+            raise ValueError('WireGuard peer nemá platné routy.')
+        clean = []
+        for cidr in allowed:
+            try:
+                network = ipaddress.ip_network(cidr, strict=True)
+            except (TypeError, ValueError) as error:
+                raise ValueError('WireGuard peer obsahuje neplatnou routu.') from error
+            if network.version != 4 or not any(network.subnet_of(private) for private in PRIVATE_V4):
+                raise ValueError('WireGuard routy musí být privátní IPv4 prefixy.')
+            if any(network.overlaps(existing) for existing in networks):
+                raise ValueError('WireGuard routy peerů se překrývají.')
+            networks.append(network)
+            clean.append(str(network))
+        normalized.append({'publicKey': public_key, 'endpoint': host + ':' + port,
+                           'allowedIps': sorted(clean)})
+    return {'schema': VPN_SCHEMA, 'revision': request['revision'], 'address': address,
+            'privateKey': private_key, 'peers': sorted(normalized, key=lambda item: item['publicKey'])}
+
+
+def render_wireguard(plan):
+    lines = ['[Interface]', 'PrivateKey = ' + plan['privateKey'],
+             'Address = ' + plan['address'], 'ListenPort = 0', '']
+    for peer in plan['peers']:
+        lines.extend(['[Peer]', 'PublicKey = ' + peer['publicKey'],
+                      'Endpoint = ' + peer['endpoint'],
+                      'AllowedIPs = ' + ', '.join(peer['allowedIps']),
+                      'PersistentKeepalive = 25', ''])
+    return ('\n'.join(lines)).encode()
+
+
+def nmcli_path():
+    path = command_path(['/usr/bin/nmcli', '/bin/nmcli'])
+    if not path:
+        raise ValueError('NetworkManager není nainstalovaný.')
+    return path
+
+
+def nmcli_connections():
+    output = run([nmcli_path(), '-t', '-f', 'UUID,NAME,TYPE', 'connection', 'show']).stdout.decode()
+    result = {}
+    for line in output.splitlines():
+        fields = line.split(':', 2)
+        if len(fields) == 3 and fields[1] in [VPN_CONNECTION, VPN_BACKUP] and fields[2] == 'wireguard':
+            if fields[1] in result:
+                raise ValueError('NetworkManager obsahuje duplicitní spravované VPN profily.')
+            result[fields[1]] = fields[0]
+    return result
+
+
+def active_uuids():
+    output = run([nmcli_path(), '-t', '-f', 'UUID', 'connection', 'show', '--active']).stdout.decode()
+    return set(output.splitlines())
+
+
+def all_connection_uuids():
+    output = run([nmcli_path(), '-t', '-f', 'UUID', 'connection', 'show']).stdout.decode()
+    return set(output.splitlines())
+
+
+def verify_vpn_runtime(plan):
+    ip = command_path(['/usr/sbin/ip', '/usr/bin/ip'])
+    if not ip:
+        raise ValueError('Nástroj ip není nainstalovaný.')
+    try:
+        addresses = json.loads(run(
+            [ip, '-j', '-4', 'address', 'show', 'dev', VPN_INTERFACE]).stdout)
+        routes = json.loads(run(
+            [ip, '-j', '-4', 'route', 'show', 'dev', VPN_INTERFACE]).stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError('Systém nevrátil ověřitelný stav VPN.') from error
+    expected_address = plan['address'].split('/', 1)[0]
+    present_addresses = {
+        address.get('local')
+        for link in addresses if isinstance(link, dict)
+        for address in link.get('addr_info', []) if isinstance(address, dict)
+    }
+    if expected_address not in present_addresses:
+        raise ValueError('Po aktivaci chybí přidělená VPN adresa.')
+    present_routes = set()
+    for route in routes:
+        destination = route.get('dst') if isinstance(route, dict) else None
+        if not isinstance(destination, str) or destination == 'default':
+            continue
+        if '/' not in destination:
+            destination += '/32'
+        try:
+            present_routes.add(str(ipaddress.ip_network(destination, strict=True)))
+        except ValueError:
+            continue
+    expected_routes = {
+        cidr for peer in plan['peers'] for cidr in peer['allowedIps']
+    }
+    missing = sorted(expected_routes - present_routes)
+    if missing:
+        raise ValueError('Po aktivaci chybí očekávané VPN routy: ' + ', '.join(missing))
+    return {'address': expected_address, 'routes': sorted(expected_routes)}
+
+
+def apply_vpn_plan(raw_plan, state_path=VPN_STATE_PATH):
+    plan = normalize_vpn_plan(raw_plan)
+    config = render_wireguard(plan)
+    desired_hash = hashlib.sha256(config).hexdigest()
+    stored = {}
+    try:
+        stored = json.loads(Path(state_path).read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    managed = nmcli_connections()
+    current = managed.get(VPN_CONNECTION)
+    if current and stored.get('configHash') == desired_hash:
+        run([nmcli_path(), 'connection', 'modify', 'uuid', current,
+             'connection.autoconnect', 'yes', 'ipv4.never-default', 'yes',
+             'ipv6.never-default', 'yes', 'wireguard.peer-routes', 'yes'])
+        if current not in active_uuids():
+            run([nmcli_path(), 'connection', 'up', 'uuid', current], timeout=30)
+        verify_vpn_runtime(plan)
+        return {'state': 'active', 'revision': plan['revision'], 'changed': False}
+    backup = managed.get(VPN_BACKUP)
+    new_uuid = None
+    created_uuids = set()
+    try:
+        if backup:
+            run([nmcli_path(), 'connection', 'delete', 'uuid', backup])
+        if current:
+            run([nmcli_path(), 'connection', 'modify', 'uuid', current,
+                 'connection.id', VPN_BACKUP])
+            run([nmcli_path(), 'connection', 'down', 'uuid', current], check=False)
+        before = all_connection_uuids()
+        descriptor, temporary = tempfile.mkstemp(prefix='tf-vpn-', suffix='.conf', dir='/run')
+        try:
+            os.write(descriptor, config)
+            os.close(descriptor)
+            descriptor = None
+            os.chmod(temporary, 0o600)
+            run([nmcli_path(), 'connection', 'import', 'type', 'wireguard', 'file', temporary])
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            Path(temporary).unlink(missing_ok=True)
+        after = all_connection_uuids()
+        created_uuids = after - before
+        if len(created_uuids) != 1:
+            raise ValueError('NetworkManager nepotvrdil právě jeden nový VPN profil.')
+        new_uuid = next(iter(created_uuids))
+        run([nmcli_path(), 'connection', 'modify', 'uuid', new_uuid,
+             'connection.id', VPN_CONNECTION, 'connection.interface-name', VPN_INTERFACE,
+             'connection.autoconnect', 'yes', 'ipv4.never-default', 'yes',
+             'ipv6.never-default', 'yes', 'ipv4.route-metric', '2048',
+             'ipv6.route-metric', '2048', 'wireguard.peer-routes', 'yes'])
+        run([nmcli_path(), 'connection', 'up', 'uuid', new_uuid], timeout=30)
+        verify_vpn_runtime(plan)
+        atomic_json(state_path, {'schema': VPN_SCHEMA, 'revision': plan['revision'],
+                                 'configHash': desired_hash, 'plan': plan})
+        return {'state': 'active', 'revision': plan['revision'], 'changed': True}
+    except Exception:
+        for profile_uuid in created_uuids:
+            run([nmcli_path(), 'connection', 'delete', 'uuid', profile_uuid], check=False)
+        if current:
+            run([nmcli_path(), 'connection', 'modify', 'uuid', current,
+                 'connection.id', VPN_CONNECTION], check=False)
+            run([nmcli_path(), 'connection', 'up', 'uuid', current], check=False, timeout=30)
+        raise
+
+
 class Service:
     def __init__(self, config_path=CONFIG_PATH, socket_path=SOCKET_PATH, state_path=STATE_PATH):
         config = json.loads(Path(config_path).read_text())
@@ -198,6 +428,7 @@ class Service:
         self.socket_path = Path(socket_path)
         self.state_path = Path(state_path)
         self.stop = threading.Event()
+        self.vpn_lock = threading.Lock()
 
     def authorize(self, connection):
         if not hasattr(socket, 'SO_PEERCRED'):
@@ -220,6 +451,9 @@ class Service:
             result = {'zerotier': zerotier_membership('join', network_id)}
         elif action == 'zerotier_leave':
             result = {'zerotier': zerotier_membership('leave', network_id)}
+        elif action == 'vpn_reconcile':
+            with self.vpn_lock:
+                result = {'vpn': apply_vpn_plan(request)}
         else:
             raise ValueError('Neznámá akce síťové služby.')
         atomic_json(self.state_path, {'checkedAt': time.time(), 'action': action, 'uid': uid,
@@ -234,6 +468,16 @@ class Service:
             except Exception:
                 atomic_json(self.state_path, {'checkedAt': time.time(), 'action': 'monitor',
                                               'ok': False, 'error': 'Blokovací pravidla nelze obnovit.'})
+            try:
+                desired = json.loads(VPN_STATE_PATH.read_text()).get('plan')
+                if desired:
+                    with self.vpn_lock:
+                        apply_vpn_plan({'action': 'vpn_reconcile', **desired})
+            except FileNotFoundError:
+                pass
+            except Exception:
+                atomic_json(self.state_path, {'checkedAt': time.time(), 'action': 'vpn-monitor',
+                                              'ok': False, 'error': 'VPN profil nelze automaticky obnovit.'})
 
     def serve(self):
         apply_guard()
