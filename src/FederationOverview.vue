@@ -257,6 +257,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         <p v-if="vpnDiagnostics.forwarding.ipv4 !== false || vpnDiagnostics.forwarding.ipv6 !== false" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Profil ho nezapíná ani nemění, ale endpoint-only izolace není potvrzená.</p>
         <p v-if="vpnDiagnostics.missingRoutes.length" class="warning">Chybějící routy: <code>{{ vpnDiagnostics.missingRoutes.join(", ") }}</code></p>
         <p v-if="vpnDiagnostics.unknownRoutes.length" class="warning">Routy, které nelze ověřit: <code>{{ vpnDiagnostics.unknownRoutes.join(", ") }}</code></p>
+        <p v-if="vpnDiagnostics.shadowedRoutes?.length" class="warning">Routy překryté místní sítí: <code>{{ vpnDiagnostics.shadowedRoutes.map(route => `${route.cidr} → ${route.selectedDevice}`).join(", ") }}</code>. Stejný prefix používá aktuální LAN nebo hotspot; provoz proto nejde do federované VPN.</p>
         <p v-if="!vpnDiagnosticFresh && vpnDiagnostics.revision !== overview?.revision" class="muted">Výsledek patří jiné revizi topologie; po aktualizaci VPN spusťte novou místní kontrolu.</p>
         <p v-else-if="!vpnDiagnosticFresh" class="muted">Výsledek je starší než 120 sekund; spusťte novou místní kontrolu.</p>
       </template>

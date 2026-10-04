@@ -265,6 +265,23 @@ def vpn_route_set():
     return result
 
 
+def route_probe_address(cidr):
+    network = ipaddress.ip_network(cidr, strict=True)
+    if network.version != 4:
+        raise ValueError('Notebooková VPN podporuje pouze IPv4 routy.')
+    return str(network.network_address if network.num_addresses == 1 else network.network_address + 1)
+
+
+def selected_route_device(cidr):
+    items = json.loads(local_command(
+        ['/usr/sbin/ip', '-j', '-4', 'route', 'get', route_probe_address(cidr)]))
+    devices = {item.get('dev') for item in items if isinstance(item, dict)
+               and isinstance(item.get('dev'), str)}
+    if len(devices) != 1:
+        raise ValueError('Systém neurčil jednoznačné výstupní rozhraní pro routu ' + cidr + '.')
+    return devices.pop()
+
+
 def verify_underlay(address, document):
     links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show']))
     devices = {link.get('ifname') for link in links for item in link.get('addr_info', [])
@@ -1023,14 +1040,31 @@ class Store:
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
             address_assigned = None
 
+        missing_routes = []
+        unknown_routes = []
+        shadowed_routes = []
+        active_routes = 0
         try:
             installed_routes = vpn_route_set()
-            missing_routes = [cidr for cidr in routes
-                              if str(ipaddress.ip_network(cidr)) not in installed_routes]
-            unknown_routes = []
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
-            missing_routes = []
-            unknown_routes = list(routes)
+            installed_routes = None
+        for cidr in routes:
+            normalized = str(ipaddress.ip_network(cidr))
+            if installed_routes is None:
+                unknown_routes.append(cidr)
+                continue
+            if normalized not in installed_routes:
+                missing_routes.append(cidr)
+                continue
+            try:
+                selected_device = selected_route_device(cidr)
+            except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+                unknown_routes.append(cidr)
+                continue
+            if selected_device == VPN_INTERFACE:
+                active_routes += 1
+            else:
+                shadowed_routes.append({'cidr': cidr, 'selectedDevice': selected_device})
 
         handshakes = wireguard_handshakes()
         handshake_available = handshakes is not None
@@ -1062,8 +1096,9 @@ class Store:
             'profile': profile, 'interfacePresent': interface_present,
             'addressAssigned': address_assigned,
             'routesExpected': len(routes),
-            'routesActive': len(routes) - len(missing_routes) - len(unknown_routes),
+            'routesActive': active_routes,
             'missingRoutes': missing_routes, 'unknownRoutes': unknown_routes,
+            'shadowedRoutes': shadowed_routes,
             'forwarding': self.forwarding_state(), 'nodes': nodes,
         }
         f.atomic(self.root / 'vpn-diagnostics.json', result)
