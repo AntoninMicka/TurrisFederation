@@ -183,6 +183,9 @@ export interface NotebookVpnStatus {
   routes?: string[];
   expectedRoutes?: string[];
   updateAvailable: boolean;
+  profileState: "active" | "inactive" | "missing" | "unknown";
+  setupRequired: boolean;
+  repairRequired: boolean;
   forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
   error?: string;
   rollbackComplete?: boolean;

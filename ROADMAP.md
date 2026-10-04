@@ -149,6 +149,16 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     routami, včetně Palackého `10.203.0.84/32` a `192.168.1.0/24`. Skutečná
     instalace nového profilu a následný end-to-end provoz zůstávají k fyzickému
     ověření po aktualizaci aplikace a routerů.
+    Kontrola cestovního notebooku `tony` následně ukázala platné členství,
+    běžící backend a ZeroTier, ale žádný uložený NetworkManager profil
+    `turris-federation`; všechny federované cíle proto používaly běžnou výchozí
+    Wi-Fi trasu. Stav VPN nově porovnává instalační záznam se skutečným profilem
+    NetworkManageru a rozlišuje `active`, `inactive`, `missing` a `unknown`.
+    Chybějící nebo neaktivní profil zobrazí jako nedokončené/porouchané místní
+    nastavení a tray jej nesmí vydávat za připojení. Jednorázová instalace stále
+    vyžaduje polkit potvrzení; vytvořený profil má ověřené
+    `connection.autoconnect=yes`, takže samotná změna Wi-Fi nebo hotspotu další
+    plán ani otevření aplikace nevyžaduje.
   - [ ] Po funkčním ověření na skutečných zařízeních připravit produkční
     instalaci notebooku: podepsaný `.deb` pro první Ubuntu/Debian ARM64,
     dodanou uživatelskou jednotku, autostart tray, jednorázové pozvání, lokální

@@ -981,6 +981,14 @@ class Store:
         result = {key: value for key, value in state.items()
                   if key not in ['activeUuid', 'backupUuid', 'configHash']}
         try:
+            managed = nmcli_connections().get(VPN_CONNECTION)
+            active = nmcli_active_uuids()
+            profile_state = ('active' if managed and managed['uuid'] in active
+                             else 'inactive' if managed else 'missing')
+        except (OSError, ValueError, subprocess.SubprocessError):
+            profile_state = 'unknown'
+        result['profileState'] = profile_state
+        try:
             document, notebook, routes = self.verified_vpn_target()
         except (OSError, ValueError, KeyError):
             pass
@@ -994,7 +1002,11 @@ class Store:
                 or state.get('address') != address
                 or set(state.get('routes', [])) != set(routes)
                 or state.get('configHash') != config_hash)
+            result['setupRequired'] = profile_state == 'missing'
+            result['repairRequired'] = profile_state in ['missing', 'inactive']
         result.setdefault('updateAvailable', False)
+        result.setdefault('setupRequired', False)
+        result.setdefault('repairRequired', False)
         diagnostics = f.read(self.root / 'vpn-diagnostics.json')
         if diagnostics:
             result['diagnostics'] = diagnostics

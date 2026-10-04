@@ -674,6 +674,7 @@ class NotebookTests(unittest.TestCase):
         verify.assert_called_once_with('10.203.0.3', plan['routes'])
         arguments = repr(calls)
         self.assertIn("'connection', 'import', 'type', 'wireguard', 'file'", arguments)
+        self.assertIn("'connection.autoconnect', 'yes'", arguments)
         self.assertIn("'ipv4.never-default', 'yes'", arguments)
         self.assertIn("'ipv6.never-default', 'yes'", arguments)
         self.assertIn("'ipv4.route-metric', '2048'", arguments)
@@ -724,11 +725,39 @@ class NotebookTests(unittest.TestCase):
             'configHash': config_hash,
         })
 
-        status = self.b.vpn_status()
+        with patch.object(n, 'nmcli_connections', return_value={
+                    n.VPN_CONNECTION: {'uuid': 'current', 'type': 'wireguard'}}), \
+                patch.object(n, 'nmcli_active_uuids', return_value={'current'}):
+            status = self.b.vpn_status()
 
         self.assertFalse(status['updateAvailable'])
+        self.assertEqual('active', status['profileState'])
+        self.assertFalse(status['repairRequired'])
         self.assertEqual(document['revision'], status['topologyRevision'])
         self.assertEqual(routes, status['expectedRoutes'])
+
+    def test_vpn_status_reports_missing_networkmanager_profile(self):
+        self.onboard_user()
+
+        with patch.object(n, 'nmcli_connections', return_value={}), \
+                patch.object(n, 'nmcli_active_uuids', return_value=set()):
+            status = self.b.vpn_status()
+
+        self.assertEqual('missing', status['profileState'])
+        self.assertTrue(status['setupRequired'])
+        self.assertTrue(status['repairRequired'])
+
+    def test_vpn_status_reports_inactive_networkmanager_profile(self):
+        self.onboard_user()
+
+        with patch.object(n, 'nmcli_connections', return_value={
+                    n.VPN_CONNECTION: {'uuid': 'inactive', 'type': 'wireguard'}}), \
+                patch.object(n, 'nmcli_active_uuids', return_value=set()):
+            status = self.b.vpn_status()
+
+        self.assertEqual('inactive', status['profileState'])
+        self.assertFalse(status['setupRequired'])
+        self.assertTrue(status['repairRequired'])
 
     def test_vpn_status_requires_one_update_for_legacy_receipt_without_config_hash(self):
         self.onboard_user()

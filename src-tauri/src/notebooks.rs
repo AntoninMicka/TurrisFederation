@@ -231,6 +231,9 @@ fn tray_state_from(response: &Value, now: f64) -> TrayState {
     if status["vpn"]["state"].as_str() != Some("installed") {
         return TrayState::Disconnected;
     }
+    if matches!(status["vpn"]["profileState"].as_str(), Some("missing" | "inactive")) {
+        return TrayState::Disconnected;
+    }
     let diagnostics = &status["vpn"]["diagnostics"];
     let fresh = diagnostics["checkedAt"].as_f64().is_some_and(|checked| now - checked <= 120.0);
     let topology_matches = status["vpn"]["topologyRevision"].as_u64()
@@ -552,6 +555,9 @@ mod tests {
         let mut stale_revision = healthy.clone();
         stale_revision["status"]["vpn"]["diagnostics"]["revision"] = json!(2);
         assert_eq!(TrayState::Limited, tray_state_from(&stale_revision, 1000.0));
+        let mut missing_profile = healthy.clone();
+        missing_profile["status"]["vpn"]["profileState"] = json!("missing");
+        assert_eq!(TrayState::Disconnected, tray_state_from(&missing_profile, 1000.0));
         let disconnected = json!({"status": {"vpn": {"state": "rolled_back"}}});
         assert_eq!(TrayState::Disconnected, tray_state_from(&disconnected, 1000.0));
         let error = json!({"status": {"error": "sync failed", "vpn": {"state": "installed"}}});

@@ -247,6 +247,14 @@ function presenceLabel(value: boolean | null, positive: string) {
       </div>
       <p v-if="vpnError" class="error">{{ vpnError }}</p>
       <p><strong>{{ vpnHeadline(vpnStatus) }}</strong></p>
+      <div v-if="vpnStatus?.profileState === 'missing'" class="setup-preview vpn-required">
+        <strong>Notebook ještě nemá systémový VPN profil</strong>
+        <p>Členství a ZeroTier samy federované routy nevytvoří. Dokončete jednorázovou instalaci přes polkit; profil se nastaví na automatické připojení a při dalších změnách Wi‑Fi už nebude potřeba nový plán.</p>
+      </div>
+      <div v-else-if="vpnStatus?.profileState === 'inactive'" class="setup-preview vpn-required">
+        <strong>Trvalý VPN profil je uložený, ale není aktivní</strong>
+        <p>Připravte opravný plán. Po aktivaci zůstane profil nastavený na automatické připojení při změně Wi‑Fi nebo hotspotu.</p>
+      </div>
       <p v-if="vpnStatus?.address">Adresa: <code>{{ vpnStatus.address }}</code></p>
       <div v-if="vpnStatus?.updateAvailable" class="warning">
         <p>Nainstalovaný profil používá revizi {{ vpnStatus.revision ?? "—" }}, podepsaná topologie je revize {{ vpnStatus.topologyRevision ?? "—" }}. Dokud aktualizaci nepotvrdíte, nové uzly a sítě se neroutují.</p>

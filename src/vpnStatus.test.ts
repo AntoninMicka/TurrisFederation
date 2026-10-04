@@ -3,7 +3,8 @@ import type { NotebookVpnStatus } from "./domain";
 import { vpnHeadline, vpnPlanLabel } from "./vpnStatus";
 
 function status(overrides: Partial<NotebookVpnStatus> = {}): NotebookVpnStatus {
-  return { state: "installed", updateAvailable: false, ...overrides };
+  return { state: "installed", updateAvailable: false, profileState: "active",
+    setupRequired: false, repairRequired: false, ...overrides };
 }
 
 describe("notebook VPN update state", () => {
@@ -19,5 +20,12 @@ describe("notebook VPN update state", () => {
 
     expect(vpnHeadline(current)).toBe("VPN profil je nainstalovaný");
     expect(vpnPlanLabel(current, false)).toBe("Zobrazit instalační plán");
+  });
+
+  it("does not mistake a stored receipt for an installed system profile", () => {
+    const missing = status({ profileState: "missing", setupRequired: true, repairRequired: true });
+
+    expect(vpnHeadline(missing)).toBe("VPN profil chybí");
+    expect(vpnPlanLabel(missing, false)).toBe("Nainstalovat VPN");
   });
 });
