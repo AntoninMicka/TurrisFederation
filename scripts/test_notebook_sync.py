@@ -573,8 +573,8 @@ class NotebookTests(unittest.TestCase):
             return real_atomic(path, value)
 
         with patch.object(n.Store, 'forwarding_state', return_value=forwarding), \
-                patch.object(n, 'system_network_request', return_value={
-                    'ok': True, 'vpn': {'state': 'active', 'revision': current['revision'] + 1,
+                patch.object(n, 'system_network_request', side_effect=lambda request: {
+                    'ok': True, 'vpn': {'state': 'active', 'revision': request['revision'],
                                         'changed': True}}) as reconcile, \
                 patch.object(f, 'atomic', side_effect=fail_receipt), \
                 self.assertRaisesRegex(ValueError, 'předchozí profil byl obnoven'):
@@ -769,6 +769,19 @@ class NotebookTests(unittest.TestCase):
         receipt = f.read(self.b.root / 'vpn-state.json')
         self.assertEqual(('installed', 'system-service', 3),
                          (receipt['state'], receipt['managedBy'], receipt['revision']))
+
+    def test_system_network_request_reports_socket_and_incomplete_response(self):
+        client = Mock()
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        client.connect.side_effect = PermissionError()
+        with patch.object(n.socket, 'socket', return_value=client), \
+                self.assertRaisesRegex(ValueError, 'nemá oprávnění'):
+            n.system_network_request({'action': 'test'})
+        with patch.object(n, 'system_network_request', return_value={'ok': True}):
+            self.onboard_user()
+            with self.assertRaisesRegex(ValueError, 'neúplný stav VPN'):
+                self.b.reconcile_system_vpn()
 
     def test_vpn_status_requires_one_update_for_legacy_receipt_without_config_hash(self):
         self.onboard_user()

@@ -224,22 +224,36 @@ def system_network_request(request):
     raw = f.encode(request) + b'\n'
     if len(raw) > LOCAL_LIMIT:
         raise ValueError('Systémový síťový požadavek je příliš velký.')
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(35)
-        client.connect(str(SYSTEM_NETWORK_SOCKET))
-        client.sendall(raw)
-        response = b''
-        while not response.endswith(b'\n'):
-            chunk = client.recv(min(65536, LOCAL_LIMIT + 1 - len(response)))
-            if not chunk:
-                break
-            response += chunk
-            if len(response) > LOCAL_LIMIT:
-                raise ValueError('Systémová síťová služba vrátila příliš velkou odpověď.')
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(35)
+            client.connect(str(SYSTEM_NETWORK_SOCKET))
+            client.sendall(raw)
+            response = b''
+            while not response.endswith(b'\n'):
+                chunk = client.recv(min(65536, LOCAL_LIMIT + 1 - len(response)))
+                if not chunk:
+                    break
+                response += chunk
+                if len(response) > LOCAL_LIMIT:
+                    raise ValueError('Systémová síťová služba vrátila příliš velkou odpověď.')
+    except FileNotFoundError as error:
+        raise ValueError('Systémová síťová služba není nainstalovaná nebo nevytvořila socket.') from error
+    except PermissionError as error:
+        raise ValueError('Backend nemá oprávnění připojit se k systémové síťové službě.') from error
+    except ConnectionRefusedError as error:
+        raise ValueError('Systémová síťová služba neběží nebo odmítla spojení.') from error
+    except TimeoutError as error:
+        raise ValueError('Systémová síťová služba neodpověděla včas.') from error
+    except OSError as error:
+        suffix = f' (errno {error.errno})' if error.errno is not None else ''
+        raise ValueError('Spojení se systémovou síťovou službou selhalo' + suffix + '.') from error
     try:
         result = json.loads(response)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ValueError('Systémová síťová služba vrátila neplatnou odpověď.') from error
+    if not isinstance(result, dict):
+        raise ValueError('Systémová síťová služba vrátila neplatnou odpověď.')
     if result.get('ok') is not True:
         raise ValueError(result.get('error', 'Systémová síťová služba odmítla VPN plán.'))
     return result
@@ -811,7 +825,11 @@ class Store:
         routes = plan.pop('routes')
         # Routes are derived above for local comparison, but the privileged
         # service derives them again exclusively from the bounded peer list.
-        result = system_network_request(plan)['vpn']
+        response = system_network_request(plan)
+        result = response.get('vpn')
+        if (not isinstance(result, dict) or result.get('state') != 'active'
+                or result.get('revision') != plan['revision']):
+            raise ValueError('Systémová síťová služba vrátila neúplný stav VPN.')
         if result.get('state') == 'active' and write_receipt:
             if document is None or notebook is None:
                 document, notebook, _ = self.verified_vpn_target()
@@ -2150,8 +2168,9 @@ def serve(store):
                 if access.get('state') == 'valid' and access.get('role') in ['administrator', 'user']:
                     runtime.update(store.reconcile_system_vpn(), state='active')
             except Exception as error:
-                runtime.update(state='error', error=str(error) if type(error) is ValueError
-                               else 'Automatická správa VPN selhala.')
+                detail = (str(error) if isinstance(error, ValueError)
+                          else f'Automatická správa VPN selhala ({type(error).__name__}).')
+                runtime.update(state='error', error=detail)
             f.atomic(store.root / 'vpn-reconcile.json', runtime)
             stopped.wait(10)
     vpn_worker = threading.Thread(target=reconcile_vpn, name='vpn-reconcile', daemon=True)
