@@ -778,6 +778,16 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual('10.147.0.2', self.b.signed_peer_address(self.a.id))
         self.assertIsNone(self.a.signed_peer_address(self.c.id))
 
+    def test_sync_transfer_errors_distinguish_listener_route_and_tls(self):
+        peer = {'address': '10.147.0.3'}
+        refused = n.transfer_error(peer, ConnectionRefusedError())
+        timed_out = n.transfer_error(peer, TimeoutError())
+        tls = n.transfer_error(peer, n.ssl.SSLError())
+        self.assertIn('10.147.0.3:8856', refused)
+        self.assertIn('odmítá spojení', refused)
+        self.assertIn('neodpověděl', timed_out)
+        self.assertIn('vzájemné TLS', tls)
+
     def test_system_network_request_reports_socket_and_incomplete_response(self):
         client = Mock()
         client.__enter__ = Mock(return_value=client)

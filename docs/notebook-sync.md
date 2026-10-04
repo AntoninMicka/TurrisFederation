@@ -99,6 +99,9 @@ Jakmile je protější notebook uvedený v ověřené podepsané topologii,
 synchronizace používá jeho stabilní ZeroTier adresu. Čerstvý podepsaný LAN
 beacon zůstává fallback pouze pro administrátorský peer, který ještě v
 topologii není. Změna Wi-Fi tak sama nevytvoří novou větev konfigurace.
+Chyba přenosu rozlišuje odmítnutý TCP port, timeout síťové cesty, neshodu
+certifikátu a odmítnuté vzájemné TLS; tyto příčiny se nesmějí slít do obecného
+stavu, protože vyžadují rozdílnou nápravu.
 
 Databáze a soubory federace se mění pod společným zámkem s controllerem. Před
 zápisem vzniká záznam obnovy. Po přerušení se přenos dokončí při dalším načtení

@@ -1693,6 +1693,27 @@ def fetch(store, peer):
         connection.close()
 
 
+def transfer_error(peer, error):
+    """Return an actionable error without exposing TLS or payload details."""
+    target = '%s:%s' % (peer.get('address', '?'), PORT)
+    if isinstance(error, ConnectionRefusedError):
+        return ('Protější notebook na %s odmítá spojení. Jeho backend na této '
+                'ZeroTier adrese neposlouchá, nebo místní firewall port aktivně odmítá.' % target)
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return ('Protější notebook na %s neodpověděl. Ověřte, že je online v ZeroTier '
+                'a že místní firewall propouští TCP/%s.' % (target, PORT))
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return 'Protější notebook na %s předložil jiný certifikát než při párování.' % target
+    if isinstance(error, ssl.SSLError):
+        return ('Protější notebook na %s odmítl vzájemné TLS. Ověřte párování na obou '
+                'noteboocích.' % target)
+    if isinstance(error, ValueError):
+        return str(error)
+    if isinstance(error, OSError):
+        return 'K protějšímu notebooku na %s nevede použitelná síťová cesta.' % target
+    return 'Přenos s protějším notebookem na %s selhal.' % target
+
+
 def make_server(store, address):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -2141,10 +2162,10 @@ def serve_sync(store, stopped):
                             continue
                         state = store.receive(peer, remote)
                         runtime['peers'][peer] = {'state': state, 'lastSync': time.time(), 'address': item['address']}
-                    except Exception:
+                    except Exception as error:
                         runtime['peers'][peer] = {**runtime['peers'].get(peer, {}),
                             'state': 'error', 'address': item['address'],
-                            'error': 'Přenos se nezdařil. Ověřte vzájemné párování, dostupnost a shodu federace.'}
+                            'error': transfer_error(item, error)}
             except Exception:
                 runtime['error'] = 'Discovery není dostupné na vybraném rozhraní.'
             f.atomic(store.root / 'runtime.json', runtime)
