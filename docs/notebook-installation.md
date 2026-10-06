@@ -90,6 +90,12 @@ stav systemd; sama nic neaktualizuje ani nerestartuje. Tím rozlišuje zastaralo
 část instalace od síťového problému, neprokazuje však funkčnost VPN ani
 dostupnost ostatních členů federace.
 
+Vývojový `run.sh` záměrně sestavuje dva různé spustitelné soubory: desktop pro
+`tauri dev` a samostatný tray s vloženým frontendem, který funguje i bez Vite.
+Tray se proto v tomto režimu ověřuje proti přesnému SHA-256 artefaktu právě
+nainstalovaného skriptem, nikoli proti binárně odlišnému vývojovému desktopu.
+Bez vývojové proměnné zůstává očekávaným artefaktem samotná desktopová binárka.
+
 Instalace balíčku může vyžádat systémové oprávnění, ale backend běží jako běžný
 uživatel. `postinst` smí provést pouze systémový `daemon-reload` a instalaci
 neměnných souborů; nesmí bez přihlášeného uživatele vytvořit identitu, přijmout

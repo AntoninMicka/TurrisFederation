@@ -133,7 +133,7 @@ if ! cargo --version >/dev/null 2>&1 || ! rustc --version >/dev/null 2>&1; then
     fi
 fi
 
-for command in node npm cargo rustc cc c++ make pkg-config; do
+for command in node npm cargo rustc cc c++ make pkg-config sha256sum; do
     "$command" --version >/dev/null 2>&1 || fail "Nástroj $command není funkční ani po instalaci."
 done
 pkg-config --exists 'webkit2gtk-4.1 >= 2.40' gtk+-3.0 openssl librsvg-2.0 ||
@@ -175,6 +175,8 @@ install -m 755 -- src-tauri/target/debug/turris-federation "$temporary_client"
 mv -f -- "$temporary_client" "$dev_client"
 trap - EXIT
 export TF_TRAY_EXECUTABLE=$dev_client
+read -r TF_TRAY_ARTIFACT_HASH _ < <(sha256sum -- "$dev_client")
+export TF_TRAY_ARTIFACT_HASH
 unset dev_client_dir dev_client temporary_client
 
 exec npm run tauri -- dev "$@"

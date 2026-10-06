@@ -10,6 +10,7 @@ const NETWORK_UNIT: &str = include_str!("../../packaging/turris-federation-netwo
 const UNIT_NAME: &str = "turris-federation-backend.service";
 const AUTOSTART_NAME: &str = "cz.turris.federation-tray.desktop";
 const TRAY_EXECUTABLE_ENV: &str = "TF_TRAY_EXECUTABLE";
+const TRAY_ARTIFACT_HASH_ENV: &str = "TF_TRAY_ARTIFACT_HASH";
 
 #[derive(Default)]
 pub struct NotebookService {
@@ -145,6 +146,12 @@ fn file_hash(path: &Path) -> Option<String> {
     fs::read(path).ok().map(|contents| content_hash(&contents))
 }
 
+fn expected_tray_hash(desktop_hash: &str) -> String {
+    std::env::var(TRAY_ARTIFACT_HASH_ENV).ok()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .unwrap_or_else(|| desktop_hash.to_string())
+}
+
 fn component(id: &str, label: &str, expected: String, installed: Option<String>, active: Option<bool>) -> Value {
     let state = match installed.as_deref() {
         None => "missing",
@@ -160,6 +167,7 @@ fn local_components(data: &Path, config: &Path, running_backend: Option<&str>) -
     let desktop_expected = desktop.clone().unwrap_or_default();
     let tray_path = tray_executable().ok();
     let tray = tray_path.as_ref().and_then(|path| file_hash(path));
+    let tray_expected = expected_tray_hash(&desktop_expected);
     let tray_autostart = tray_path.as_ref().and_then(|path| autostart_contents(path).ok());
     let script = scripts(data).ok();
     let expected_backend = content_hash(SERVICE.as_bytes());
@@ -176,7 +184,7 @@ fn local_components(data: &Path, config: &Path, running_backend: Option<&str>) -
     let running_network = network_service_version();
     let mut values = vec![
         component("desktop", "Desktop a frontend", desktop_expected.clone(), desktop, Some(true)),
-        component("tray", "Klient stavové lišty", desktop_expected, tray, None),
+        component("tray", "Klient stavové lišty", tray_expected, tray, None),
         component("backendRunning", "Běžící notebookový backend", expected_backend.clone(),
                   running_backend.map(str::to_string), backend_active),
         component("backendFile", "Soubor notebookového backendu", expected_backend,
