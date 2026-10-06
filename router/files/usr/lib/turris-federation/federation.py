@@ -2055,7 +2055,6 @@ def refresh_reports(root, doc):
                             if key in previous_report:
                                 fresh[key] = previous_report[key]
                 reports[peer['id']] = fresh
-                reports[peer['id']].pop('error', None)
             except Exception as error:
                 reports[peer['id']] = dict(reports.get(peer['id'], {}), error=str(error), reachable=False)
     atomic(root / 'reports.json', reports)

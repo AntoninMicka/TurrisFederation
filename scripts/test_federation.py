@@ -343,6 +343,14 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('camera', result['nodes'][node(2)['id']]['hosts'][0]['name'])
         self.assertTrue(result['nodes'][node(1)['id']]['reachable'])
 
+    def test_live_refresh_preserves_signed_router_error(self):
+        doc = self.document(members={node(1)['id']: self.member(1)})
+        signed_error = {'state': 'rollback', 'error': 'Změna nebyla potvrzena.'}
+        with patch.object(f, 'peer_status', return_value=signed_error):
+            reports = f.refresh_reports(self.root, doc)
+        self.assertTrue(reports[node(1)['id']]['reachable'])
+        self.assertEqual(signed_error['error'], reports[node(1)['id']]['error'])
+
     def test_live_refresh_populates_desktop_service_directory(self):
         members = {node(1)['id']: self.member(1)}
         f.atomic(self.root / 'members.json', members)
