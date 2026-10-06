@@ -68,12 +68,15 @@ interface NetworkEnrollmentState {
     stage?: string; code?: string; expiresAt?: number; error?: string; networkId?: string;
     zeroTierDeviceId?: string; zeroTierState?: string; zeroTierSummary?: string;
   };
-  listener?: null | { state?: string; port?: number; error?: string };
+  listener?: null | { state?: string; port?: number; error?: string; activeInterfaces?: string[] };
+  interfaces: { name: string; addresses: string[]; selected: boolean }[];
   candidates: NetworkEnrollmentCandidate[];
   serviceError?: string;
 }
 const networkEnrollment = ref<NetworkEnrollmentState | null>(null);
 const networkEnrollmentPolling = ref(false);
+const enrollmentInterfaces = ref<string[]>([]);
+const enrollmentInterfacesDirty = ref(false);
 const vpnPlan = ref<NotebookVpnPlan | null>(null);
 const vpnStatus = ref<NotebookVpnStatus | null>(null);
 const vpnDiagnostics = ref<NotebookVpnDiagnostics | null>(null);
@@ -163,7 +166,7 @@ async function enrollmentOperation(action: "request" | "accept-grant" | "confirm
   finally { enrollmentBusy.value = false; }
 }
 
-async function networkEnrollmentOperation(action: "start" | "status" | "approve-request" | "approve-address", subject?: string) {
+async function networkEnrollmentOperation(action: "start" | "status" | "configure" | "approve-request" | "approve-address", subject?: string) {
   if ((action === "status" && networkEnrollmentPolling.value) || (action !== "status" && enrollmentBusy.value)) return;
   if (action === "status") networkEnrollmentPolling.value = true;
   else enrollmentBusy.value = true;
@@ -172,15 +175,24 @@ async function networkEnrollmentOperation(action: "start" | "status" | "approve-
     const request: Record<string, unknown> = {
       action: action === "start" ? "network_enrollment_start"
         : action === "status" ? "network_enrollment_status"
+          : action === "configure" ? "network_enrollment_configure"
           : action === "approve-request" ? "network_enrollment_approve_request"
             : "network_enrollment_approve_address",
     };
-    if (action === "start") request.name = enrollmentName.value;
+    if (action === "start") {
+      request.name = enrollmentName.value;
+      request.interfaces = enrollmentInterfaces.value;
+    }
+    if (action === "configure") request.interfaces = enrollmentInterfaces.value;
     if (subject) request.subject = subject;
     const previousServiceError = networkEnrollment.value?.serviceError;
     const result = await notebookEnrollmentAction<NetworkEnrollmentState>(request);
     if (previousServiceError && !result.serviceError) result.serviceError = previousServiceError;
     networkEnrollment.value = result;
+    if (!enrollmentInterfacesDirty.value || action === "start" || action === "configure") {
+      enrollmentInterfaces.value = result.interfaces.filter(item => item.selected).map(item => item.name);
+      enrollmentInterfacesDirty.value = false;
+    }
     if (action === "approve-address" && isAdministrator.value) {
       await refreshReadOnlyOverview();
     }
@@ -745,7 +757,15 @@ async function submitConnection() {
       <div v-else class="connection-form">
         <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
         <label>Název uživatelského notebooku<input v-model="enrollmentName" maxlength="80" placeholder="Notebook uživatele" /></label>
-        <button :disabled="enrollmentBusy || !enrollmentName.trim()" @click="networkEnrollmentOperation('start')">Najít administrátora v místní síti</button>
+        <fieldset class="interface-selection">
+          <legend>Rozhraní pro hledání v místní síti</legend>
+          <label v-for="item in networkEnrollment?.interfaces ?? []" :key="item.name" class="trust-check">
+            <input v-model="enrollmentInterfaces" type="checkbox" :value="item.name" :disabled="enrollmentBusy" @change="enrollmentInterfacesDirty = true" />
+            <span><strong>{{ item.name }}</strong> · <code>{{ item.addresses.join(', ') }}</code></span>
+          </label>
+          <small v-if="!networkEnrollment?.interfaces.length" class="error">Není aktivní žádné vhodné fyzické IPv4 rozhraní.</small>
+        </fieldset>
+        <button :disabled="enrollmentBusy || !enrollmentName.trim() || !enrollmentInterfaces.length" @click="networkEnrollmentOperation('start')">Najít administrátora v místní síti</button>
         <template v-if="networkEnrollment?.session">
           <p><strong>Párovací kód: <code>{{ networkEnrollment.session.code }}</code></strong></p>
           <p v-if="networkEnrollment.session.stage === 'requesting'">Čekám, až administrátor ve stejné místní síti potvrdí žádost.</p>
@@ -939,6 +959,16 @@ async function submitConnection() {
         <summary>Přijmout uživatelský notebook z místní sítě</summary>
         <div class="connection-form">
           <p>Žádost se objeví automaticky, pokud jsou oba notebooky ve stejné LAN. Porovnejte krátký kód zobrazený na cílovém notebooku.</p>
+          <fieldset class="interface-selection">
+            <legend>Rozhraní, na kterých přijímat registrace</legend>
+            <label v-for="item in networkEnrollment?.interfaces ?? []" :key="item.name" class="trust-check">
+              <input v-model="enrollmentInterfaces" type="checkbox" :value="item.name" :disabled="enrollmentBusy" @change="enrollmentInterfacesDirty = true" />
+              <span><strong>{{ item.name }}</strong> · <code>{{ item.addresses.join(', ') }}</code></span>
+            </label>
+            <small v-if="!networkEnrollment?.interfaces.length" class="error">Není aktivní žádné vhodné fyzické IPv4 rozhraní.</small>
+            <small v-else-if="networkEnrollment?.listener?.activeInterfaces?.length">Aktivní listener: {{ networkEnrollment.listener.activeInterfaces.join(', ') }}.</small>
+            <button type="button" :disabled="enrollmentBusy || !enrollmentInterfaces.length || !enrollmentInterfacesDirty" @click="networkEnrollmentOperation('configure')">Použít vybraná rozhraní</button>
+          </fieldset>
           <details>
             <summary>Žádost se neobjevuje · kontrola firewallu</summary>
             <p>Automatické přijetí používá multicast <code>239.255.88.56</code> a UDP/8857 na obou noteboocích. Cílový notebook potom otevírá TCP/8857 směrem k administrátorovi. Úspěšné <code>nc -vz ADRESA_ADMINA 8857</code> ověřuje pouze TCP; UDP může být stále blokované.</p>

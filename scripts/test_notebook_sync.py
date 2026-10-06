@@ -532,6 +532,63 @@ class NotebookTests(unittest.TestCase):
             self.assertFalse(n.direct_lan_source('10.147.0.3'))
             self.assertFalse(n.direct_lan_source('203.0.113.1'))
 
+    def test_enrollment_interfaces_are_explicit_and_exclude_virtual_links(self):
+        links = json.dumps([
+            {'ifname': 'enp3s0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.50.10'}]},
+            {'ifname': 'wlan0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.60.10'}]},
+            {'ifname': 'ztabc', 'addr_info': [
+                {'family': 'inet', 'local': '10.147.0.2'}]},
+            {'ifname': 'docker0', 'addr_info': [
+                {'family': 'inet', 'local': '172.17.0.1'}]},
+        ])
+        with patch.object(n, 'local_command', return_value=links):
+            self.assertEqual([
+                {'name': 'enp3s0', 'addresses': ['192.168.50.10']},
+                {'name': 'wlan0', 'addresses': ['192.168.60.10']},
+            ], n.enrollment_interfaces())
+
+    def test_enrollment_interface_selection_is_persisted_and_visible(self):
+        links = json.dumps([
+            {'ifname': 'enp3s0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.50.10'}]},
+            {'ifname': 'wlan0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.60.10'}]},
+        ])
+        with patch.object(n, 'local_command', return_value=links):
+            initial = self.b.network_enrollment_status()
+            self.assertEqual(['enp3s0', 'wlan0'], [item['name'] for item in initial['interfaces'] if item['selected']])
+            n.save_enrollment_interfaces(self.b, ['wlan0'])
+            selected = self.b.network_enrollment_status()['interfaces']
+            self.assertEqual(['wlan0'], [item['name'] for item in selected if item['selected']])
+            with self.assertRaisesRegex(ValueError, 'již není aktivní'):
+                n.save_enrollment_interfaces(self.b, ['missing0'])
+
+    def test_direct_lan_source_respects_selected_enrollment_interface(self):
+        links = json.dumps([
+            {'ifname': 'enp3s0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.50.10', 'prefixlen': 24}]},
+            {'ifname': 'wlan0', 'addr_info': [
+                {'family': 'inet', 'local': '192.168.60.10', 'prefixlen': 24}]},
+        ])
+        with patch.object(n, 'local_command', return_value=links):
+            self.assertTrue(n.direct_lan_source('192.168.60.20', {'wlan0'}))
+            self.assertFalse(n.direct_lan_source('192.168.50.20', {'wlan0'}))
+
+    def test_enrollment_udp_joins_and_sends_on_selected_address(self):
+        udp = Mock()
+        address = '192.168.60.10'
+        with patch.object(n.socket, 'socket', return_value=udp):
+            self.assertIs(udp, n.make_enrollment_udp(address))
+        udp.bind.assert_called_once_with(('', n.ENROLLMENT_PORT))
+        udp.setsockopt.assert_any_call(
+            n.socket.IPPROTO_IP, n.socket.IP_ADD_MEMBERSHIP,
+            n.socket.inet_aton(n.GROUP) + n.socket.inet_aton(address))
+        udp.setsockopt.assert_any_call(
+            n.socket.IPPROTO_IP, n.socket.IP_MULTICAST_IF, n.socket.inet_aton(address))
+        udp.setblocking.assert_called_once_with(False)
+
     def test_existing_user_can_reenroll_to_replace_incorrect_signed_zerotier_address(self):
         self.onboard_user()
         _, _, _, invitation = self.staged_user_invitation(

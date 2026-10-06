@@ -131,7 +131,9 @@ podepsanou svým TLS klíčem; nemusí znát federaci ani Network ID. Po dobu ne
 15 minut ji oznamuje multicastem s krátkým párovacím kódem. Administrátor vidí
 zdrojovou LAN adresu, název a stejný kód. Přenos přijímá pouze zdroje z přímo
 připojené fyzické IPv4 sítě; rozhraní ZeroTier, WireGuard, kontejnery a bridge
-se za místní LAN nepovažují. Krátké oznámení připravené odpovědi se vrací přes
+se za místní LAN nepovažují. Na obou noteboocích správce v UI zaškrtne jedno
+nebo více fyzických rozhraní; multicastové členství a odesílání probíhá
+samostatně přes každé z nich. Krátké oznámení připravené odpovědi se vrací přes
 multicast; cílový notebook si podepsanou zprávu sám vyzvedne od administrátora
 odchozím TCP spojením na port 8857. Cestovní notebook proto nepotřebuje
 výjimku pro příchozí TCP ve svém firewallu. Kód musí správce před prvním

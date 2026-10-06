@@ -461,8 +461,10 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Implementovat IPv4 routování přes IPv6 nexthop ve WireGuardu (provoz bez přidělených IPv4 adres na tunelech).
   - [ ] Šetřit úložiště na Turrisu: minimalizovat zápisy na eMMC, snížit periodu ukládání stavu na minimum.
 - [ ] **P2: Discovery a mobilita.**
-  - [x] Discovery notebooků: podepsané beacony po 30 s na vybraném IPv4 rozhraní,
-    přehled v UI a ruční párovací údaje jako alternativa k multicastu.
+  - [x] Discovery notebooků: podepsané beacony na jednom nebo více výslovně
+    vybraných fyzických IPv4 rozhraních, přehled aktivních listenerů v UI a
+    ruční párovací údaje jako alternativa k multicastu. Registrační discovery
+    na UDP/8857 obnovuje členství při změně výběru nebo adresy rozhraní.
   - [ ] Discovery routerů: oznámení po 30 minutách.
   - [x] Obousměrná synchronizace nastavení a řídicí identity mezi vzájemně
     spárovanými notebooky přes mutual TLS, bez centrálního uzlu. Konflikty se

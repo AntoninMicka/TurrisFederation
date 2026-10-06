@@ -11,6 +11,13 @@ Administrátorský notebook proto musí přijmout TCP/8857 z důvěryhodné mís
 LAN. Oba notebooky musí přijmout UDP/8857 z této LAN. Cílový notebook
 nepotřebuje kvůli běžnému toku obecně povolit příchozí TCP/8857.
 
+V aplikaci lze pro registrační discovery zaškrtnout jedno nebo více aktivních
+fyzických IPv4 rozhraní. Multicastové členství i odchozí beacon se zakládají
+zvlášť pro každé z nich; loopback, ZeroTier, WireGuard, tunely a běžná
+kontejnerová rozhraní se do nabídky nezařazují. TCP/8857 zůstává dostupné pro
+přímý přenos, ale registrační požadavky přijímá jen ze subnetů vybraných
+rozhraní.
+
 Po přijetí uživatelský notebook každých 30 sekund otevírá stejné odchozí
 TCP/8857 spojení na podepsanou ZeroTier adresu administrátora. Posílá jím svůj
 podepsaný report verze a přijímá kořenově podepsaný read-only přehled verzí,

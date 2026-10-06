@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import socket
 import socketserver
 import sqlite3
@@ -1647,7 +1648,9 @@ class Store:
         (self.root / 'pending-address-confirmation.json').unlink(missing_ok=True)
         return status
 
-    def network_enrollment_start(self, name):
+    def network_enrollment_start(self, name, interfaces=None):
+        if interfaces is not None:
+            save_enrollment_interfaces(self, interfaces)
         request = self.enrollment_request(name)
         session = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'stage': 'requesting',
                    'request': request, 'code': pairing_code(request),
@@ -1678,9 +1681,14 @@ class Store:
             visible_session.update(zeroTierDeviceId=network.get('deviceId'),
                                    zeroTierState=network.get('state'),
                                    zeroTierSummary=network.get('summary'))
+        available, selected = enrollment_interface_selection(self)
+        selected_set = set(selected)
+        visible_interfaces = [{**item, 'selected': item['name'] in selected_set} for item in available]
         listener = f.read(self.root / 'network-enrollment-listener.json', {})
-        visible_listener = {key: listener.get(key) for key in ['state', 'port', 'error']} if listener else None
+        visible_listener = {key: listener.get(key) for key in
+                            ['state', 'port', 'error', 'activeInterfaces']} if listener else None
         return {'session': visible_session, 'listener': visible_listener,
+                'interfaces': visible_interfaces,
                 'candidates': sorted(visible, key=lambda item: item['name'] or item['id'])}
 
     def network_enrollment_approve_request(self, subject):
@@ -2096,7 +2104,56 @@ def discover(store, raw, source, network):
             f.atomic(store.root / 'discovered.json', peers)
 
 
-def direct_lan_source(source):
+def enrollment_interfaces():
+    """Return active physical IPv4 interfaces eligible for LAN enrollment."""
+    try:
+        links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show', 'up']))
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return []
+    result = []
+    for link in links:
+        device = link.get('ifname', '')
+        if (not isinstance(device, str) or device == 'lo'
+                or re.match(r'^(zt|tf_|docker|br-|virbr|lxc|tun|tap|wg)', device)):
+            continue
+        addresses = []
+        for item in link.get('addr_info', []):
+            address = item.get('local') if item.get('family') == 'inet' else None
+            try:
+                if address and not ipaddress.IPv4Address(address).is_loopback:
+                    addresses.append(address)
+            except ValueError:
+                pass
+        if addresses:
+            result.append({'name': device, 'addresses': sorted(set(addresses))})
+    return sorted(result, key=lambda item: item['name'])
+
+
+def enrollment_interface_selection(store):
+    available = enrollment_interfaces()
+    available_names = {item['name'] for item in available}
+    settings = f.read(store.root / 'network-enrollment-settings.json', {})
+    configured = settings.get('interfaces') if isinstance(settings, dict) else None
+    selected = ([name for name in configured if name in available_names]
+                if isinstance(configured, list) else sorted(available_names))
+    return available, selected
+
+
+def save_enrollment_interfaces(store, interfaces):
+    if (not isinstance(interfaces, list) or not interfaces or len(interfaces) > 32
+            or any(not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,64}', name)
+                   for name in interfaces)):
+        raise ValueError('Vyberte alespoň jedno aktivní síťové rozhraní pro registraci.')
+    available = {item['name'] for item in enrollment_interfaces()}
+    selected = sorted(set(interfaces))
+    missing = [name for name in selected if name not in available]
+    if missing:
+        raise ValueError('Vybrané síťové rozhraní již není aktivní: %s.' % ', '.join(missing))
+    f.atomic(store.root / 'network-enrollment-settings.json', {'interfaces': selected})
+    return selected
+
+
+def direct_lan_source(source, allowed_interfaces=None):
     try:
         value = ipaddress.ip_address(source)
         links = json.loads(local_command(['/usr/sbin/ip', '-j', '-4', 'address', 'show']))
@@ -2105,7 +2162,8 @@ def direct_lan_source(source):
     for link in links:
         device = link.get('ifname', '')
         if (not isinstance(device, str) or device == 'lo'
-                or re.match(r'^(zt|tf_|docker|br-|virbr|lxc)', device)):
+                or re.match(r'^(zt|tf_|docker|br-|virbr|lxc|tun|tap|wg)', device)
+                or (allowed_interfaces is not None and device not in allowed_interfaces)):
             continue
         for item in link.get('addr_info', []):
             try:
@@ -2135,7 +2193,9 @@ def make_enrollment_server(store):
         def do_POST(self):
             try:
                 response_payload = {'ok': True}
-                if self.path != '/software-report' and not direct_lan_source(self.client_address[0]):
+                _, selected_interfaces = enrollment_interface_selection(store)
+                if (self.path != '/software-report'
+                        and not direct_lan_source(self.client_address[0], set(selected_interfaces))):
                     self.send_error(403)
                     return
                 size = int(self.headers.get('Content-Length', '0'))
@@ -2226,15 +2286,16 @@ def make_enrollment_server(store):
     return Server(('', ENROLLMENT_PORT), Handler)
 
 
-def make_enrollment_udp():
+def make_enrollment_udp(address):
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         udp.bind(('', ENROLLMENT_PORT))
         udp.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                       socket.inet_aton(GROUP) + socket.inet_aton('0.0.0.0'))
+                       socket.inet_aton(GROUP) + socket.inet_aton(address))
+        udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(address))
         udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-        udp.settimeout(1)
+        udp.setblocking(False)
         return udp
     except OSError:
         udp.close()
@@ -2243,7 +2304,7 @@ def make_enrollment_udp():
 
 def serve_enrollment(store, stopped):
     server = None
-    udp = None
+    udps = {}
     try:
         server = make_enrollment_server(store)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -2258,15 +2319,35 @@ def serve_enrollment(store, stopped):
         if session and session.get('stage') not in ['complete', 'expired']:
             update_enrollment_session(store, error=error)
         return
-    try:
-        udp = make_enrollment_udp()
+    def reconcile_udp():
+        available, selected = enrollment_interface_selection(store)
+        desired = {(item['name'], address) for item in available if item['name'] in selected
+                   for address in item['addresses']}
+        for key in list(udps):
+            if key not in desired:
+                udps.pop(key).close()
+        errors = []
+        for key in sorted(desired):
+            if key in udps:
+                continue
+            try:
+                udps[key] = make_enrollment_udp(key[1])
+            except OSError:
+                errors.append(key[0])
+        active = sorted({name for name, _ in udps})
+        if active:
+            error = ('Multicast se nepodařilo otevřít na rozhraních: %s.' %
+                     ', '.join(sorted(set(errors)))) if errors else None
+            state = 'listening'
+        else:
+            error = ('Multicast discovery není dostupné na vybraných rozhraních; backend ponechal '
+                     'přímý přenos na portu 8857 a discovery zkusí obnovit.')
+            state = 'http_only'
         f.atomic(store.root / 'network-enrollment-listener.json', {
-            'state': 'listening', 'port': ENROLLMENT_PORT, 'error': None, 'updatedAt': time.time()})
-    except OSError:
-        f.atomic(store.root / 'network-enrollment-listener.json', {
-            'state': 'http_only', 'port': ENROLLMENT_PORT,
-            'error': 'Multicast discovery není dostupné; backend ponechal přímý přenos na portu 8857 a discovery zkusí obnovit.',
-            'updatedAt': time.time()})
+            'state': state, 'port': ENROLLMENT_PORT, 'activeInterfaces': active,
+            'error': error, 'updatedAt': time.time()})
+
+    reconcile_udp()
     next_beacon = 0
     next_join_status = 0
     next_software_report = 0
@@ -2303,28 +2384,29 @@ def serve_enrollment(store, stopped):
                 except ValueError as error:
                     update_enrollment_session(store, expected_stage='joining',
                                               zerotier=status, error=str(error))
-            if udp is None:
-                if time.monotonic() >= next_udp_retry:
-                    try:
-                        udp = make_enrollment_udp()
-                        f.atomic(store.root / 'network-enrollment-listener.json', {
-                            'state': 'listening', 'port': ENROLLMENT_PORT,
-                            'error': None, 'updatedAt': time.time()})
-                    except OSError:
-                        next_udp_retry = time.monotonic() + 5
-                if udp is None:
-                    stopped.wait(0.5)
-                    continue
+            if time.monotonic() >= next_udp_retry:
+                reconcile_udp()
+                next_udp_retry = time.monotonic() + 5
+            if not udps:
+                stopped.wait(0.5)
+                continue
             try:
                 if (session.get('stage') in ['requesting', 'joining', 'awaiting_final']
                         and session.get('expiresAt', 0) >= time.time()
                         and time.monotonic() >= next_beacon):
                     packet = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'request': session['request'],
                               'code': session['code'], 'time': int(time.time())}
-                    udp.sendto(f.encode(packet), (GROUP, ENROLLMENT_PORT))
+                    raw_packet = f.encode(packet)
+                    for udp in list(udps.values()):
+                        udp.sendto(raw_packet, (GROUP, ENROLLMENT_PORT))
                     next_beacon = time.monotonic() + 3
-                raw, source = udp.recvfrom(LOCAL_LIMIT + 1)
-                if len(raw) > LOCAL_LIMIT or not direct_lan_source(source[0]):
+                ready, _, _ = select.select(list(udps.values()), [], [], 0.5)
+                if not ready:
+                    continue
+                raw, source = ready[0].recvfrom(LOCAL_LIMIT + 1)
+                _, selected_interfaces = enrollment_interface_selection(store)
+                if (len(raw) > LOCAL_LIMIT
+                        or not direct_lan_source(source[0], set(selected_interfaces))):
                     continue
                 packet = json.loads(raw)
                 if packet.get('schema') == NETWORK_ENROLLMENT_SCHEMA and packet.get('kind') == 'delivery-ready':
@@ -2364,19 +2446,22 @@ def serve_enrollment(store, stopped):
                     notice = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'kind': 'delivery-ready',
                               'subject': payload['subject'], 'requestHash': f.digest(packet['request']),
                               'code': packet['code'], 'time': int(time.time())}
-                    udp.sendto(f.encode(notice), (GROUP, ENROLLMENT_PORT))
+                    raw_notice = f.encode(notice)
+                    for udp in list(udps.values()):
+                        udp.sendto(raw_notice, (GROUP, ENROLLMENT_PORT))
             except (socket.timeout, ValueError, KeyError, TypeError, json.JSONDecodeError):
                 pass
             except OSError:
-                udp.close()
-                udp = None
+                for udp in udps.values():
+                    udp.close()
+                udps.clear()
                 next_udp_retry = time.monotonic() + 5
                 f.atomic(store.root / 'network-enrollment-listener.json', {
                     'state': 'http_only', 'port': ENROLLMENT_PORT,
                     'error': 'Multicast discovery vypadlo; přímý přenos zůstává aktivní a discovery se obnovuje.',
                     'updatedAt': time.time()})
     finally:
-        if udp is not None:
+        for udp in udps.values():
             udp.close()
         if server is not None:
             server.shutdown()
@@ -2572,8 +2657,11 @@ def command(store, req):
         store.bootstrap_admin_credential()
         return store.status()
     if action == 'network_enrollment_start':
-        return store.network_enrollment_start(req['name'])
+        return store.network_enrollment_start(req['name'], req.get('interfaces'))
     if action == 'network_enrollment_status':
+        return store.network_enrollment_status()
+    if action == 'network_enrollment_configure':
+        save_enrollment_interfaces(store, req.get('interfaces'))
         return store.network_enrollment_status()
     if action == 'network_enrollment_approve_request':
         return store.network_enrollment_approve_request(req['subject'])
