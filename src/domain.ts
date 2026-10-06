@@ -118,6 +118,7 @@ export interface ReadOnlyNotebook {
   role: "administrator" | "user";
   zeroTierAddress: string | null;
   wireguardAddress: string | null;
+  software?: SoftwareInfo | null;
 }
 export interface ServiceDirectoryEntry {
   id: string;
@@ -202,7 +203,7 @@ export interface NotebookVpnStatus {
 export interface TopologyRefreshPlan {
   id: string;
   expiresAt: number;
-  kind: "update" | "revoked";
+  kind: "update" | "revoked" | "operational";
   currentRevision: number;
   revision: number;
   routes: string[];

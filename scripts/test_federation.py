@@ -838,7 +838,8 @@ class FederationTests(unittest.TestCase):
                          (result['services'][0]['endpoint'], result['services'][0]['hostName'], result['services'][0]['routerId']))
         self.assertNotIn('draft-service', json.dumps(result['services']))
         self.assertEqual([{'id': 'c' * 64, 'name': 'User notebook', 'role': 'user',
-                           'zeroTierAddress': None, 'wireguardAddress': None}], result['notebooks'])
+                           'zeroTierAddress': None, 'wireguardAddress': None,
+                           'software': None}], result['notebooks'])
         raw = json.dumps(result)
         for secret in ['sshHost', 'sshUser', 'sshPort', 'publicEndpoint', 'privateKey', 'SECRET', 'INTERNAL', 'fingerprint']:
             self.assertNotIn(secret, raw)

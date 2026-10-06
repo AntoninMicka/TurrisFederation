@@ -46,6 +46,7 @@ JOIN_STATUS_SCHEMA = 'tf-notebook-join-status-1'
 ADDRESS_CONFIRMATION_SCHEMA = 'tf-notebook-address-confirmation-1'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 TOPOLOGY_UPDATE_SCHEMA = 'tf-notebook-topology-update-1'
+OPERATIONAL_SNAPSHOT_SCHEMA = 'tf-notebook-operational-snapshot-1'
 ENROLLMENT_TTL = 15 * 60
 VPN_CONNECTION = 'turris-federation'
 VPN_BACKUP = 'turris-federation-rollback'
@@ -667,9 +668,79 @@ class Store:
         public_path = self.root / 'federation-root.pub'
         if not published or not public_path.exists():
             raise ValueError('Chybí podepsaná topologie nebo veřejná kotva federace.')
-        f.validate_document(f.verify(public_path.read_text(), published))
+        document = f.validate_document(f.verify(public_path.read_text(), published))
         return json.dumps({'schema': TOPOLOGY_UPDATE_SCHEMA,
-                           'rootPublic': public_path.read_text(), 'published': published})
+                           'rootPublic': public_path.read_text(), 'published': published,
+                           'operational': self.operational_snapshot(document)})
+
+    def operational_snapshot(self, document):
+        """Root-sign a reviewed cache for endpoint-only notebooks."""
+        reports, normalized = f.read(self.fleet / 'reports.json', {}), {}
+        reports = reports if isinstance(reports, dict) else {}
+        for node in document['config']['nodes']:
+            if node['id'] not in document['members'] or not isinstance(reports.get(node['id']), dict):
+                continue
+            try:
+                catalog = f.validate_catalog(node, reports[node['id']])
+            except (TypeError, ValueError):
+                continue
+            if catalog:
+                normalized[node['id']] = catalog
+        known_notebooks = {item['id'] for item in document['config'].get('notebooks', [])}
+        notebook_software = {}
+        stored_notebook_software = f.read(self.fleet / 'notebook-software.json', {})
+        stored_notebook_software = (stored_notebook_software
+                                    if isinstance(stored_notebook_software, dict) else {})
+        for notebook_id, software in stored_notebook_software.items():
+            if notebook_id not in known_notebooks:
+                continue
+            try:
+                notebook_software[notebook_id] = f.validate_software_info(software)
+            except (TypeError, ValueError):
+                continue
+        payload = {'schema': OPERATIONAL_SNAPSHOT_SCHEMA,
+                   'federationId': document['federationId'], 'revision': document['revision'],
+                   'generatedAt': time.time(), 'reports': normalized,
+                   'notebookSoftware': notebook_software}
+        return f.sign(self.fleet / 'root.pem', payload)
+
+    def validate_operational_snapshot(self, envelope, root_public, document):
+        payload = f.verify(root_public, envelope)
+        if (set(payload) != {'schema', 'federationId', 'revision', 'generatedAt', 'reports', 'notebookSoftware'}
+                or payload.get('schema') != OPERATIONAL_SNAPSHOT_SCHEMA
+                or payload.get('federationId') != document['federationId']
+                or payload.get('revision') != document['revision']
+                or not isinstance(payload.get('generatedAt'), (int, float))
+                or isinstance(payload.get('generatedAt'), bool) or payload['generatedAt'] < 0
+                or payload['generatedAt'] > time.time() + 300
+                or not isinstance(payload.get('reports'), dict)
+                or not isinstance(payload.get('notebookSoftware'), dict)):
+            raise ValueError('Neplatný podepsaný provozní snapshot.')
+        nodes = {node['id']: node for node in document['config']['nodes']
+                 if node['id'] in document['members']}
+        reports = {}
+        for node_id, report in payload['reports'].items():
+            if node_id not in nodes or not isinstance(report, dict):
+                raise ValueError('Provozní snapshot obsahuje neznámý router.')
+            catalog = f.validate_catalog(nodes[node_id], report)
+            if (catalog or {}) != report:
+                raise ValueError('Provozní snapshot obsahuje neplatný report routeru.')
+            reports[node_id] = report
+        notebooks = {item['id'] for item in document['config'].get('notebooks', [])}
+        notebook_software = {}
+        for notebook_id, software in payload['notebookSoftware'].items():
+            if notebook_id not in notebooks:
+                raise ValueError('Provozní snapshot obsahuje neznámý notebook.')
+            notebook_software[notebook_id] = f.validate_software_info(software)
+        return payload, reports, notebook_software
+
+    def store_operational_snapshot(self, envelope, root_public, document):
+        payload, reports, notebook_software = self.validate_operational_snapshot(
+            envelope, root_public, document)
+        f.atomic(self.fleet / 'reports.json', reports)
+        f.atomic(self.fleet / 'notebook-software.json', notebook_software)
+        f.atomic(self.fleet / 'operational-snapshot.json', envelope)
+        return payload
 
     def validate_topology_update(self, raw):
         if self.access_status().get('role') != 'user':
@@ -678,7 +749,9 @@ class Store:
             update = json.loads(raw)
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError('Aktualizační balíček není platný JSON.') from exc
-        if (not isinstance(update, dict) or set(update) != {'schema', 'rootPublic', 'published'}
+        if (not isinstance(update, dict) or set(update) not in [
+                    {'schema', 'rootPublic', 'published'},
+                    {'schema', 'rootPublic', 'published', 'operational'}]
                 or update.get('schema') != TOPOLOGY_UPDATE_SCHEMA):
             raise ValueError('Neplatný aktualizační balíček topologie.')
         public_path = self.root / 'federation-root.pub'
@@ -691,8 +764,23 @@ class Store:
         proposed = f.validate_document(f.verify(update['rootPublic'], update['published']))
         if proposed['federationId'] != current['federationId']:
             raise ValueError('Aktualizace patří jiné federaci.')
-        if proposed['revision'] <= current['revision']:
-            raise ValueError('Aktualizace musí obsahovat novější revizi.')
+        if proposed['revision'] < current['revision']:
+            raise ValueError('Aktualizace nesmí obsahovat starší revizi.')
+        operational = None
+        if update.get('operational') is not None:
+            operational = self.validate_operational_snapshot(
+                update['operational'], update['rootPublic'], proposed)
+        if proposed['revision'] == current['revision']:
+            previous = f.read(self.fleet / 'operational-snapshot.json')
+            previous_time = -1
+            if previous:
+                try:
+                    previous_time = f.verify(update['rootPublic'], previous).get('generatedAt', -1)
+                except (TypeError, ValueError):
+                    pass
+            if (f.digest(update['published']) != f.digest(current_envelope) or not operational
+                    or operational[0]['generatedAt'] <= previous_time):
+                raise ValueError('Aktualizace musí obsahovat novější revizi nebo provozní snapshot.')
         if proposed['revision'] == current['revision'] + 1 and proposed['previous'] != f.digest(current):
             raise ValueError('Nová revize nenavazuje na současnou topologii.')
         credential = f.verify(update['rootPublic'], f.read(self.root / 'credential.json'))
@@ -701,7 +789,7 @@ class Store:
         notebook = next((item for item in f.notebook_endpoints(proposed) if item['id'] == self.id), None)
         if notebook and (notebook['role'] != 'user' or notebook['wireguardKey'] != self.wireguard_identity()):
             raise ValueError('Aktualizace mění roli nebo WireGuard identitu tohoto notebooku.')
-        return update, current_envelope, current, proposed, notebook
+        return update, current_envelope, current, proposed, notebook, operational
 
     @staticmethod
     def routes_for(document):
@@ -726,13 +814,14 @@ class Store:
         return ('\n'.join(lines) + '\n').encode()
 
     def topology_refresh_plan(self, raw):
-        update, current_envelope, current, proposed, notebook = self.validate_topology_update(raw)
+        update, current_envelope, current, proposed, notebook, operational = self.validate_topology_update(raw)
         if not notebook and not all(Path(path).exists() for path in ['/usr/bin/nmcli', '/usr/bin/pkexec']):
             raise ValueError('Odvolání členství vyžaduje NetworkManager a polkit.')
         managed = nmcli_connections() if not notebook else {}
         current_routes = self.routes_for(current)
         proposed_routes = self.routes_for(proposed) if notebook else []
-        kind = 'update' if notebook else 'revoked'
+        kind = ('operational' if proposed['revision'] == current['revision']
+                else 'update' if notebook else 'revoked')
         plan = {'id': secrets.token_hex(24), 'expiresAt': time.time() + VPN_PLAN_TTL,
                 'kind': kind, 'currentRevision': current['revision'], 'revision': proposed['revision'],
                 'currentTopologyHash': f.digest(current_envelope),
@@ -741,7 +830,13 @@ class Store:
                 'removedRoutes': sorted(set(current_routes) - set(proposed_routes)),
                 'currentConnection': managed.get(VPN_CONNECTION),
                 'rollbackConnection': managed.get(VPN_BACKUP)}
-        if notebook:
+        if kind == 'operational':
+            plan['steps'] = [
+                'Ověřit podpis správce, federaci a shodnou podepsanou topologii.',
+                'Nahradit pouze ověřenou read-only cache reportů, služeb a verzí.',
+                'Neměnit WireGuard profil, routy, identitu ani pověření notebooku.',
+            ]
+        elif notebook:
             forwarding = self.forwarding_state()
             config = self.wireguard_config(proposed, notebook)
             f.atomic(self.root / 'wireguard-refresh.conf', config)
@@ -965,13 +1060,20 @@ class Store:
         plan = f.read(plan_path)
         if not plan or plan.get('id') != plan_id or plan.get('expiresAt', 0) < time.time():
             raise ValueError('Plán aktualizace topologie chybí nebo vypršel.')
-        update, current_envelope, current, proposed, notebook = self.validate_topology_update(
+        update, current_envelope, current, proposed, notebook, operational = self.validate_topology_update(
             json.dumps(plan.get('update')))
+        expected_kind = ('operational' if proposed['revision'] == current['revision']
+                         else 'update' if notebook else 'revoked')
         if (plan.get('currentRevision') != current['revision'] or plan.get('revision') != proposed['revision']
                 or plan.get('currentTopologyHash') != f.digest(current_envelope)
                 or plan.get('proposedTopologyHash') != f.digest(update['published'])
-                or plan.get('kind') != ('update' if notebook else 'revoked')):
+                or plan.get('kind') != expected_kind):
             raise ValueError('Topologie se od vytvoření plánu změnila.')
+        if expected_kind == 'operational':
+            self.store_operational_snapshot(update['operational'], update['rootPublic'], proposed)
+            plan_path.unlink(missing_ok=True)
+            return {'access': self.access_status(), 'vpn': self.vpn_status(),
+                    'revision': proposed['revision'], 'kind': 'operational'}
         if not notebook:
             managed = nmcli_connections()
             if (plan.get('currentConnection') != managed.get(VPN_CONNECTION)
@@ -986,6 +1088,8 @@ class Store:
                     privileged_nmcli(['connection', 'delete', 'uuid', profile['uuid']])
                     removed.append(profile['uuid'])
             f.atomic(self.fleet / 'published.json', update['published'])
+            if operational:
+                self.store_operational_snapshot(update['operational'], update['rootPublic'], proposed)
             f.atomic(self.root / 'vpn-state.json', {
                 'state': 'revoked', 'revision': proposed['revision'], 'revokedAt': time.time(),
                 'managedProfilesRemoved': len(removed),
@@ -1016,6 +1120,8 @@ class Store:
             f.atomic(self.root / 'wireguard.conf', config.read_bytes())
             f.atomic(self.fleet / 'published.json', update['published'])
             self.reconcile_system_vpn(proposed, notebook)
+            if operational:
+                self.store_operational_snapshot(update['operational'], update['rootPublic'], proposed)
         except Exception as error:
             restore_errors = []
             try:
@@ -1278,7 +1384,8 @@ class Store:
                    'federationId': grant['federationId'], 'networkId': grant['networkId'],
                    'enrollmentNonce': grant['enrollmentNonce'], 'grantHash': f.digest(package['grant']),
                    'zeroTierAddress': address, 'zeroTierDeviceId': device_id,
-                   'zeroTierInterface': device, 'createdAt': now}
+                   'zeroTierInterface': device, 'createdAt': now,
+                   'software': software_info()}
         confirmation = {'schema': ADDRESS_CONFIRMATION_SCHEMA, 'cert': self.cert,
                         'joinGrant': package, 'signed': f.sign(self.root / 'key.pem', payload)}
         f.atomic(self.root / 'pending-address-confirmation.json', confirmation)
@@ -1320,7 +1427,8 @@ class Store:
         claim = f.verify(public, confirmation['signed'])
         claim_fields = {'schema', 'subject', 'federationId', 'networkId', 'enrollmentNonce',
                         'grantHash', 'zeroTierAddress', 'zeroTierDeviceId', 'zeroTierInterface', 'createdAt'}
-        if (set(claim) != claim_fields or claim.get('schema') != ADDRESS_CONFIRMATION_SCHEMA or claim.get('subject') != fingerprint(confirmation['cert'])
+        if (set(claim) not in [claim_fields, claim_fields | {'software'}]
+                or claim.get('schema') != ADDRESS_CONFIRMATION_SCHEMA or claim.get('subject') != fingerprint(confirmation['cert'])
                 or claim.get('subject') != grant.get('subject') or claim.get('federationId') != grant.get('federationId')
                 or claim.get('networkId') != grant.get('networkId') or claim.get('enrollmentNonce') != grant.get('enrollmentNonce')
                 or claim.get('grantHash') != f.digest(package['grant']) or time.time() > grant.get('acceptBy', 0)
@@ -1329,6 +1437,8 @@ class Store:
                 or type(claim.get('createdAt')) not in [int, float]
                 or not 0 <= time.time() - claim['createdAt'] <= ENROLLMENT_TTL):
             raise ValueError('Potvrzení adresy neodpovídá vydanému povolení.')
+        if 'software' in claim:
+            f.validate_software_info(claim['software'])
         return confirmation, grant, claim
 
     def issue_user_invitation(self, raw):
@@ -1350,13 +1460,20 @@ class Store:
                                                zero_tier_address=claim.get('zeroTierAddress'))
             published, document = self.publish_notebooks(private, document, [administrator, requested])
             self.write_wireguard_config(document)
+            notebook_software = f.read(self.fleet / 'notebook-software.json', {})
+            if not isinstance(notebook_software, dict):
+                notebook_software = {}
+            if claim.get('software') is not None:
+                notebook_software[grant['subject']] = f.validate_software_info(claim['software'])
+            f.atomic(self.fleet / 'notebook-software.json', notebook_software)
             now = int(time.time())
             credential = {'schema': USER_CREDENTIAL_SCHEMA, 'federationId': document['federationId'],
                           'subject': grant['subject'], 'role': 'user', 'issuedAt': now,
                           'expiresAt': now + 365 * 24 * 3600, 'serial': str(uuid.uuid4()),
                           'enrollmentNonce': grant['enrollmentNonce'], 'acceptBy': now + ENROLLMENT_TTL}
             return {'schema': INVITATION_SCHEMA, 'rootPublic': root_public, 'published': published,
-                    'credential': f.sign(private, credential)}
+                    'credential': f.sign(private, credential),
+                    'operational': self.operational_snapshot(document)}
 
     def accept_user_invitation(self, raw):
         access = self.access_status()
@@ -1364,7 +1481,10 @@ class Store:
                 or (self.fleet / 'root.pem').exists()):
             raise ValueError('Notebook již má pověření nebo řídicí identitu.')
         invitation = json.loads(raw)
-        if set(invitation) != {'schema', 'rootPublic', 'published', 'credential'} or invitation['schema'] != INVITATION_SCHEMA:
+        if (set(invitation) not in [
+                    {'schema', 'rootPublic', 'published', 'credential'},
+                    {'schema', 'rootPublic', 'published', 'credential', 'operational'}]
+                or invitation['schema'] != INVITATION_SCHEMA):
             raise ValueError('Neplatná pozvánka notebooku.')
         credential = f.verify(invitation['rootPublic'], invitation['credential'])
         document = f.validate_document(f.verify(invitation['rootPublic'], invitation['published']))
@@ -1383,6 +1503,9 @@ class Store:
         if (not confirmation or f.verify(confirmation_public, confirmation['signed']).get('zeroTierAddress')
                 != notebook.get('zeroTierAddress')):
             raise ValueError('Pozvánka neobsahuje potvrzenou ZeroTier adresu notebooku.')
+        if invitation.get('operational') is not None:
+            self.validate_operational_snapshot(
+                invitation['operational'], invitation['rootPublic'], document)
         self.write_wireguard_config(document)
         # All signatures and bindings are checked before publishing any file.
         for path, value in [(self.root / 'federation-root.pub', invitation['rootPublic'].encode()),
@@ -1392,6 +1515,9 @@ class Store:
         f.atomic(self.root / 'federation-root.pub', invitation['rootPublic'].encode())
         f.atomic(self.fleet / 'root.pub', invitation['rootPublic'].encode())
         f.atomic(self.fleet / 'published.json', invitation['published'])
+        if invitation.get('operational') is not None:
+            self.store_operational_snapshot(
+                invitation['operational'], invitation['rootPublic'], document)
         f.atomic(self.root / 'credential.json', invitation['credential'])
         status = self.access_status()
         if status.get('role') != 'user':

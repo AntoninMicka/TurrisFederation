@@ -273,6 +273,11 @@ class NotebookTests(unittest.TestCase):
     def test_admin_issues_one_time_user_invitation_without_private_root(self):
         self.published_federation(self.a)
         self.a.bootstrap_admin_credential()
+        service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 11434, 'path': None}
+        f.atomic(self.a.fleet / 'reports.json', {str(uuid.UUID(int=1)): {
+            'services': [service], 'servicesObservedAt': 100,
+            'software': {'version': 'a' * 64, 'builtAt': 99}}})
         request, grant, confirmation, invitation = self.staged_user_invitation()
         raw = json.dumps(invitation)
         self.assertNotIn('PRIVATE KEY', raw)
@@ -288,12 +293,19 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(32, len(__import__('base64').b64decode(user['wireguardKey'])))
         self.assertEqual(invitation['published'], f.read(self.a.fleet / 'published.json'))
         self.assertNotIn(self.b.id, published['members'])
+        self.assertIn('operational', invitation)
+        self.assertEqual(n.software_info(), f.read(self.a.fleet / 'notebook-software.json')[self.b.id])
 
         status = self.b.accept_user_invitation(raw)
         self.assertEqual(('valid', 'user', self.b.id), (status['state'], status['role'], status['subject']))
         self.assertFalse((self.b.fleet / 'root.pem').exists())
         self.assertTrue((self.b.fleet / 'root.pub').exists())
         self.assertTrue((self.b.fleet / 'published.json').exists())
+        overview = f.read_only_notebook_overview(self.b.fleet)
+        self.assertEqual('ollama', overview['services'][0]['id'])
+        self.assertEqual('a' * 64, overview['nodes'][0]['software']['version'])
+        self.assertEqual(n.software_info(),
+                         next(item for item in overview['notebooks'] if item['id'] == self.b.id)['software'])
         config = (self.b.root / 'wireguard.conf').read_text()
         self.assertEqual(0o600, (self.b.root / 'wireguard.conf').stat().st_mode & 0o777)
         self.assertEqual(0o600, (self.b.root / 'wireguard.key').stat().st_mode & 0o777)
@@ -529,8 +541,8 @@ class NotebookTests(unittest.TestCase):
 
     def test_topology_refresh_rejects_old_foreign_and_role_changing_documents(self):
         invitation = self.onboard_user()
-        with self.assertRaisesRegex(ValueError, 'novější revizi'):
-            self.b.topology_refresh_plan(self.a.topology_update_export())
+        plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        self.assertEqual('operational', plan['kind'])
 
         foreign = json.loads(self.a.topology_update_export())
         foreign['rootPublic'] = f.public_key(self.c.root / 'key.pem')
@@ -547,6 +559,28 @@ class NotebookTests(unittest.TestCase):
                              'rootPublic': public, 'published': envelope})
         with self.assertRaisesRegex(ValueError, 'mění roli'):
             self.b.topology_refresh_plan(update)
+
+    def test_same_revision_operational_snapshot_refreshes_services_without_vpn_change(self):
+        self.onboard_user()
+        router_id = str(uuid.UUID(int=1))
+        service = {'id': 'home', 'name': 'Home Assistant', 'hostAddress': '192.168.1.30',
+                   'protocol': 'http', 'port': 8123, 'path': '/lovelace'}
+        f.atomic(self.a.fleet / 'reports.json', {router_id: {
+            'services': [service], 'servicesObservedAt': 200,
+            'software': {'version': 'b' * 64, 'builtAt': 199}}})
+        plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        self.assertEqual(('operational', plan['currentRevision'], plan['currentRevision']),
+                         (plan['kind'], plan['currentRevision'], plan['revision']))
+        result = self.b.topology_refresh_apply(plan['id'])
+        self.assertEqual('operational', result['kind'])
+        overview = f.read_only_notebook_overview(self.b.fleet)
+        self.assertEqual(('home', 'b' * 64),
+                         (overview['services'][0]['id'], overview['nodes'][0]['software']['version']))
+
+        tampered = json.loads(self.a.topology_update_export())
+        tampered['operational']['payload'] = tampered['operational']['payload'][:-2] + 'AA'
+        with self.assertRaises(ValueError):
+            self.b.topology_refresh_plan(json.dumps(tampered))
 
     def test_topology_refresh_restores_profile_and_revision_after_commit_failure(self):
         invitation = self.onboard_user()

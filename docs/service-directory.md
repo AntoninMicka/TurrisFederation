@@ -2,9 +2,10 @@
 
 Stav: místní editor, podepsaná agregace, read-only seznam a otevírání HTTP(S)
 v systémovém prohlížeči jsou implementované a ověřené v desktopové
-aplikaci i na skutečném Turrisu. Uživatelský notebook bez místní cache
-podepsaných reportů zatím katalog automaticky nezíská; to je samostatný
-navazující úkol.
+aplikaci i na skutečném Turrisu. Administrátor může uživatelskému notebooku
+předat kořenovou identitou podepsaný read-only snapshot katalogů a verzí jako
+součást finální pozvánky nebo aktualizačního balíčku. Fyzická akceptace tohoto
+přenosu na dvou noteboocích zůstává otevřená.
 
 ## Cíl
 
@@ -122,7 +123,7 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Formát, validace, atomické místní úložiště a PAM/CSRF editor na routeru.
 - [x] Podepsaný přenos v reportu, agregace, stáří a odstranění po odvolání uzlu.
 - [x] Jednotný read-only seznam v desktopu a WebApps, filtry a kopírování endpointu.
-- [ ] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
+- [x] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
 - [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.

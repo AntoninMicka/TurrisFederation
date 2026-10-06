@@ -234,7 +234,7 @@ async function applyTopologyRefresh() {
   topologyRefreshBusy.value = true;
   topologyRefreshError.value = "";
   try {
-    const result = await notebookVpnAction<{ kind: "update" | "revoked"; revision: number; vpn: NotebookVpnStatus }>({
+    const result = await notebookVpnAction<{ kind: "update" | "revoked" | "operational"; revision: number; vpn: NotebookVpnStatus }>({
       action: "topology_refresh_apply", planId: topologyRefreshPlan.value.id, confirm: true,
     });
     vpnStatus.value = result.vpn;
@@ -242,7 +242,7 @@ async function applyTopologyRefresh() {
     topologyRefreshConfirmed.value = false;
     topologyUpdateInput.value = "";
     await notebookOperation();
-    if (result.kind === "update") await refreshReadOnlyOverview();
+    if (result.kind === "update" || result.kind === "operational") await refreshReadOnlyOverview();
     else {
       readOnlyOverview.value = null;
       message.value = `Členství bylo odvoláno revizí ${result.revision}; místní identita a data zůstaly zachované.`;

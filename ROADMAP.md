@@ -136,6 +136,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     je jeho dosavadní členství platné, odpojí spravovaný VPN profil a potom už
     další aktualizace nepřijme. Tok je lokálně otestovaný; zbývá fyzická
     akceptace s reálným polkit agentem, NetworkManagerem, VPN a routerem.
+    Finální pozvánka a export aktualizace nyní obsahují také kořenovou identitou
+    podepsaný, znovu validovaný read-only snapshot routerových katalogů a verzí
+    notebooků. Uživatelský notebook jej může přijmout i při stejné revizi
+    topologie bez změny VPN nebo rout. Verze uživatelského notebooku pochází
+    z jeho vlastním TLS klíčem podepsaného potvrzení adresy; nepřidává notebook
+    mezi administrátorské synchronizační peery. Fyzické předání snapshotu
+    mezi dvěma notebooky zůstává k ověření.
     Kontrola na `gx10-efde` po vyřešení konfliktu odhalila, že sync správně
     přenesl podepsanou revizi 10 se členy `Cacke` a `Palackeho`, ale aktivní
     NetworkManager profil zůstal na revizi 9. Generátor instalačního plánu navíc
@@ -252,7 +259,7 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   validace a etap je v [Zlatých stránkách služeb](docs/service-directory.md).
   Zobrazení, filtrování a otevírání služeb je ověřené v desktopové
   aplikaci i na skutečném Turrisu; samotné Zlaté stránky jsou uzavřené.
-  Otevřený zůstává jen navazující přenos katalogu na uživatelský notebook.
+  Otevřená zůstává fyzická akceptace přenosu katalogu na uživatelský notebook.
   - [x] Implementovat přesný formát, validaci vlastnictví LAN adresy, atomické
     místní úložiště a PAM/CSRF WebApps editor na jednotlivém routeru.
   - [x] Přidat služby do podepsaného provozního reportu, ověřenou agregaci,
@@ -264,9 +271,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   - [x] HTTP(S) endpoint otevírat v systémovém prohlížeči bez shellu; povolit
     pouze doslovnou IPv4 URL, platný port a validovanou cestu bez přihlašovacích
     údajů, query nebo fragmentu. TCP endpoint zůstává pouze ke kopírování.
-  - [ ] Zpřístupnit ověřený katalog také uživatelským notebookům bez místní
-    administrační cache reportů; přenos musí zachovat podpis a nesmí předat
-    kořenový privátní klíč ani správcovské oprávnění.
+  - [x] Zpřístupnit ověřený katalog také uživatelským notebookům bez místní
+    administrační cache reportů přes rootem podepsaný read-only snapshot ve
+    finální pozvánce a aktualizačním balíčku, bez předání kořenového privátního
+    klíče nebo správcovského oprávnění.
 - [ ] Automatická rotace nakonfigurovaných WireGuard klíčů a šifrovaná záloha
   kořenové identity notebooku zůstávají neimplementované.
 

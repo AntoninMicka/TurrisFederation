@@ -75,7 +75,8 @@ function builtAtLabel(software: SoftwareInfo | null | undefined) {
 
 function notebookSoftware(id: string) {
   if (id === props.notebook?.id) return props.notebook.software;
-  return props.notebook?.peers.find(peer => peer.id === id)?.software;
+  return props.notebook?.peers.find(peer => peer.id === id)?.software
+    ?? props.overview?.notebooks.find(item => item.id === id)?.software;
 }
 
 function diagnostic(nodeId: string) {
@@ -247,21 +248,21 @@ function presenceLabel(value: boolean | null, positive: string) {
     </section>
 
     <section v-if="notebook?.access.state === 'valid' && notebook.access.role === 'user'" class="overview-section">
-      <h3>Aktualizace podepsané topologie</h3>
-      <p>Vložte balíček předaný administrátorem. Nejprve se ověří podpis, federace, novější revize, role a WireGuard identita; systémové změny se provedou až po náhledu a potvrzení.</p>
+      <h3>Aktualizace podepsané topologie a provozního přehledu</h3>
+      <p>Vložte balíček předaný administrátorem. Nejprve se ověří podpis, federace, topologie, role a WireGuard identita. Balíček může při stejné revizi aktualizovat pouze read-only katalog služeb a verze uzlů.</p>
       <label>Aktualizační balíček<textarea class="pairing-data" :value="topologyUpdate" @input="$emit('update:topologyUpdate', ($event.target as HTMLTextAreaElement).value)"></textarea></label>
       <button type="button" class="secondary" :disabled="topologyRefreshBusy || !topologyUpdate.trim()" @click="$emit('topologyRefreshPreview')">{{ topologyRefreshBusy ? "Ověřuji…" : "Ověřit a zobrazit plán" }}</button>
       <p v-if="topologyRefreshError" class="error">{{ topologyRefreshError }}</p>
       <div v-if="topologyRefreshPlan" class="setup-preview">
-        <strong>{{ topologyRefreshPlan.kind === "revoked" ? "Revize odvolává členství tohoto notebooku" : "Podepsaná aktualizace je připravená" }}</strong>
+        <strong>{{ topologyRefreshPlan.kind === "revoked" ? "Revize odvolává členství tohoto notebooku" : topologyRefreshPlan.kind === "operational" ? "Ověřený provozní přehled je připravený" : "Podepsaná aktualizace je připravená" }}</strong>
         <p>Revize {{ topologyRefreshPlan.currentRevision }} → {{ topologyRefreshPlan.revision }}</p>
         <p v-if="topologyRefreshPlan.addedRoutes.length">Přidané routy: <code>{{ topologyRefreshPlan.addedRoutes.join(", ") }}</code></p>
         <p v-if="topologyRefreshPlan.removedRoutes.length">Odebrané routy: <code>{{ topologyRefreshPlan.removedRoutes.join(", ") }}</code></p>
         <p v-if="topologyRefreshPlan.kind === 'revoked'" class="warning">Spravovaný VPN profil i jeho federovaná rollback kopie budou odstraněny; ostatní NetworkManager profily, místní identita, pověření a data zůstanou zachované.</p>
         <p v-if="topologyRefreshPlan.forwarding && (topologyRefreshPlan.forwarding.ipv4 !== false || topologyRefreshPlan.forwarding.ipv6 !== false)" class="warning">Systémový IP forwarding je zapnutý nebo jej nelze ověřit. Aktualizace ho nemění; předávání provozu mezi fyzickou sítí a VPN není tímto stavem vyloučené.</p>
         <ol><li v-for="step in topologyRefreshPlan.steps" :key="step">{{ step }}</li></ol>
-        <label class="trust-check"><input type="checkbox" :checked="topologyRefreshConfirmed" @change="$emit('update:topologyRefreshConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím změnám a potvrzuji použití podepsané revize.</label>
-        <button type="button" :disabled="topologyRefreshBusy || !topologyRefreshConfirmed" @click="$emit('topologyRefreshApply')">{{ topologyRefreshPlan.kind === "revoked" ? "Přijmout odvolání a odpojit VPN" : "Aktualizovat topologii a VPN" }}</button>
+        <label class="trust-check"><input type="checkbox" :checked="topologyRefreshConfirmed" @change="$emit('update:topologyRefreshConfirmed', ($event.target as HTMLInputElement).checked)" />Rozumím změnám a potvrzuji použití podepsaného balíčku.</label>
+        <button type="button" :disabled="topologyRefreshBusy || !topologyRefreshConfirmed" @click="$emit('topologyRefreshApply')">{{ topologyRefreshPlan.kind === "revoked" ? "Přijmout odvolání a odpojit VPN" : topologyRefreshPlan.kind === "operational" ? "Aktualizovat služby a verze" : "Aktualizovat topologii a VPN" }}</button>
       </div>
     </section>
 

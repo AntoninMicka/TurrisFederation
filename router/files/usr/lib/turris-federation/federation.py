@@ -726,9 +726,18 @@ def read_only_notebook_overview(root):
                       'enrolled': node['id'] in doc['members'], 'state': state, 'reachable': reachable,
                       'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed,
                       'software': software})
-    notebooks = [{'id': item['id'], 'name': item['name'], 'role': item['role'],
-                  'zeroTierAddress': item['zeroTierAddress'], 'wireguardAddress': item['wireguardAddress']}
-                 for item in doc['config'].get('notebooks', [])]
+    notebook_versions = read(root / 'notebook-software.json', {})
+    notebook_versions = notebook_versions if isinstance(notebook_versions, dict) else {}
+    notebooks = []
+    for item in doc['config'].get('notebooks', []):
+        software = None
+        try:
+            software = validate_software_info(notebook_versions.get(item['id']))
+        except (TypeError, ValueError):
+            pass
+        notebooks.append({'id': item['id'], 'name': item['name'], 'role': item['role'],
+                          'zeroTierAddress': item['zeroTierAddress'],
+                          'wireguardAddress': item['wireguardAddress'], 'software': software})
     return {'revision': doc['revision'], 'networkId': doc['config']['networkId'],
             'availableRouterVersion': artifact_hash(), 'nodes': nodes,
             'notebooks': notebooks, 'services': aggregate_services(doc, reports),
