@@ -82,8 +82,9 @@ class NotebookNetworkServiceTests(unittest.TestCase):
             service = s.Service(config, Path(temporary) / 'service.sock', state)
             with patch.object(s, 'network_status', return_value={'guard': {'active': True}}), \
                     patch.object(s, 'guard_status', return_value={'active': True}):
-                self.assertEqual({'guard': {'active': True}},
-                                 service.dispatch({'action': 'status'}, 1000))
+                result = service.dispatch({'action': 'status'}, 1000)
+                self.assertEqual({'active': True}, result['guard'])
+                self.assertRegex(result['software']['version'], r'^[0-9a-f]{64}$')
             receipt = json.loads(state.read_text())
             self.assertEqual(('status', 1000, True),
                              (receipt['action'], receipt['uid'], receipt['ok']))

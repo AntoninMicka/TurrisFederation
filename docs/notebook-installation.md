@@ -74,6 +74,22 @@ Vývojový `run.sh` už systémovou síťovou službu verzovaně instaluje a
 aktualizuje. Její kontrakt a fyzickou akceptaci popisuje
 [privilegovaná síťová služba notebooku](notebook-network-service.md).
 
+### Kontrola shody místní instalace
+
+Přehled v panelu **Backend tohoto notebooku** porovnává všechny místní části,
+které mají běžet jako jedna verze. Aktuální desktopový program včetně
+zabaleného frontendu je referenční sestavení. Proti jeho vloženým artefaktům se
+porovnává klient stavové lišty a jeho autostart, běžící i nainstalovaný
+notebookový backend, federační knihovna, uživatelská systemd jednotka a běžící
+i nainstalovaná privilegovaná síťová služba včetně její systémové jednotky.
+
+Každý řádek zobrazuje zkrácený SHA-256 nainstalovaného a očekávaného obsahu a
+stav **Shoda**, **Neshoda** nebo **Chybí**. U systemd služeb vyžaduje celková
+shoda také aktivní a povolenou jednotku. Kontrola pouze čte místní soubory a
+stav systemd; sama nic neaktualizuje ani nerestartuje. Tím rozlišuje zastaralou
+část instalace od síťového problému, neprokazuje však funkčnost VPN ani
+dostupnost ostatních členů federace.
+
 Instalace balíčku může vyžádat systémové oprávnění, ale backend běží jako běžný
 uživatel. `postinst` smí provést pouze systémový `daemon-reload` a instalaci
 neměnných souborů; nesmí bez přihlášeného uživatele vytvořit identitu, přijmout

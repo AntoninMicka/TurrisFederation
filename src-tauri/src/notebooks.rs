@@ -1,9 +1,12 @@
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, fs, io::{Read, Write}, os::unix::{fs::PermissionsExt, net::UnixStream}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::Mutex, time::Duration};
 use tauri::Manager;
 
 const SERVICE: &str = include_str!("../../scripts/notebook_sync.py");
 const FEDERATION: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
+const NETWORK_SERVICE: &str = include_str!("../../scripts/notebook_network_service.py");
+const NETWORK_UNIT: &str = include_str!("../../packaging/turris-federation-network.service");
 const UNIT_NAME: &str = "turris-federation-backend.service";
 const AUTOSTART_NAME: &str = "cz.turris.federation-tray.desktop";
 const TRAY_EXECUTABLE_ENV: &str = "TF_TRAY_EXECUTABLE";
@@ -136,6 +139,70 @@ fn service_state(config: &Path) -> Value {
     json!({"installed": installed, "enabled": enabled, "active": active, "unit": UNIT_NAME})
 }
 
+fn content_hash(contents: &[u8]) -> String { format!("{:x}", Sha256::digest(contents)) }
+
+fn file_hash(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|contents| content_hash(&contents))
+}
+
+fn component(id: &str, label: &str, expected: String, installed: Option<String>, active: Option<bool>) -> Value {
+    let state = match installed.as_deref() {
+        None => "missing",
+        Some(value) if value == expected => "matching",
+        Some(_) => "mismatch",
+    };
+    json!({"id": id, "label": label, "expectedHash": expected,
+           "installedHash": installed, "state": state, "active": active})
+}
+
+fn local_components(data: &Path, config: &Path, running_backend: Option<&str>) -> Value {
+    let desktop = std::env::current_exe().ok().and_then(|path| file_hash(&path));
+    let desktop_expected = desktop.clone().unwrap_or_default();
+    let tray_path = tray_executable().ok();
+    let tray = tray_path.as_ref().and_then(|path| file_hash(path));
+    let tray_autostart = tray_path.as_ref().and_then(|path| autostart_contents(path).ok());
+    let script = scripts(data).ok();
+    let expected_backend = content_hash(SERVICE.as_bytes());
+    let expected_federation = content_hash(FEDERATION.as_bytes());
+    let backend_unit = script.as_ref().and_then(|path| unit_contents(data, path).ok());
+    let backend_state = service_state(config);
+    let backend_active = backend_state["active"].as_bool();
+    let backend_ready = Some(backend_active == Some(true) && backend_state["enabled"].as_bool() == Some(true));
+    let network_active = Command::new("systemctl").args(["is-active", "--quiet",
+        "turris-federation-network.service"]).status().map(|status| status.success()).unwrap_or(false);
+    let network_enabled = Command::new("systemctl").args(["is-enabled", "--quiet",
+        "turris-federation-network.service"]).status().map(|status| status.success()).unwrap_or(false);
+    let network_ready = Some(network_active && network_enabled);
+    let running_network = network_service_version();
+    let mut values = vec![
+        component("desktop", "Desktop a frontend", desktop_expected.clone(), desktop, Some(true)),
+        component("tray", "Klient stavové lišty", desktop_expected, tray, None),
+        component("backendRunning", "Běžící notebookový backend", expected_backend.clone(),
+                  running_backend.map(str::to_string), backend_active),
+        component("backendFile", "Soubor notebookového backendu", expected_backend,
+                  script.as_ref().and_then(|path| file_hash(path)), backend_active),
+        component("federationLibrary", "Federační knihovna backendu", expected_federation,
+                  script.as_ref().and_then(|path| file_hash(&path.with_file_name("federation.py"))), backend_active),
+    ];
+    if let Some(expected) = tray_autostart {
+        values.push(component("trayAutostart", "Autostart klienta stavové lišty", content_hash(expected.as_bytes()),
+                              file_hash(&autostart_path(config)), None));
+    }
+    if let Some(expected) = backend_unit {
+        values.push(component("backendUnit", "Uživatelská systemd jednotka", content_hash(expected.as_bytes()),
+                              file_hash(&unit_path(config)), backend_ready));
+    }
+    values.push(component("networkService", "Privilegovaná síťová služba", content_hash(NETWORK_SERVICE.as_bytes()),
+                          file_hash(Path::new("/usr/lib/turris-federation/notebook_network_service.py")), network_ready));
+    values.push(component("networkRunning", "Běžící privilegovaná síťová služba", content_hash(NETWORK_SERVICE.as_bytes()),
+                          running_network, network_ready));
+    values.push(component("networkUnit", "Systémová systemd jednotka", content_hash(NETWORK_UNIT.as_bytes()),
+                          file_hash(Path::new("/etc/systemd/system/turris-federation-network.service")), network_ready));
+    json!({"matching": values.iter().all(|value| value["state"].as_str() == Some("matching")
+                                         && value["active"].as_bool() != Some(false)),
+           "components": values})
+}
+
 fn install_service(data: &Path, config: &Path) -> Result<(), String> {
     let script = scripts(data)?;
     let target = unit_path(config);
@@ -198,6 +265,18 @@ fn backend_status() -> Result<Value, String> {
     let response: Value = serde_json::from_slice(&raw).map_err(|_| "Backend vrátil neplatný stav.".to_string())?;
     if response["ok"].as_bool() != Some(true) { return Err(response["error"].as_str().unwrap_or("Backend odmítl požadavek.").into()); }
     Ok(response)
+}
+
+fn network_service_version() -> Option<String> {
+    let mut socket = UnixStream::connect("/run/turris-federation/notebook-network.sock").ok()?;
+    socket.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    socket.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+    socket.write_all(b"{\"action\":\"status\",\"networkId\":null}\n").ok()?;
+    let mut raw = Vec::new();
+    socket.take(2 * 1024 * 1024).read_to_end(&mut raw).ok()?;
+    let response: Value = serde_json::from_slice(&raw).ok()?;
+    if response["ok"].as_bool() != Some(true) { return None; }
+    response["software"]["version"].as_str().map(str::to_string)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -469,6 +548,10 @@ pub async fn notebook_action(request: Value, app: tauri::AppHandle) -> Result<Va
         let running = configured && (child_running || service_state(&config_dir)["active"].as_bool() == Some(true));
         result["running"] = json!(running);
         result["service"] = service_state(&config_dir);
+        let running_backend = backend_status().ok()
+            .and_then(|response| response["status"]["software"]["version"].as_str().map(str::to_string));
+        result["localComponents"] = local_components(
+            &data, &config_dir, running_backend.as_deref());
         if let Some(error) = service_error.or_else(|| service.startup_error.lock().ok().and_then(|value| value.clone())) {
             result["serviceError"] = json!(error);
         }
@@ -518,6 +601,18 @@ mod tests {
         assert!(validate_tray_executable(PathBuf::from("relative/client")).is_err());
         assert!(validate_tray_executable(PathBuf::from("/definitely/missing/turris-federation")).is_err());
         assert!(validate_tray_executable(std::env::current_exe().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn component_manifest_distinguishes_matching_mismatched_and_missing_files() {
+        let expected = content_hash(b"expected");
+        let matching = component("matching", "Matching", expected.clone(), Some(expected.clone()), Some(true));
+        let mismatch = component("mismatch", "Mismatch", expected.clone(), Some(content_hash(b"old")), Some(true));
+        let missing = component("missing", "Missing", expected, None, None);
+        assert_eq!(matching["state"], "matching");
+        assert_eq!(mismatch["state"], "mismatch");
+        assert_eq!(missing["state"], "missing");
+        assert_eq!(content_hash(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[test]

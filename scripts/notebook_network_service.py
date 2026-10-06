@@ -38,6 +38,15 @@ PRIVATE_V4 = tuple(ipaddress.ip_network(value) for value in [
     '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'])
 
 
+def software_info():
+    source = Path(__file__)
+    try:
+        return {'version': hashlib.sha256(source.read_bytes()).hexdigest(),
+                'builtAt': source.stat().st_mtime}
+    except OSError:
+        return {'version': None, 'builtAt': None}
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -455,6 +464,7 @@ class Service:
         network_id = request.get('networkId')
         if action == 'status':
             result = network_status(network_id)
+            result['software'] = software_info()
         elif action == 'reconcile':
             result = {'guard': apply_guard()}
         elif action == 'zerotier_join':

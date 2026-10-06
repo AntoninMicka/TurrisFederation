@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { NotebookSyncStatus } from "./backend";
+import type { LocalNotebookComponent, NotebookSyncStatus } from "./backend";
 import type { DiagnosticMeasurement, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, ReadOnlyNode, ReadOnlyOverview, SoftwareInfo, TopologyRefreshPlan } from "./domain";
 import { vpnHeadline, vpnPlanLabel } from "./vpnStatus";
 
@@ -81,6 +81,17 @@ const componentLabels = {
 function componentClass(installed: string | null | undefined, available: string | null | undefined) {
   if (!installed || !available) return "unknown";
   return installed === available ? "green" : "red";
+}
+
+function localComponentClass(component: LocalNotebookComponent) {
+  return component.state === "matching" && component.active !== false ? "green" : "red";
+}
+
+function localComponentLabel(component: LocalNotebookComponent) {
+  if (component.state === "missing") return "● Chybí";
+  if (component.state === "mismatch") return "● Neshoda";
+  if (component.active === false) return "● Shoda souboru, služba není připravená";
+  return "● Shoda";
 }
 
 function notebookSoftware(id: string) {
@@ -179,6 +190,25 @@ function presenceLabel(value: boolean | null, positive: string) {
         </div>
       </div>
       <p v-if="serviceError || notebook?.serviceError" class="error">{{ serviceError || notebook?.serviceError }}</p>
+      <p v-if="notebook?.localComponents"
+        :class="['overview-signal', 'software-version', notebook.localComponents.matching ? 'green' : 'red']">
+        {{ notebook.localComponents.matching ? "● Všechny místní části jsou shodné" : "● Místní instalace není jednotná" }}
+      </p>
+      <div v-if="notebook?.localComponents" class="overview-table-wrap">
+        <table class="overview-table">
+          <thead><tr><th>Komponenta</th><th>Stav</th><th>Nainstalováno</th><th>Očekáváno</th></tr></thead>
+          <tbody>
+            <tr v-for="component in notebook.localComponents.components" :key="component.id">
+              <td><strong>{{ component.label }}</strong></td>
+              <td><span :class="['overview-signal', localComponentClass(component)]">{{ localComponentLabel(component) }}</span></td>
+              <td><code>{{ component.installedHash?.slice(0, 12) || "—" }}</code></td>
+              <td><code>{{ component.expectedHash.slice(0, 12) || "—" }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="muted">Shoda místních komponent není v této verzi desktopu dostupná.</p>
+      <p class="muted">Desktop s frontendem je místní referenční sestavení. Tray, jeho autostart, běžící i nainstalovaný backend, federační knihovna a privilegovaná síťová služba se porovnávají s obsahem dodaným touto aplikací.</p>
       <p class="muted">Uživatelský notebook nepotřebuje adresu místní LAN. Jeho stabilní ZeroTier a WireGuard adresy pocházejí z podepsané topologie; změna Wi‑Fi ani fyzické sítě jeho identitu nemění.</p>
     </section>
 

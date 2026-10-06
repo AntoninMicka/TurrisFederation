@@ -81,6 +81,18 @@ export interface NotebookPeer {
   software?: SoftwareInfo | null;
   localNodes?: string[]; remoteNodes?: string[]; localConfig?: unknown; remoteConfig?: unknown;
 }
+export interface LocalNotebookComponent {
+  id: string;
+  label: string;
+  expectedHash: string;
+  installedHash: string | null;
+  state: "matching" | "mismatch" | "missing";
+  active: boolean | null;
+}
+export interface LocalNotebookComponents {
+  matching: boolean;
+  components: LocalNotebookComponent[];
+}
 export interface NotebookSyncStatus {
   id: string; name: string; running: boolean; invitation: string; configurationVersion: string;
   software: SoftwareInfo;
@@ -88,6 +100,7 @@ export interface NotebookSyncStatus {
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
   serviceError?: string;
   service?: { installed: boolean; enabled: boolean; active: boolean; unit: string };
+  localComponents?: LocalNotebookComponents;
   vpn?: NotebookVpnStatus;
   access: { state: "unconnected" | "valid" | "invalid"; role: "administrator" | "user" | null; canBootstrapAdmin: boolean; error?: string; federationId?: string; subject?: string; issuedAt?: number; expiresAt?: number | null };
 }
