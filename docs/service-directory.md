@@ -75,13 +75,23 @@ reportu okamžitě. Přijaté routery jej stáhnou v následujícím periodické
 synchronizačním cyklu; editor proto nesmí čekat na zdravotní kontrolu, než
 změnu začne publikovat.
 
-Rollback síťové konfigurace nesmí katalog vymazat. Agent zachová poslední
-ověřenou dvojici `hosts`/`hostsObservedAt` a `services`/`servicesObservedAt`;
+Rollback síťové konfigurace nesmí katalog vymazat ani zastavit jeho obnovování.
+Agent zachová poslední ověřenou dvojici `hosts`/`hostsObservedAt` a
+`services`/`servicesObservedAt` a pokračuje v samostatném periodickém stažení
+katalogů i tehdy, když síťová revize zůstala v rollbacku;
 při každém podepsaném dotazu navíc znovu složí hosty z pasivní tabulky sousedů
 a DHCP lease a služby z autoritativního `services.json`. Neprovádí přitom
 aktivní skenování. Při kompletní aktualizaci již přijatého routeru se nový agent
 spustí ještě před změnou sítě, takže i případný následný rollback vrací katalog
 a verzi nového agenta.
+
+Všechny cesty, které zapisují stav nasazení nebo distribuovaný report, slučují
+části katalogu nezávisle. Chybějící pole znamená „tato odpověď údaj neobsahuje“
+a nesmí smazat dříve ověřenou hodnotu; teprve explicitní prázdný seznam s novým
+časem pozorování autoritativně odstraní hosty nebo služby. To platí pro průběžné
+obnovení, distribuci nové revize, fázi potvrzování, úspěšné potvrzení i rollback.
+Síťové dotazy se přitom neprovádějí pod zámkem místního stavu, aby se dva uzly
+v rollbacku navzájem nezablokovaly.
 
 Agregovaný záznam navíc vždy nese identitu a název oznamujícího routeru,
 čas pozorování a stav čerstvosti. Při nedostupnosti routeru lze zobrazit poslední

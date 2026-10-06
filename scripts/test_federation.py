@@ -323,9 +323,32 @@ class FederationTests(unittest.TestCase):
         with patch.object(f, 'peer_status', side_effect=ValueError('offline')):
             stale = f.refresh_catalog(self.root, doc, node(1)['id'])
         self.assertEqual(101, stale[node(2)['id']]['servicesObservedAt'])
+        software = {'version': 'a' * 64, 'builtAt': 102}
+        with patch.object(f, 'peer_status', return_value={'software': software}):
+            version_only = f.refresh_catalog(self.root, doc, node(1)['id'])
+        self.assertEqual(remote_service, version_only[node(2)['id']]['services'][0])
+        self.assertEqual(software, version_only[node(2)['id']]['software'])
+        with patch.object(f, 'peer_status', return_value={
+                'services': [], 'servicesObservedAt': 103, 'software': software}):
+            removed = f.refresh_catalog(self.root, doc, node(1)['id'])
+        self.assertEqual([], removed[node(2)['id']]['services'])
+        self.assertEqual(103, removed[node(2)['id']]['servicesObservedAt'])
         revoked = self.document(members={node(1)['id']: self.member(1)})
         without_revoked = f.refresh_catalog(self.root, revoked, node(1)['id'])
         self.assertNotIn(node(2)['id'], without_revoked)
+
+    def test_rollback_router_keeps_refreshing_independent_catalog(self):
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        f.atomic(self.root / 'root.pub', f.public_key(self.root / 'root.pem').encode())
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'report.json', {
+            'state': 'rollback', 'receivedRevision': doc['revision'], 'appliedRevision': 0})
+        with patch.object(f, 'exchange_bundles'), \
+                patch.object(f, 'refresh_catalog', side_effect=KeyboardInterrupt) as refresh, \
+                self.assertRaises(KeyboardInterrupt):
+            f.sync_loop(self.root)
+        refresh.assert_called_once_with(self.root, doc, node(1)['id'])
 
     def test_live_refresh_reads_signed_catalogs_from_enrolled_nodes(self):
         members = {node(1)['id']: self.member(1), node(2)['id']: self.member(2)}
@@ -733,7 +756,12 @@ class FederationTests(unittest.TestCase):
         members = {node(1)['id']: self.member(1)}
         f.atomic(self.root / 'members.json', members)
         f.snapshot(self.root, self.config, members)
-        f.atomic(self.root / 'reports.json', {node(1)['id']: {'appliedRevision': 1}})
+        service = {'id': 'printer', 'name': 'Printer', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 443, 'path': '/'}
+        f.atomic(self.root / 'reports.json', {node(1)['id']: {
+            'appliedRevision': 1,
+            'hosts': [{'address': '192.168.1.20', 'name': 'printer.local'}],
+            'hostsObservedAt': 100, 'services': [service], 'servicesObservedAt': 101}})
         lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.2.10'}
         plan = {'id': 'deploy-second', 'expiresAt': time.time() + 600, 'configHash': f.digest(self.config),
                 'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
@@ -768,6 +796,8 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('error', first)
         self.assertEqual(1, first['appliedRevision'])
         self.assertEqual(2, first['receivedRevision'])
+        self.assertEqual('printer.local', first['hosts'][0]['name'])
+        self.assertEqual(service, first['services'][0])
 
     def test_network_sync_refuses_software_and_commands(self):
         for key in ['software', 'command', 'artifact', 'update']:
@@ -1465,10 +1495,18 @@ firewall.vpn_zerotier.forward='REJECT'
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
         f.atomic(self.root / 'pending.json', {'token': 'ok', 'revision': 1, 'deadline': time.time() + 120})
+        service = {'id': 'printer', 'name': 'Printer', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 443, 'path': '/'}
+        hosts = [{'address': '192.168.1.20', 'name': 'printer.local'}]
+        f.atomic(self.root / 'report.json', {
+            'hosts': hosts, 'hostsObservedAt': 100,
+            'services': [service], 'servicesObservedAt': 101})
         with patch.object(f, 'health', return_value={'state': 'waiting_peers', 'pendingPeers': [node(2)['id']]}), patch.object(f, 'configuration_hash', return_value='hash'):
             report = f.confirm(self.root, 'ok')
         self.assertEqual('waiting_peers', report['state'])
         self.assertEqual(1, report['appliedRevision'])
+        self.assertEqual(hosts, report['hosts'])
+        self.assertEqual([service], report['services'])
         self.assertFalse((self.root / 'pending.json').exists())
 
     def test_partial_uci_failure_restores_both_files_and_keeps_old_applied_revision(self):
@@ -1546,6 +1584,32 @@ firewall.vpn_zerotier.forward='REJECT'
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
         return config_dir
+
+    def test_confirming_and_rollback_preserve_independent_catalog_sections(self):
+        config_dir = self.prepare_operation()
+        service = {'id': 'printer', 'name': 'Printer', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 443, 'path': '/'}
+        hosts = [{'address': '192.168.1.20', 'name': 'printer.local'}]
+        f.atomic(self.root / 'report.json', {
+            'state': 'active', 'appliedRevision': 0,
+            'hosts': hosts, 'hostsObservedAt': 100,
+            'services': [service], 'servicesObservedAt': 101})
+        with patch.object(f, 'CONFIG_DIR', config_dir), patch.object(f, 'local_check'), \
+                patch.object(f, 'check_routes'), patch.object(f, 'render_apply'), \
+                patch.object(f, 'verify', return_value=self.document()), \
+                patch.object(f.subprocess, 'Popen'):
+            f.stage(self.root, self.document())
+        confirming = f.read(self.root / 'report.json')
+        self.assertEqual('confirming', confirming['state'])
+        self.assertEqual(hosts, confirming['hosts'])
+        self.assertEqual([service], confirming['services'])
+        with patch.object(f, 'CONFIG_DIR', config_dir), patch.object(f, 'run', return_value=b''), \
+                patch.object(f.subprocess, 'run'):
+            f.rollback(self.root)
+        rolled_back = f.read(self.root / 'report.json')
+        self.assertEqual('rollback', rolled_back['state'])
+        self.assertEqual(hosts, rolled_back['hosts'])
+        self.assertEqual([service], rolled_back['services'])
 
     def test_confirmation_health_does_not_block_watchdog_or_overwrite_rollback(self):
         config_dir = self.prepare_operation()

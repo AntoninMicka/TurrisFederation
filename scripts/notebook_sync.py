@@ -47,6 +47,7 @@ ADDRESS_CONFIRMATION_SCHEMA = 'tf-notebook-address-confirmation-1'
 INVITATION_SCHEMA = 'tf-notebook-invitation-1'
 TOPOLOGY_UPDATE_SCHEMA = 'tf-notebook-topology-update-1'
 OPERATIONAL_SNAPSHOT_SCHEMA = 'tf-notebook-operational-snapshot-1'
+SOFTWARE_REPORT_SCHEMA = 'tf-notebook-software-report-1'
 ENROLLMENT_TTL = 15 * 60
 VPN_CONNECTION = 'turris-federation'
 VPN_BACKUP = 'turris-federation-rollback'
@@ -367,14 +368,14 @@ def notebook_network_call(action, network_id):
     return result
 
 
-def enrollment_post(address, path, payload):
+def enrollment_post(address, path, payload, response_limit=LOCAL_LIMIT):
     connection = http.client.HTTPConnection(address, ENROLLMENT_PORT, timeout=8)
     body = f.encode(payload)
     try:
         connection.request('POST', path, body, {'Content-Type': 'application/json'})
         response = connection.getresponse()
-        raw = response.read(LOCAL_LIMIT + 1)
-        if response.status != 200 or len(raw) > LOCAL_LIMIT:
+        raw = response.read(response_limit + 1)
+        if response.status != 200 or len(raw) > response_limit:
             raise ValueError('Protější notebook odmítl přijímací zprávu.')
         result = json.loads(raw)
         if result.get('ok') is not True:
@@ -384,7 +385,7 @@ def enrollment_post(address, path, payload):
         raise ValueError('Protější notebook vrátil neplatnou přijímací odpověď.') from exc
     except (OSError, http.client.HTTPException) as exc:
         raise ValueError(
-            'Protější notebook na LAN adrese %s neodpovídá na portu %s. '
+            'Protější notebook na adrese %s neodpovídá na portu %s. '
             'Ověřte jeho běžící backend a místní firewall; na Debianu může pravidla '
             'spravovat firewalld, i když UFW není nainstalované.' % (address, ENROLLMENT_PORT)) from exc
     finally:
@@ -765,23 +766,11 @@ class Store:
         previous_reports = previous_reports if isinstance(previous_reports, dict) else {}
         merged_reports = {}
         for node_id, node in nodes.items():
-            previous = previous_reports.get(node_id, {})
             try:
-                previous = f.validate_catalog(node, previous) or {}
+                merged = f.merge_catalog(node, previous_reports.get(node_id, {}),
+                                         reports.get(node_id, {}))
             except (TypeError, ValueError):
-                previous = {}
-            incoming = reports.get(node_id, {})
-            merged = dict(previous)
-            for keys in [('hosts', 'hostsObservedAt'), ('services', 'servicesObservedAt')]:
-                if any(key in incoming for key in keys):
-                    for key in keys:
-                        merged.pop(key, None)
-                        if key in incoming:
-                            merged[key] = incoming[key]
-            if 'software' in incoming:
-                merged['software'] = incoming['software']
-            if 'components' in incoming:
-                merged['components'] = incoming['components']
+                merged = {}
             if merged:
                 merged_reports[node_id] = merged
         known_notebooks = {item['id'] for item in document['config'].get('notebooks', [])}
@@ -799,6 +788,79 @@ class Store:
         f.atomic(self.fleet / 'notebook-software.json', merged_software)
         f.atomic(self.fleet / 'operational-snapshot.json', envelope)
         return payload
+
+    def software_report(self):
+        """Build a fresh user-signed version claim for the administrator."""
+        access = self.access_status()
+        if access.get('state') != 'valid' or access.get('role') != 'user':
+            raise ValueError('Verzi tímto kanálem smí hlásit jen uživatelský notebook.')
+        software = f.validate_software_info(software_info())
+        payload = {'schema': SOFTWARE_REPORT_SCHEMA, 'federationId': access['federationId'],
+                   'subject': self.id, 'createdAt': time.time(), 'software': software}
+        return {'schema': SOFTWARE_REPORT_SCHEMA, 'cert': self.cert,
+                'credential': f.read(self.root / 'credential.json'),
+                'signed': f.sign(self.root / 'key.pem', payload)}
+
+    def accept_software_report(self, package, source):
+        """Verify a current member report and return a root-signed read-only snapshot."""
+        if self.access_status().get('role') != 'administrator':
+            raise ValueError('Report verze smí přijmout jen administrátorský notebook.')
+        if (not isinstance(package, dict)
+                or set(package) != {'schema', 'cert', 'credential', 'signed'}
+                or package.get('schema') != SOFTWARE_REPORT_SCHEMA):
+            raise ValueError('Neplatný report verze notebooku.')
+        root_public = (self.root / 'federation-root.pub').read_text()
+        credential = f.verify(root_public, package['credential'])
+        fields = {'schema', 'federationId', 'subject', 'role', 'issuedAt', 'expiresAt',
+                  'serial', 'enrollmentNonce', 'acceptBy'}
+        expires = credential.get('expiresAt')
+        if (set(credential) != fields or credential.get('schema') != USER_CREDENTIAL_SCHEMA
+                or credential.get('role') != 'user'
+                or type(credential.get('issuedAt')) not in [int, float]
+                or credential['issuedAt'] > time.time() + 300
+                or expires is not None and (type(expires) not in [int, float] or expires <= time.time())
+                or not re.fullmatch('[a-f0-9]{64}', credential.get('enrollmentNonce', ''))
+                or type(credential.get('acceptBy')) not in [int, float]):
+            raise ValueError('Report používá neplatné uživatelské pověření.')
+        public = f.run(['openssl', 'x509', '-pubkey', '-noout'], package['cert'].encode()).decode()
+        claim = f.verify(public, package['signed'])
+        if (set(claim) != {'schema', 'federationId', 'subject', 'createdAt', 'software'}
+                or claim.get('schema') != SOFTWARE_REPORT_SCHEMA
+                or claim.get('subject') != fingerprint(package['cert'])
+                or claim.get('subject') != credential.get('subject')
+                or claim.get('federationId') != credential.get('federationId')
+                or type(claim.get('createdAt')) not in [int, float]
+                or abs(time.time() - claim['createdAt']) > 90):
+            raise ValueError('Podepsaný report verze neodpovídá pověření notebooku.')
+        document = f.validate_document(f.verify(root_public, f.read(self.fleet / 'published.json')))
+        notebook = next((item for item in document['config'].get('notebooks', [])
+                         if item['id'] == claim['subject']), None)
+        if (document['federationId'] != claim['federationId'] or not notebook
+                or notebook.get('role') != 'user'
+                or notebook.get('zeroTierAddress') != source):
+            raise ValueError('Report nepřišel z adresy aktuálního uživatelského notebooku.')
+        software = f.validate_software_info(claim['software'])
+        self.remember_notebook_software(claim['subject'], software)
+        return self.operational_snapshot(document)
+
+    def exchange_software_report(self):
+        """Backfill versions and the signed read-only catalog over ZeroTier."""
+        access = self.access_status()
+        if access.get('state') != 'valid' or access.get('role') != 'user':
+            return False
+        root_public = (self.root / 'federation-root.pub').read_text()
+        document = f.validate_document(f.verify(root_public, f.read(self.fleet / 'published.json')))
+        administrator = next((item for item in document['config'].get('notebooks', [])
+                              if item.get('role') == 'administrator'), None)
+        if not administrator or not administrator.get('zeroTierAddress'):
+            raise ValueError('Podepsaná topologie neobsahuje adresu administrátorského notebooku.')
+        response = enrollment_post(administrator['zeroTierAddress'], '/software-report',
+                                   self.software_report(), response_limit=MAX)
+        operational = response.get('operational')
+        if operational is None:
+            raise ValueError('Administrátor nevrátil podepsaný provozní přehled.')
+        self.store_operational_snapshot(operational, root_public, document)
+        return True
 
     def validate_topology_update(self, raw):
         if self.access_status().get('role') != 'user':
@@ -1860,6 +1922,7 @@ class Store:
         return {'id': self.id, 'name': f.read(self.root / 'config.json', {}).get('name', socket.gethostname()),
                 'access': self.access_status(),
                 'software': local_software,
+                'softwareReport': f.read(self.root / 'software-report-runtime.json', {}),
                 'config': f.read(self.root / 'config.json', {}), 'peers': sorted(items, key=lambda p: p.get('name', p['id'])),
                 'updatedAt': runtime.get('updatedAt'), 'error': runtime.get('error'),
                 'configurationVersion': f.digest(snapshot['data']),
@@ -2072,7 +2135,7 @@ def make_enrollment_server(store):
         def do_POST(self):
             try:
                 response_payload = {'ok': True}
-                if not direct_lan_source(self.client_address[0]):
+                if self.path != '/software-report' and not direct_lan_source(self.client_address[0]):
                     self.send_error(403)
                     return
                 size = int(self.headers.get('Content-Length', '0'))
@@ -2081,7 +2144,10 @@ def make_enrollment_server(store):
                     self.send_error(400)
                     return
                 payload = json.loads(self.rfile.read(size))
-                if self.path == '/join-grant':
+                if self.path == '/software-report':
+                    operational = store.accept_software_report(payload, self.client_address[0])
+                    response_payload['operational'] = operational
+                elif self.path == '/join-grant':
                     accepted = store.accept_user_join_grant(json.dumps(payload))
                     network = notebook_network_call('zerotier_join', accepted['networkId'])
                     update_enrollment_session(
@@ -2203,10 +2269,22 @@ def serve_enrollment(store, stopped):
             'updatedAt': time.time()})
     next_beacon = 0
     next_join_status = 0
+    next_software_report = 0
     next_udp_retry = time.monotonic() + 5
     try:
         while not stopped.is_set():
             session = f.read(store.root / 'network-enrollment.json', {})
+            if time.monotonic() >= next_software_report:
+                try:
+                    if store.exchange_software_report():
+                        f.atomic(store.root / 'software-report-runtime.json', {
+                            'state': 'complete', 'updatedAt': time.time(), 'error': None})
+                except Exception as error:
+                    detail = (str(error) if isinstance(error, ValueError)
+                              else 'Podepsaný report verze se nepodařilo vyměnit.')
+                    f.atomic(store.root / 'software-report-runtime.json', {
+                        'state': 'error', 'updatedAt': time.time(), 'error': detail})
+                next_software_report = time.monotonic() + INTERVAL
             if session.get('stage') == 'joining' and session.get('expiresAt', 0) >= time.time():
                 status = {}
                 try:

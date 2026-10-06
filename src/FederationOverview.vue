@@ -258,6 +258,9 @@ function presenceLabel(value: boolean | null, positive: string) {
 
     <section class="overview-section">
       <h3>Notebooky federace</h3>
+      <p v-if="notebook?.access.role === 'user' && notebook.softwareReport?.state === 'error'" class="warning">
+        Automatická výměna verzí a Zlatých stránek s administrátorem selhala: {{ notebook.softwareReport.error }}
+      </p>
       <p v-if="!overview?.notebooks.length" class="muted">V podepsané topologii zatím není žádný notebook.</p>
       <div v-else class="overview-table-wrap">
         <table class="overview-table">

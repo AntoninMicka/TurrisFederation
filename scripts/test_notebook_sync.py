@@ -274,6 +274,51 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(remote, stored[self.b.id])
         self.assertNotIn(self.c.id, stored)
 
+    def test_public_status_exposes_safe_software_report_failure(self):
+        f.atomic(self.a.root / 'software-report-runtime.json', {
+            'state': 'error', 'updatedAt': 100,
+            'error': 'Administrátor neodpovídá na TCP/8857.'})
+        status = self.a.public_status()
+        self.assertEqual('error', status['softwareReport']['state'])
+        self.assertIn('8857', status['softwareReport']['error'])
+
+    def test_user_signed_report_backfills_versions_and_operational_catalog(self):
+        self.onboard_user()
+        (self.a.fleet / 'notebook-software.json').unlink(missing_ok=True)
+        (self.b.fleet / 'notebook-software.json').unlink(missing_ok=True)
+        service = {'id': 'home', 'name': 'Home Assistant',
+                   'hostAddress': '192.168.1.20', 'protocol': 'http',
+                   'port': 8123, 'path': '/'}
+        router_id = str(uuid.UUID(int=1))
+        f.atomic(self.a.fleet / 'reports.json', {router_id: {
+            'hosts': [{'address': '192.168.1.20', 'name': 'home.local'}],
+            'hostsObservedAt': 100, 'services': [service], 'servicesObservedAt': 101}})
+        report = self.b.software_report()
+        with self.assertRaisesRegex(ValueError, 'adresy aktuálního'):
+            self.a.accept_software_report(report, '10.147.0.99')
+
+        def exchange(address, path, payload, response_limit=n.LOCAL_LIMIT):
+            self.assertEqual('/software-report', path)
+            self.assertEqual(n.MAX, response_limit)
+            administrator = next(item for item in f.validate_document(f.verify(
+                (self.a.root / 'federation-root.pub').read_text(),
+                f.read(self.a.fleet / 'published.json')))['config']['notebooks']
+                                 if item['role'] == 'administrator')
+            self.assertEqual(administrator['zeroTierAddress'], address)
+            return {'ok': True, 'operational': self.a.accept_software_report(
+                payload, '10.147.0.3')}
+
+        with patch.object(n, 'enrollment_post', side_effect=exchange):
+            self.assertTrue(self.b.exchange_software_report())
+        admin_versions = f.read(self.a.fleet / 'notebook-software.json')
+        self.assertEqual(n.software_info(), admin_versions[self.b.id])
+        overview = f.read_only_notebook_overview(self.b.fleet)
+        versions = {item['id']: item['software'] for item in overview['notebooks']}
+        self.assertEqual(n.software_info(), versions[self.a.id])
+        self.assertEqual(n.software_info(), versions[self.b.id])
+        self.assertEqual(('home', 'home.local'),
+                         (overview['services'][0]['id'], overview['services'][0]['hostName']))
+
     def test_admin_sync_rejects_local_lan_and_accepts_stable_zerotier_address(self):
         lan = json.dumps([{'ifname': 'wlan0', 'addr_info': [
             {'family': 'inet', 'local': '192.168.1.20', 'prefixlen': 24, 'scope': 'global'}]}])
@@ -438,6 +483,30 @@ class NotebookTests(unittest.TestCase):
             server.server_close()
             worker.join(2)
 
+    def test_software_report_endpoint_uses_signed_overlay_validation_not_lan_gate(self):
+        with patch.object(n, 'ENROLLMENT_PORT', 0):
+            server = n.make_enrollment_server(self.a)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            connection = n.http.client.HTTPConnection(
+                '127.0.0.1', server.server_address[1], timeout=2)
+            with patch.object(n, 'direct_lan_source', return_value=False), \
+                    patch.object(self.a, 'accept_software_report',
+                                 return_value={'payload': 'signed'}) as accept:
+                connection.request('POST', '/software-report', f.encode({'report': 'test'}),
+                                   {'Content-Type': 'application/json'})
+                response = connection.getresponse()
+                result = json.loads(response.read())
+            self.assertEqual(200, response.status)
+            self.assertEqual({'payload': 'signed'}, result['operational'])
+            accept.assert_called_once_with({'report': 'test'}, '127.0.0.1')
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            worker.join(2)
+
     def test_enrollment_http_listener_survives_unavailable_multicast(self):
         server = Mock()
         stopped = threading.Event()
@@ -583,6 +652,8 @@ class NotebookTests(unittest.TestCase):
         service = {'id': 'home', 'name': 'Home Assistant', 'hostAddress': '192.168.1.30',
                    'protocol': 'http', 'port': 8123, 'path': '/lovelace'}
         f.atomic(self.a.fleet / 'reports.json', {router_id: {
+            'hosts': [{'address': '192.168.1.30', 'name': 'home.local'}],
+            'hostsObservedAt': 199,
             'services': [service], 'servicesObservedAt': 200,
             'software': {'version': 'b' * 64, 'builtAt': 199}}})
         with patch.object(f, 'refresh_reports', wraps=f.refresh_reports) as refresh:
@@ -595,6 +666,11 @@ class NotebookTests(unittest.TestCase):
         overview = f.read_only_notebook_overview(self.b.fleet)
         self.assertEqual(('home', 'b' * 64),
                          (overview['services'][0]['id'], overview['nodes'][0]['software']['version']))
+        self.assertEqual('home.local', overview['services'][0]['hostName'])
+        self.assertEqual('home.local', overview['nodes'][0]['hosts'][0]['name'])
+        versions = {item['id']: item['software'] for item in overview['notebooks']}
+        self.assertEqual(n.software_info(), versions[self.a.id])
+        self.assertEqual(n.software_info(), versions[self.b.id])
 
         tampered = json.loads(self.a.topology_update_export())
         tampered['operational']['payload'] = tampered['operational']['payload'][:-2] + 'AA'

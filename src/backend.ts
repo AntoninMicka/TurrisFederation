@@ -98,6 +98,7 @@ export interface NotebookSyncStatus {
   software: SoftwareInfo;
   config: { enabled?: boolean; name?: string; address?: string };
   peers: NotebookPeer[]; updatedAt?: number; error?: string;
+  softwareReport?: { state?: "complete" | "error"; updatedAt?: number; error?: string | null };
   serviceError?: string;
   service?: { installed: boolean; enabled: boolean; active: boolean; unit: string };
   localComponents?: LocalNotebookComponents;

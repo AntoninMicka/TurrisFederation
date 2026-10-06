@@ -617,8 +617,11 @@ def stage(root, doc, expected_hash=None):
                 raise ValueError('Aplikování vypršelo nebo bylo vráceno.')
             pending['phase'] = 'confirming'
             atomic(root / 'pending.json', pending)
-            atomic(root / 'report.json', {'state': 'confirming', 'receivedRevision': doc['revision'],
-                   'appliedRevision': pending['previousApplied'], 'checkedAt': time.time()})
+            confirming = {'state': 'confirming', 'receivedRevision': doc['revision'],
+                          'appliedRevision': pending['previousApplied'], 'checkedAt': time.time()}
+            if node and node['id'] in doc['members']:
+                confirming = merge_report(node, report_before, confirming)
+            atomic(root / 'report.json', confirming)
         return pending
     except Exception:
         with locked(root):
@@ -1134,6 +1137,9 @@ def confirm(root, token):
             raise ValueError('Stav se během potvrzení změnil nebo potvrzení vypršelo.')
         result.update({'receivedRevision': doc['revision'], 'appliedRevision': doc['revision'],
                        'configurationHash': before_hash, 'checkedAt': time.time()})
+        node = self_node(root, doc)
+        if node and node['id'] in doc['members']:
+            result = merge_report(node, read(root / 'report.json', {}), result)
         atomic(root / 'report.json', result)
         (root / 'pending.json').unlink()
         return {**result, 'software': software_info()}
@@ -1192,6 +1198,36 @@ def peer_status(peer, member, signer=None):
     return {**report, **({'software': software} if software else {}), **(catalog or {})}
 
 
+def merge_catalog(node, previous, incoming):
+    """Merge independently optional signed catalog sections without erasing omissions."""
+    try:
+        previous = validate_catalog(node, previous) or {}
+    except (TypeError, ValueError):
+        previous = {}
+    incoming = validate_catalog(node, incoming) or {}
+    merged = dict(previous)
+    for keys in [('hosts', 'hostsObservedAt'), ('services', 'servicesObservedAt')]:
+        if any(key in incoming for key in keys):
+            for key in keys:
+                merged.pop(key, None)
+                if key in incoming:
+                    merged[key] = incoming[key]
+    for key in ['software', 'components']:
+        if key in incoming:
+            merged[key] = incoming[key]
+    return merged
+
+
+def merge_report(node, previous, incoming):
+    """Replace live state while retaining independently omitted catalog sections."""
+    catalog = merge_catalog(node, previous, incoming)
+    result = dict(incoming)
+    for key in ['hosts', 'hostsObservedAt', 'services', 'servicesObservedAt',
+                'software', 'components']:
+        result.pop(key, None)
+    return {**result, **catalog}
+
+
 def refresh_catalog(root, current, own_id):
     root = Path(root)
     members = current['members']
@@ -1203,8 +1239,8 @@ def refresh_catalog(root, current, own_id):
     own = next((node for node in nodes if node['id'] == own_id), None)
     own_report = status_report(root)
     if own:
-        own_catalog = validate_catalog(own, own_report)
-        if own_catalog is not None:
+        own_catalog = merge_catalog(own, catalog.get(own_id, {}), own_report)
+        if own_catalog:
             catalog[own_id] = own_catalog
         else:
             catalog.pop(own_id, None)
@@ -1214,8 +1250,8 @@ def refresh_catalog(root, current, own_id):
         for future, peer in jobs.items():
             try:
                 report = future.result()
-                peer_catalog = validate_catalog(peer, report)
-                if peer_catalog is not None:
+                peer_catalog = merge_catalog(peer, catalog.get(peer['id'], {}), report)
+                if peer_catalog:
                     catalog[peer['id']] = peer_catalog
                 else:
                     catalog.pop(peer['id'], None)
@@ -1335,8 +1371,14 @@ def sync_loop(root):
             with locked(root):
                 current = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
                 report = read(root / 'report.json', {})
-                if report.get('state') == 'rollback' and report.get('receivedRevision') == current['revision']:
-                    continue
+                rolled_back = (report.get('state') == 'rollback'
+                               and report.get('receivedRevision') == current['revision'])
+            if rolled_back:
+                # A rejected network revision must not freeze the independent
+                # signed service/host directory. Run network I/O outside the
+                # state lock so two rollback routers cannot block one another.
+                refresh_catalog(root, current, own_id)
+                continue
             if report.get('appliedRevision') != current['revision']:
                 pending = stage(root, current)
             else:
@@ -2110,21 +2152,10 @@ def refresh_reports(root, doc):
         jobs = {pool.submit(peer_status, peer, doc['members'][peer['id']], root / 'root.pem'): peer for peer in peers}
         for future, peer in jobs.items():
             try:
-                fresh = dict(future.result(), reachable=True)
                 previous_report = reports.get(peer['id'], {})
                 previous_report = previous_report if isinstance(previous_report, dict) else {}
-                # Missing means "not reported". An explicit empty list is the
-                # authoritative way for a router to remove all catalog entries.
-                for keys in [('hosts', 'hostsObservedAt'),
-                             ('services', 'servicesObservedAt')]:
-                    if not any(key in fresh for key in keys):
-                        for key in keys:
-                            if key in previous_report:
-                                fresh[key] = previous_report[key]
-                for key in ['software', 'components']:
-                    if key not in fresh and key in previous_report:
-                        fresh[key] = previous_report[key]
-                reports[peer['id']] = fresh
+                fresh = dict(future.result(), reachable=True)
+                reports[peer['id']] = merge_report(peer, previous_report, fresh)
             except Exception as error:
                 reports[peer['id']] = dict(reports.get(peer['id'], {}), error=str(error), reachable=False)
     atomic(root / 'reports.json', reports)
@@ -2142,7 +2173,9 @@ def distribute_bundle(root, envelope, exclude=None):
             continue
         try:
             request_http(peer['zeroTierAddress'], 'POST', '/bundle', envelope)
-            results[peer['id']] = dict(peer_status(peer, doc['members'][peer['id']], root / 'root.pem'), reachable=True)
+            fresh = dict(peer_status(peer, doc['members'][peer['id']], root / 'root.pem'),
+                         reachable=True)
+            results[peer['id']] = merge_report(peer, results.get(peer['id'], {}), fresh)
         except Exception as error:
             results[peer['id']] = dict(results.get(peer['id'], {}), error=str(error), reachable=False)
     atomic(root / 'reports.json', results)
@@ -2311,7 +2344,7 @@ def controller(root, req):
     # Separate SSH session proves that management survived network changes.
     result = remote(node, credentials, 'confirm', token=pending['token']) if pending['token'] else remote(node, credentials, 'status')
     reports = read(root / 'reports.json', {})
-    reports[node['id']] = result
+    reports[node['id']] = merge_report(target, reports.get(node['id'], {}), result)
     atomic(root / 'reports.json', reports)
     if mode == 'full':
         ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')

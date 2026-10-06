@@ -137,6 +137,12 @@ odchozím TCP spojením na port 8857. Cestovní notebook proto nepotřebuje
 výjimku pro příchozí TCP ve svém firewallu. Kód musí správce před prvním
 potvrzením porovnat na obou obrazovkách.
 
+Po dokončení přijetí používá uživatelský notebook stejný port také pro
+periodický podepsaný report své verze a stažení kořenově podepsaného read-only
+katalogu. Spojení otevírá uživatel na ZeroTier adresu administrátora, takže
+administrátorský firewall musí TCP/8857 přijmout i z podepsané ZeroTier adresy
+uživatele. Uživatelský notebook stále nepotřebuje příchozí TCP výjimku.
+
 Discovery však na obou noteboocích přijímá UDP/8857 na multicastové skupině
 `239.255.88.56`. Stav, kdy TCP/8857 administrátora odpovídá, ale žádost zůstává
 ve fázi `requesting`, proto může způsobit samostatně blokované UDP. Samotný

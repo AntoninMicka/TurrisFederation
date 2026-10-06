@@ -1,7 +1,7 @@
 # Discovery a synchronizace mezi notebooky
 
 Tento dokument popisuje současnou synchronizaci **administrátorských
-notebooků**. Budoucí uživatelský notebook určený jen k síťovému připojení se do
+notebooků**. Uživatelský notebook určený jen k síťovému připojení se do
 této synchronizace nezapojí a nesmí převzít kořenovou identitu federace. Návrh
 oddělení rolí a koncového VPN členství je v dokumentu
 [Role notebooků jako síťových uzlů](notebook-node-roles.md).
@@ -111,6 +111,19 @@ verze místního i úspěšně synchronizovaného notebooku se zapisuje také do
 provozní snapshot pro uživatelské notebooky. `runtime.json` zůstává pouze
 provozním stavem posledního spojení, nikoli jediným zdrojem verze.
 
+Uživatelský notebook nemá administrační synchronizační oprávnění ani kořenový
+klíč. Každých 30 sekund proto odešle na podepsanou ZeroTier adresu
+administrátorského notebooku omezený report obsahující pouze svou verzi. Report
+je podepsaný jeho notebookovou identitou, nese kořenově podepsané uživatelské
+pověření a administrátor navíc vyžaduje shodu zdrojové adresy s aktuální
+podepsanou topologií. Odpovědí je kořenově podepsaný read-only provozní snapshot
+verzí a katalogů; uživatel jej před uložením znovu ověří. Tato výměna používá
+TCP/8857 přes ZeroTier, nepřenáší kořenový klíč ani právo měnit konfiguraci a
+doplní i verzi notebooku přijatého starším vydáním aplikace bez nového párování.
+Firewall administrátorského notebooku proto musí přijmout TCP/8857 z podepsané
+ZeroTier adresy uživatelského notebooku; uživateli stačí odchozí TCP spojení.
+Na Debianu může pravidla spravovat `firewalld`, i když není nainstalované UFW.
+
 Databáze a soubory federace se mění pod společným zámkem s controllerem. Před
 zápisem vzniká záznam obnovy. Po přerušení se přenos dokončí při dalším načtení
 stavu nebo spuštění synchronizace; do té doby controller odmítne deploy.
@@ -121,9 +134,10 @@ zápis zastaví, aby je neztratila. Takový stav vyžaduje individuální obnovu
 
 Automatické testy používají dvě samostatné služby, dočasné databáze a skutečné
 TLS spojení přes loopback. Ověřují přenos identity, oběma směry provedené úpravy,
-odmítnutí nespárovaného klienta, konflikty, restart obnovy a zachování auditů a
-SSH důvěry. Síťové objevování a provoz přes skutečnou LAN/ZeroTier je potřeba
-ověřit na dvou noteboocích. Podporováno je nejvýše 32 přímo spárovaných notebooků.
+odmítnutí nespárovaného klienta, konflikty, restart obnovy, podepsaný report verze
+uživatele a zachování auditů a SSH důvěry. Síťové objevování a provoz přes
+skutečnou LAN/ZeroTier je potřeba ověřit na dvou noteboocích. Podporováno je
+nejvýše 32 přímo spárovaných notebooků.
 
 Tato změna zavádí discovery notebooků; roadmapová oznámení routerů každých
 30 minut zůstávají samostatným otevřeným úkolem.
