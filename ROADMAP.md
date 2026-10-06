@@ -449,6 +449,13 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Health stav Federation skládat z logického stavu požadované topologie a
     skutečného stavu NetBird peerů/rout, aby bylo rozlišitelné „konfigurace je
     správně publikována“ od „transport je právě dostupný“.
+  - [ ] **Spojit NetBird PoC s mobilním uživatelským uzlem.** Nejprve použít
+    oficiální Android klient a na Linux ARM64 telefonu NetBird CLI/daemon;
+    aplikace Federation poskytne členství, read-only stav, Zlaté stránky a
+    lokální diagnostiku, nikoli druhou vlastní VPN. Telefon nesmí inzerovat svou
+    síť, routovat provoz ani získat administrátorská oprávnění. Návrh etap,
+    identity, odvolání a akceptace:
+    [mobilní klient při migraci na NetBird](docs/mobile-client-netbird.md).
 
 - [ ] **P2: Pokročilé síťování a výkon.**
   - [ ] Implementovat IPv4 routování přes IPv6 nexthop ve WireGuardu (provoz bez přidělených IPv4 adres na tunelech).
@@ -464,6 +471,9 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Ověřit discovery, párování, předání správy a návrat offline notebooku
     na dvou skutečných zařízeních přes LAN a ZeroTier.
   - [ ] Rotace párovacích certifikátů a odvolání již předaného řídicího klíče.
+  - [ ] Ověřit roaming mobilního NetBird uzlu mezi Wi-Fi a mobilními daty,
+    uspání/restart, background provoz, odvolání a obnovu přímé/relay cesty bez
+    změny jeho uživatelské role.
 - [ ] **P2: Robustnost a obnova dat.**
   - [ ] Implementovat "Reverse Sync": možnost obnovit lokální databázi notebooku z dat uložených na routerech (routery jako zrcadla konfigurace).
   - [ ] Zjistit příčinu a analyzovat neočekávaně velký objem datových přenosů v rámci federace (monitoring provozu `tf_wg` a `tf_zt`).
