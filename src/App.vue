@@ -927,6 +927,12 @@ async function submitConnection() {
         <summary>Přijmout uživatelský notebook z místní sítě</summary>
         <div class="connection-form">
           <p>Žádost se objeví automaticky, pokud jsou oba notebooky ve stejné LAN. Porovnejte krátký kód zobrazený na cílovém notebooku.</p>
+          <details>
+            <summary>Žádost se neobjevuje · kontrola firewallu</summary>
+            <p>Automatické přijetí používá multicast <code>239.255.88.56</code> a UDP/8857 na obou noteboocích. Cílový notebook potom otevírá TCP/8857 směrem k administrátorovi. Úspěšné <code>nc -vz ADRESA_ADMINA 8857</code> ověřuje pouze TCP; UDP může být stále blokované.</p>
+            <p>Na Debianu nemusí být nainstalované UFW. Zkontrolujte také <code>sudo firewall-cmd --state</code>, <code>sudo firewall-cmd --get-active-zones</code> a pravidla aktivní zóny. Výjimku omezte na port 8857 a subnet důvěryhodné místní LAN; aplikace firewall automaticky nemění.</p>
+            <p class="muted">Podrobný postup včetně trvalých pravidel pro firewalld je v dokumentaci „Firewall při přidávání notebooku“. Pokud multicast síť nepřenáší, použijte nouzový ruční přenos podepsaných balíčků níže.</p>
+          </details>
           <p v-if="networkEnrollment?.listener?.error" class="error">{{ networkEnrollment.listener.error }}</p>
           <p v-if="enrollmentError" class="error">{{ enrollmentError }}</p>
           <p v-if="!networkEnrollment?.candidates.length" class="muted">Zatím nebyla nalezena žádná aktuální žádost.</p>

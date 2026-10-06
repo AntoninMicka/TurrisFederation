@@ -390,7 +390,7 @@ class NotebookTests(unittest.TestCase):
         connection = Mock()
         connection.request.side_effect = OSError('connection refused')
         with patch.object(n.http.client, 'HTTPConnection', return_value=connection), \
-                self.assertRaisesRegex(ValueError, 'neodpovídá na portu 8857'):
+                self.assertRaisesRegex(ValueError, 'neodpovídá na portu 8857.*firewalld'):
             n.enrollment_post('192.168.50.20', '/join-grant', {'signed': 'test'})
         connection.close.assert_called_once()
 

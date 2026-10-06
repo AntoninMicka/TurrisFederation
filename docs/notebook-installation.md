@@ -115,6 +115,14 @@ odchozím TCP spojením na port 8857. Cestovní notebook proto nepotřebuje
 výjimku pro příchozí TCP ve svém firewallu. Kód musí správce před prvním
 potvrzením porovnat na obou obrazovkách.
 
+Discovery však na obou noteboocích přijímá UDP/8857 na multicastové skupině
+`239.255.88.56`. Stav, kdy TCP/8857 administrátora odpovídá, ale žádost zůstává
+ve fázi `requesting`, proto může způsobit samostatně blokované UDP. Samotný
+úspěch `nc -vz ADRESA_ADMINA 8857` UDP neověřuje. Postup pro Debian s
+`firewalld`, UFW i přímou kontrolu nftables popisuje
+[diagnostika firewallu](notebook-firewall.md). Aplikace tato hostitelská pravidla
+bez výslovného zásahu správce nemění.
+
 První odpověď obsahuje veřejnou
 kotvu a podepsané Network ID, ale ještě neobsahuje členské pověření ani
 notebook nezapisuje do topologie. Notebook se přes omezenou systémovou službu

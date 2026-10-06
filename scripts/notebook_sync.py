@@ -385,7 +385,8 @@ def enrollment_post(address, path, payload):
     except (OSError, http.client.HTTPException) as exc:
         raise ValueError(
             'Protější notebook na LAN adrese %s neodpovídá na portu %s. '
-            'Ověřte jeho běžící backend a místní firewall.' % (address, ENROLLMENT_PORT)) from exc
+            'Ověřte jeho běžící backend a místní firewall; na Debianu může pravidla '
+            'spravovat firewalld, i když UFW není nainstalované.' % (address, ENROLLMENT_PORT)) from exc
     finally:
         with contextlib.suppress(OSError):
             connection.close()

@@ -23,6 +23,9 @@ jsou navržené v dokumentu [instalace notebooku](docs/notebook-installation.md)
 V záložce **Notebooky** lze zapnout discovery a šifrovanou synchronizaci
 konfigurace i řídicí identity mezi vzájemně spárovanými notebooky.
 Postup párování a řešení konfliktů: [synchronizace notebooků](docs/notebook-sync.md).
+Pokud se žádost o přijetí v místní síti neobjeví, pokračujte podle diagnostiky
+[firewallu při přidávání notebooku](docs/notebook-firewall.md). Debian může
+používat `firewalld`, i když příkaz `ufw` vůbec není dostupný.
 
 Spuštění na Ubuntu/Debianu:
 
