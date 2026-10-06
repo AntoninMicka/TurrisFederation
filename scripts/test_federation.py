@@ -650,9 +650,45 @@ class FederationTests(unittest.TestCase):
         commands = '\n'.join(call.args[2] for call in ssh.call_args_list)
         self.assertIn('install-web', commands)
         self.assertIn('turris-federation restart', commands)
+        self.assertIn('software-rollback', commands)
+        self.assertIn('manifest.json', commands)
+        self.assertIn('shutil.rmtree', commands)
         self.assertNotIn('uci commit', commands)
         self.assertEqual('home', result['nodes'][node(1)['id']]['services'][0]['id'])
         self.assertFalse((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
+
+    def test_software_only_failure_restores_all_components_and_service_state(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        req.update(action='deploy', mode='software', planId=plan['id'])
+
+        def ssh_result(_node, _credentials, command, input_data=None):
+            if ' web-check ' in command:
+                raise ValueError('web check failed')
+            return b'hash'
+
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', side_effect=ssh_result) as ssh, \
+                patch.object(f, 'installed_artifact_hash',
+                             side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'],
+                                          f.artifact_components()]), \
+                patch.object(f, 'remote', return_value=self.member(1)), \
+                patch.object(f, 'snapshot') as snapshot, \
+                patch.object(f, 'distribute_bundle') as distribute, \
+                self.assertRaisesRegex(ValueError, 'Původní software byl automaticky obnoven'):
+            f.controller(self.root, req)
+
+        commands = [call.args[2] for call in ssh.call_args_list]
+        rollback = next(command for command in commands if '.rollback' in command)
+        for path in f.software_component_paths():
+            self.assertIn(path, rollback)
+        self.assertIn('turris-federation restart', rollback)
+        self.assertIn('shutil.rmtree', rollback)
+        self.assertNotIn('uci commit', '\n'.join(commands))
+        snapshot.assert_not_called()
+        distribute.assert_not_called()
+        self.assertTrue((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
 
     def test_existing_router_activates_new_agent_before_configuration_apply(self):
         req, plan, lan = self.validation_fixture('a' * 64)

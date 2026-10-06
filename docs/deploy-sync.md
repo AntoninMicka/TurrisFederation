@@ -40,8 +40,15 @@ Otisk routeru se kontroluje znovu před deployem; změna od validace plán znepl
 UI zobrazuje kroky podle vybraného režimu a při změně režimu ruší potvrzení.
 
 Aktualizace používá stejné kontroly identity a zachovává klíče;
-předchozí soubor agenta je uložen jako `.previous`. Nejde o automatický
-rollback softwaru ani o aktualizaci celého Turris OS.
+před zápisem na již přijatý router vytvoří lokální transakční zálohu agenta,
+init služby, dlaždice, ikony a konfigurace lighttpd včetně původního stavu
+služby. Pokud selže kontrola otisků, identity, spuštění služby, webu nebo nového
+provozního reportu a SSH zůstává dostupné, obnoví všechny tyto soubory, znovu
+načte lighttpd a vrátí původní stav služby. Zálohu odstraní až po všech
+kontrolách; při fyzickém výpadku napájení nebo LAN zůstane na routeru pro ruční
+obnovu. Chybějící balíčky
+doinstalované přes `opkg` se neodstraňují a nejde o aktualizaci ani rollback
+celého Turris OS.
 
 ZeroTier synchronizační kanál přenáší jen podepsané síťové nastavení
 (topologii, adresy, členství a veřejné klíče) a provozní potvrzení/stav.

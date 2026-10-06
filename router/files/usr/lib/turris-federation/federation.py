@@ -35,6 +35,7 @@ REMOTE = '/etc/turris-federation'
 CONFIG_DIR = Path('/etc/config')
 SYS_NET = Path('/sys/class/net')
 PROGRAM = '/usr/lib/turris-federation/federation.py'
+SOFTWARE_ROLLBACK = REMOTE + '/software-rollback'
 DHCP_LEASES = Path('/tmp/dhcp.leases')
 HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
@@ -2053,6 +2054,57 @@ def installed_artifact_components(node, credentials):
     return result
 
 
+def software_component_paths():
+    return [PROGRAM, '/etc/init.d/turris-federation',
+            '/etc/turris-webapps/80-turris-federation.json',
+            '/www/webapps-icons/turris-federation.svg', str(WEB_PROXY_PATH)]
+
+
+def software_backup_command():
+    paths = software_component_paths()
+    script = ('import json,pathlib,shutil;'
+              'b=pathlib.Path(%r);'
+              'assert not b.exists(), "Nedokončená záloha předchozí aktualizace.";'
+              'b.mkdir(mode=0o700);'
+              'paths=%r;manifest=[];'
+              '[(shutil.copy2(p,b/str(i)),manifest.append(True)) if pathlib.Path(p).is_file() '
+              'else manifest.append(False) for i,p in enumerate(paths)];'
+              '(b/"manifest.json").write_text(json.dumps(manifest))' %
+              (SOFTWARE_ROLLBACK, paths))
+    state = SOFTWARE_ROLLBACK + '/service-state'
+    return ('set -eu; python3 -c %s; '
+            'if /etc/init.d/turris-federation enabled; then enabled=enabled; else enabled=disabled; fi; '
+            'if /etc/init.d/turris-federation running; then running=running; else running=stopped; fi; '
+            'printf "%%s\\n%%s\\n" "$enabled" "$running" > %s' %
+            (shell_quote(script), shell_quote(state)))
+
+
+def software_rollback_command():
+    paths = software_component_paths()
+    script = ('import json,os,pathlib,shutil;'
+              'b=pathlib.Path(%r);paths=%r;manifest=json.loads((b/"manifest.json").read_text());'
+              'assert len(paths)==len(manifest);'
+              '[(shutil.copy2(b/str(i),p+".rollback"),os.replace(p+".rollback",p)) '
+              'if present else pathlib.Path(p).unlink(missing_ok=True) '
+              'for i,(p,present) in enumerate(zip(paths,manifest))]' %
+              (SOFTWARE_ROLLBACK, paths))
+    state = SOFTWARE_ROLLBACK + '/service-state'
+    cleanup = 'import pathlib,shutil;p=pathlib.Path(%r);shutil.rmtree(p)' % SOFTWARE_ROLLBACK
+    return ('set -eu; test -f %s; python3 -c %s; '
+            'lighttpd -tt -f /etc/lighttpd/lighttpd.conf; /etc/init.d/lighttpd reload; '
+            'if grep -qx enabled %s; then /etc/init.d/turris-federation enable; '
+            'else /etc/init.d/turris-federation disable; fi; '
+            'if grep -qx running %s; then /etc/init.d/turris-federation restart; '
+            'else /etc/init.d/turris-federation stop; fi; python3 -c %s' %
+            (shell_quote(state), shell_quote(script), shell_quote(state), shell_quote(state),
+             shell_quote(cleanup)))
+
+
+def software_backup_cleanup_command():
+    script = 'import pathlib,shutil;p=pathlib.Path(%r);shutil.rmtree(p) if p.exists() else None' % SOFTWARE_ROLLBACK
+    return 'set -eu; python3 -c ' + shell_quote(script)
+
+
 def ssh(node, credentials, command, input_data=None):
     # Credentials are passed through stdin to this controller and an inherited pipe to sshpass.
     host, user, port = node['sshHost'], node['sshUser'], node['sshPort']
@@ -2278,6 +2330,7 @@ def controller(root, req):
             'Předat síťové nastavení ostatním přijatým routerům přes ZeroTier.'],
             'software': [
                 'Doinstalovat pouze chybějící závislosti z repozitáře routeru.',
+                'Zálohovat všechny nahrazované komponenty a původní stav služby pro automatický návrat při chybě.',
                 'Atomicky aktualizovat agenta, init službu a webové soubory přes přímou LAN.',
                 'Ověřit identitu již přijatého routeru a shodu všech komponent.',
                 'Restartovat agenta a načíst nový podepsaný provozní report.',
@@ -2313,51 +2366,74 @@ def controller(root, req):
     existing_member = node['id'] in members
     if mode in ['settings', 'software'] and node['id'] not in members:
         raise ValueError('Nejdřív proveďte kompletní instalaci a přijetí uzlu.')
+    software_backup = False
     if mode == 'settings':
         check_member = 'import json; assert json.load(open("/etc/turris-federation/node.json")) == ' + repr(members[node['id']])
         ssh(node, credentials, 'set -eu; test -f ' + REMOTE + '/root.pub; ' + check +
             '; test ! -f ' + REMOTE + '/pending.json; python3 -c ' + shell_quote(check_member))
     else:
-        source = Path(__file__).read_bytes()
-        payload = source + INIT.encode()
-        unpack = ('import pathlib,sys;d=sys.stdin.buffer.read();n=%d;assert len(d)==%d;'
-                  'pathlib.Path(%r).write_bytes(d[:n]);pathlib.Path(%r).write_bytes(d[n:])'
-                  % (len(source), len(payload), PROGRAM + '.new', '/etc/init.d/turris-federation.new'))
-        installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
-        check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
-        installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
-        packages = 'python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file'
-        installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
-        installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
-        installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
-        installer += 'trap ' + shell_quote('rm -f ' + PROGRAM + '.new /etc/init.d/turris-federation.new') + ' EXIT; '
-        installer += 'python3 -c ' + shell_quote(unpack) + '; '
-        installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
-        installer += 'chmod 755 /etc/init.d/turris-federation.new; mv /etc/init.d/turris-federation.new /etc/init.d/turris-federation'
-        installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
-        ssh(node, credentials, installer, input_data=payload)
-        if (installed_artifact_hash(node, credentials) != plan['artifactHash']
-                or installed_artifact_components(node, credentials) != plan['artifactComponents']):
-            raise ValueError('Po instalaci se neshodují všechny komponenty routerového agenta.')
-        member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
-        members = read(root / 'members.json', {})
-        if node['id'] in members and members[node['id']] != member:
-            raise ValueError('Identita přijatého routeru se změnila. Automatické nahrazení je zakázáno.')
-        members[node['id']] = member
-        atomic(root / 'members.json', members)
         if existing_member:
-            # Activate the verified software before touching network settings.
-            # If the subsequent configuration rolls back, status, versions and
-            # passive catalogs still come from the newly installed agent.
-            ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
-            ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
+            ssh(node, credentials, software_backup_command())
+            software_backup = True
+        try:
+            source = Path(__file__).read_bytes()
+            payload = source + INIT.encode()
+            unpack = ('import pathlib,sys;d=sys.stdin.buffer.read();n=%d;assert len(d)==%d;'
+                      'pathlib.Path(%r).write_bytes(d[:n]);pathlib.Path(%r).write_bytes(d[n:])'
+                      % (len(source), len(payload), PROGRAM + '.new', '/etc/init.d/turris-federation.new'))
+            installer = 'set -eu; umask 077; ' + check + '; test ! -f /etc/turris-federation/pending.json; '
+            check_node = 'import json; assert json.load(open(\"/etc/turris-federation/node.json\"))[\"nodeId\"] == ' + repr(node['id'])
+            installer += 'if test -f /etc/turris-federation/node.json; then python3 -c ' + shell_quote(check_node) + '; fi; '
+            packages = 'python3 openssl-util wireguard-tools kmod-wireguard lighttpd-mod-proxy lighttpd-mod-auth lighttpd-mod-authn_pam lighttpd-mod-authn_file'
+            installer += "missing=''; for pkg in " + packages + "; do if ! opkg status \"$pkg\" 2>/dev/null | grep -q '^Status: .* installed'; then missing=\"$missing $pkg\"; fi; done; "
+            installer += 'if test -n "$missing"; then opkg update >&2; opkg install $missing >&2; fi; '
+            installer += 'mkdir -p /usr/lib/turris-federation /etc/turris-federation; '
+            installer += 'trap ' + shell_quote('rm -f ' + PROGRAM + '.new /etc/init.d/turris-federation.new') + ' EXIT; '
+            installer += 'python3 -c ' + shell_quote(unpack) + '; '
+            installer += 'python3 -m py_compile ' + PROGRAM + '.new; if test -f ' + PROGRAM + '; then cp ' + PROGRAM + ' ' + PROGRAM + '.previous; fi; mv ' + PROGRAM + '.new ' + PROGRAM + '; '
+            installer += 'chmod 755 /etc/init.d/turris-federation.new; mv /etc/init.d/turris-federation.new /etc/init.d/turris-federation'
+            installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
+            ssh(node, credentials, installer, input_data=payload)
+            if (installed_artifact_hash(node, credentials) != plan['artifactHash']
+                    or installed_artifact_components(node, credentials) != plan['artifactComponents']):
+                raise ValueError('Po instalaci se neshodují všechny komponenty routerového agenta.')
+            member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
+            members = read(root / 'members.json', {})
+            if node['id'] in members and members[node['id']] != member:
+                raise ValueError('Identita přijatého routeru se změnila. Automatické nahrazení je zakázáno.')
+            members[node['id']] = member
+            atomic(root / 'members.json', members)
+            if existing_member:
+                # Activate and verify the replacement before touching network settings.
+                ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
+                ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
+        except Exception as error:
+            if software_backup:
+                try:
+                    ssh(node, credentials, software_rollback_command())
+                except Exception as rollback_error:
+                    raise ValueError('%s Automatický návrat softwaru také selhal: %s' %
+                                     (error, rollback_error)) from error
+                raise ValueError('%s Původní software byl automaticky obnoven.' % error) from error
+            raise
     if mode == 'software':
-        result = dict(remote(node, credentials, 'status'), reachable=True)
+        try:
+            result = dict(remote(node, credentials, 'status'), reachable=True)
+        except Exception as error:
+            try:
+                ssh(node, credentials, software_rollback_command())
+            except Exception as rollback_error:
+                raise ValueError('%s Automatický návrat softwaru také selhal: %s' %
+                                 (error, rollback_error)) from error
+            raise ValueError('%s Původní software byl automaticky obnoven.' % error) from error
+        ssh(node, credentials, software_backup_cleanup_command())
         reports = read(root / 'reports.json', {})
         reports[node['id']] = merge_report(target, reports.get(node['id'], {}), result)
         atomic(root / 'reports.json', reports)
         (root / ('plan-' + node['id'] + '.json')).unlink()
         return overview(root, config)
+    if software_backup:
+        ssh(node, credentials, software_backup_cleanup_command())
     envelope = snapshot(root, config, members)
     pending = remote(node, credentials, 'apply', envelope=envelope, expectedRouterHash=plan['routerHash'])
     # Separate SSH session proves that management survived network changes.
