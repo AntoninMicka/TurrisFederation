@@ -181,6 +181,9 @@ async function networkEnrollmentOperation(action: "start" | "status" | "approve-
     const result = await notebookEnrollmentAction<NetworkEnrollmentState>(request);
     if (previousServiceError && !result.serviceError) result.serviceError = previousServiceError;
     networkEnrollment.value = result;
+    if (action === "approve-address" && isAdministrator.value) {
+      await refreshReadOnlyOverview();
+    }
     if (networkEnrollment.value.session?.stage === "complete" && notebookSync.value?.access.state !== "valid") {
       await notebookOperation();
       if ((notebookSync.value as NotebookSyncStatus | null)?.access.state === "valid") {
@@ -775,7 +778,7 @@ async function submitConnection() {
         @click="activeTab = tab.id" @keydown="navigateTabs($event, index)">
         {{ tab.label }}
         <span v-if="tab.id === 'routers'" class="tab-count">{{ nodes.length }}</span>
-        <span v-else-if="tab.id === 'notebooks'" class="tab-count">{{ 1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0) }}</span>
+        <span v-else-if="tab.id === 'notebooks'" class="tab-count">{{ readOnlyOverview?.notebooks.length ?? (1 + (notebookSync?.peers.filter(peer => peer.trusted).length ?? 0)) }}</span>
         <span v-else-if="tab.id === 'audits' && findings.length" class="tab-count">{{ findings.length }}</span>
       </button>
     </nav>
@@ -894,8 +897,29 @@ async function submitConnection() {
     </div>
     <div v-show="activeTab === 'notebooks'" id="panel-notebooks" class="tab-panel" role="tabpanel" aria-labelledby="tab-notebooks" tabindex="0">
     <section class="panel">
-      <div><p class="kicker">Discovery a synchronizace</p><h2>Správa federace z více notebooků</h2></div>
-      <p>Spárované notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Změny se přenášejí přímo a šifrovaně při spuštěné aplikaci.</p>
+      <div><p class="kicker">Podepsaná topologie</p><h2>Notebooky federace</h2></div>
+      <p>Členství a role pocházejí z aktuální podepsané revize. Uživatelské notebooky jsou koncové síťové uzly; administrátorská synchronizace a předávání řídicí identity jsou uvedené odděleně níže.</p>
+      <p v-if="!readOnlyOverview" class="muted">Přehled podepsané topologie zatím není načtený.</p>
+      <p v-else-if="!readOnlyOverview.notebooks.length" class="muted">V podepsané topologii zatím není žádný notebook.</p>
+      <div v-else class="node-grid">
+        <article v-for="item in readOnlyOverview.notebooks" :key="item.id" class="node">
+          <div>
+            <span class="status">{{ item.role === 'administrator' ? 'Administrátor' : 'Uživatel' }}</span>
+            <h3>{{ item.name }}</h3>
+            <p v-if="item.id === notebookSync?.id"><strong>Tento notebook</strong></p>
+            <p>ZeroTier: <code>{{ item.zeroTierAddress || 'čeká na přidělení' }}</code></p>
+            <p>WireGuard: <code>{{ item.wireguardAddress || 'čeká na přidělení' }}</code></p>
+          </div>
+          <div class="node-actions">
+            <button v-if="item.role === 'user' && item.id !== notebookSync?.id" type="button" class="secondary" :disabled="overviewLoading" @click="revokeUserNotebook(item.id, item.name)">Odvolat členství</button>
+          </div>
+        </article>
+      </div>
+      <button v-if="!readOnlyOverview" type="button" class="secondary" :disabled="overviewLoading" @click="refreshReadOnlyOverview">{{ overviewLoading ? 'Načítám…' : 'Načíst podepsanou topologii' }}</button>
+    </section>
+    <section class="panel">
+      <div><p class="kicker">Discovery a synchronizace správců</p><h2>Správa federace z více administrátorských notebooků</h2></div>
+      <p>Spárované administrátorské notebooky sdílejí návrh routerů, síťové nastavení a kořenovou identitu pro správu federace. Uživatelské notebooky se zde nezobrazují a řídicí identitu nedostávají.</p>
       <details open>
         <summary>Přijmout uživatelský notebook z místní sítě</summary>
         <div class="connection-form">
