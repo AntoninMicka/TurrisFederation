@@ -669,6 +669,11 @@ class Store:
         if not published or not public_path.exists():
             raise ValueError('Chybí podepsaná topologie nebo veřejná kotva federace.')
         document = f.validate_document(f.verify(public_path.read_text(), published))
+        # Export is the hand-off point for endpoint-only notebooks. Refresh the
+        # signed router reports here so the package cannot silently contain an
+        # older empty service/version cache merely because the overview was not
+        # opened immediately before the export.
+        f.refresh_reports(self.fleet, document)
         return json.dumps({'schema': TOPOLOGY_UPDATE_SCHEMA,
                            'rootPublic': public_path.read_text(), 'published': published,
                            'operational': self.operational_snapshot(document)})
@@ -698,6 +703,10 @@ class Store:
                 notebook_software[notebook_id] = f.validate_software_info(software)
             except (TypeError, ValueError):
                 continue
+        administrator = next((item for item in document['config'].get('notebooks', [])
+                              if item['id'] == self.id and item.get('role') == 'administrator'), None)
+        if administrator:
+            notebook_software[self.id] = software_info()
         payload = {'schema': OPERATIONAL_SNAPSHOT_SCHEMA,
                    'federationId': document['federationId'], 'revision': document['revision'],
                    'generatedAt': time.time(), 'reports': normalized,

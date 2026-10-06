@@ -305,6 +305,8 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual('ollama', overview['services'][0]['id'])
         self.assertEqual('a' * 64, overview['nodes'][0]['software']['version'])
         self.assertEqual(n.software_info(),
+                         next(item for item in overview['notebooks'] if item['id'] == self.a.id)['software'])
+        self.assertEqual(n.software_info(),
                          next(item for item in overview['notebooks'] if item['id'] == self.b.id)['software'])
         config = (self.b.root / 'wireguard.conf').read_text()
         self.assertEqual(0o600, (self.b.root / 'wireguard.conf').stat().st_mode & 0o777)
@@ -568,7 +570,9 @@ class NotebookTests(unittest.TestCase):
         f.atomic(self.a.fleet / 'reports.json', {router_id: {
             'services': [service], 'servicesObservedAt': 200,
             'software': {'version': 'b' * 64, 'builtAt': 199}}})
-        plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        with patch.object(f, 'refresh_reports', wraps=f.refresh_reports) as refresh:
+            plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        refresh.assert_called_once()
         self.assertEqual(('operational', plan['currentRevision'], plan['currentRevision']),
                          (plan['kind'], plan['currentRevision'], plan['revision']))
         result = self.b.topology_refresh_apply(plan['id'])

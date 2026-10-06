@@ -211,6 +211,9 @@ async function exportTopologyUpdate() {
   try {
     const result = await notebookEnrollmentAction<{ update: string }>({ action: "topology_update_export" });
     topologyUpdateExport.value = result.update;
+    deployment.value = await deploymentAction<DeploymentOverview>("overview");
+    readOnlyOverview.value = await deploymentAction<ReadOnlyOverview>("read_only_overview");
+    message.value = "Routery byly znovu dotázány a podepsaný provozní přehled je připraven k přenosu.";
   } catch (error) { topologyRefreshError.value = String(error); }
   finally { topologyRefreshBusy.value = false; }
 }
@@ -956,7 +959,8 @@ async function submitConnection() {
       <details>
         <summary>Exportovat podepsanou aktualizaci pro uživatelské notebooky</summary>
         <div class="connection-form">
-          <p>Balíček obsahuje veřejnou kotvu a aktuální podepsanou topologii, nikdy kořenový privátní klíč. Uživatelský notebook před použitím zobrazí změny rout a vyžádá potvrzení.</p>
+          <p>Balíček při vytvoření znovu načte podepsané reporty routerů a obsahuje aktuální topologii, katalog služeb a známé verze. Nikdy neobsahuje kořenový privátní klíč. Uživatelský notebook jej musí vložit v Přehledu a potvrdit; přenos není automatický.</p>
+          <p class="muted">Pokud byl uživatelský notebook přidán starší verzí aplikace, jeho vlastní verze zůstane na desktopu neznámá. Po aktualizaci aplikace na obou noteboocích jednou zopakujte připojení notebooku; identita a uživatelská role zůstanou zachované.</p>
           <button :disabled="topologyRefreshBusy" @click="exportTopologyUpdate">Vytvořit aktualizační balíček</button>
           <p v-if="topologyRefreshError" class="error">{{ topologyRefreshError }}</p>
           <label v-if="topologyUpdateExport">Podepsaná aktualizace<textarea class="pairing-data" readonly :value="topologyUpdateExport"></textarea></label>
