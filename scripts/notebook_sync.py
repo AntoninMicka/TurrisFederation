@@ -1808,6 +1808,30 @@ class Store:
                          if item['id'] == peer_id), None)
         return endpoint['zeroTierAddress'] if endpoint else None
 
+    def remember_notebook_software(self, notebook_id, software):
+        """Persist versions only for notebooks in the verified local topology."""
+        try:
+            software = f.validate_software_info(software)
+        except (TypeError, ValueError):
+            return
+        if software is None:
+            return
+        with f.locked(self.fleet):
+            published = f.read(self.fleet / 'published.json')
+            public_path = self.root / 'federation-root.pub'
+            if not published or not public_path.exists():
+                return
+            try:
+                document = f.validate_document(f.verify(public_path.read_text(), published))
+            except (OSError, TypeError, ValueError, KeyError):
+                return
+            if notebook_id not in {item['id'] for item in document['config'].get('notebooks', [])}:
+                return
+            versions = f.read(self.fleet / 'notebook-software.json', {})
+            versions = versions if isinstance(versions, dict) else {}
+            versions[notebook_id] = software
+            f.atomic(self.fleet / 'notebook-software.json', versions)
+
     def status(self):
         with self.db() as db:
             self.recover(db)
@@ -1826,9 +1850,16 @@ class Store:
                             localConfig={k: snapshot['data'][k] for k in ['nodes', 'zerotier']},
                             remoteConfig={k: remote['data'][k] for k in ['nodes', 'zerotier']})
             items.append(item)
+        local_software = software_info()
+        self.remember_notebook_software(self.id, local_software)
+        runtime_peers = runtime.get('peers', {}) if isinstance(runtime, dict) else {}
+        for peer_id, peer_runtime in (runtime_peers.items()
+                                      if isinstance(runtime_peers, dict) else []):
+            if isinstance(peer_runtime, dict):
+                self.remember_notebook_software(peer_id, peer_runtime.get('software'))
         return {'id': self.id, 'name': f.read(self.root / 'config.json', {}).get('name', socket.gethostname()),
                 'access': self.access_status(),
-                'software': software_info(),
+                'software': local_software,
                 'config': f.read(self.root / 'config.json', {}), 'peers': sorted(items, key=lambda p: p.get('name', p['id'])),
                 'updatedAt': runtime.get('updatedAt'), 'error': runtime.get('error'),
                 'configurationVersion': f.digest(snapshot['data']),
@@ -2374,6 +2405,7 @@ def serve_sync(store, stopped):
                         if peer not in store.peers():
                             continue
                         state = store.receive(peer, remote)
+                        store.remember_notebook_software(peer, software)
                         runtime['peers'][peer] = {'state': state, 'lastSync': time.time(),
                                                   'address': item['address'], 'software': software}
                     except Exception as error:

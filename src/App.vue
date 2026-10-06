@@ -977,7 +977,7 @@ async function submitConnection() {
         <summary>Exportovat podepsanou aktualizaci pro uživatelské notebooky</summary>
         <div class="connection-form">
           <p>Balíček při vytvoření znovu načte podepsané reporty routerů a obsahuje aktuální topologii, katalog služeb a známé verze. Nikdy neobsahuje kořenový privátní klíč. Uživatelský notebook jej musí vložit v Přehledu a potvrdit; přenos není automatický.</p>
-          <p class="muted">Pokud byl uživatelský notebook přidán starší verzí aplikace, jeho vlastní verze zůstane na desktopu neznámá. Po aktualizaci aplikace na obou noteboocích jednou zopakujte připojení notebooku; identita a uživatelská role zůstanou zachované.</p>
+          <p class="muted">Pokud byl uživatelský notebook přidán starší verzí aplikace, může jeho verze zůstat v administrátorském přehledu neznámá. Po aktualizaci aplikace na obou noteboocích jednou zopakujte připojení notebooku; identita a uživatelská role zůstanou zachované.</p>
           <button :disabled="topologyRefreshBusy" @click="exportTopologyUpdate">Vytvořit aktualizační balíček</button>
           <p v-if="topologyRefreshError" class="error">{{ topologyRefreshError }}</p>
           <label v-if="topologyUpdateExport">Podepsaná aktualizace<textarea class="pairing-data" readonly :value="topologyUpdateExport"></textarea></label>

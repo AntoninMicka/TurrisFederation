@@ -598,6 +598,22 @@ class FederationTests(unittest.TestCase):
         self.assertLess(len(uploads[0].args[2]), 8192)
         self.assertNotIn(base64.b64encode(SOURCE.read_bytes()).decode(), uploads[0].args[2])
 
+    def test_existing_router_activates_new_agent_before_configuration_apply(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        req.update(action='deploy', mode='full', planId=plan['id'])
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash', side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'], f.artifact_components()]), \
+                patch.object(f, 'remote', side_effect=[self.member(1), ValueError('apply failed')]) as remote, \
+                self.assertRaisesRegex(ValueError, 'apply failed'):
+            f.controller(self.root, req)
+        self.assertEqual(['bootstrap', 'apply'], [call.args[2] for call in remote.call_args_list])
+        commands = [call.args[2] for call in ssh.call_args_list]
+        self.assertTrue(any('turris-federation restart' in command for command in commands))
+        self.assertTrue(any('web-check' in command for command in commands))
+
     def test_deploy_rejects_unavailable_mode_and_changed_remote_version(self):
         req, plan, lan = self.validation_fixture(None, enrolled=False)
         req.update(action='deploy', mode='settings', planId=plan['id'])
@@ -1022,9 +1038,13 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
         f.atomic(self.root / 'report.json', {'state': 'rollback', 'appliedRevision': 0})
-        recovered = f.status_report(self.root)
+        hosts = [{'address': '192.168.1.20', 'name': 'printer.local'}]
+        with patch.object(f, 'discover_hosts', return_value=hosts):
+            recovered = f.status_report(self.root)
         self.assertEqual([service], recovered['services'])
         self.assertIsInstance(recovered['servicesObservedAt'], float)
+        self.assertEqual(hosts, recovered['hosts'])
+        self.assertIsInstance(recovered['hostsObservedAt'], float)
 
         invalid = [
             dict(service, hostAddress='192.168.2.20'),

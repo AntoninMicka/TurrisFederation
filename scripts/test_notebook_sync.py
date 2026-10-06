@@ -259,6 +259,21 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue(administrator['peers'])
         self.assertTrue(administrator['invitation'])
 
+    def test_local_and_synced_notebook_versions_are_persisted_for_overview(self):
+        self.onboard_user()
+        versions = self.a.fleet / 'notebook-software.json'
+        versions.unlink(missing_ok=True)
+        remote = {'version': 'a' * 64, 'builtAt': 123}
+        f.atomic(self.a.root / 'runtime.json', {'peers': {
+            self.b.id: {'software': remote},
+            self.c.id: {'software': {'version': 'b' * 64, 'builtAt': 124}},
+        }})
+        self.a.status()
+        stored = f.read(versions)
+        self.assertEqual(n.software_info(), stored[self.a.id])
+        self.assertEqual(remote, stored[self.b.id])
+        self.assertNotIn(self.c.id, stored)
+
     def test_admin_sync_rejects_local_lan_and_accepts_stable_zerotier_address(self):
         lan = json.dumps([{'ifname': 'wlan0', 'addr_info': [
             {'family': 'inet', 'local': '192.168.1.20', 'prefixlen': 24, 'scope': 'global'}]}])

@@ -515,8 +515,14 @@ def rollback(root):
     subprocess.run(['ifdown', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     subprocess.run(['ifup', 'tf_wg'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     run(['/etc/init.d/firewall', 'reload'])
-    atomic(root / 'report.json', {'state': 'rollback', 'receivedRevision': pending['revision'],
-           'appliedRevision': pending['previousApplied'], 'error': 'Změna nebyla potvrzena; obnovena záloha.', 'checkedAt': time.time()})
+    previous = read(root / 'report.json', {})
+    previous = previous if isinstance(previous, dict) else {}
+    retained = {key: previous[key] for keys in [('hosts', 'hostsObservedAt'),
+                                                ('services', 'servicesObservedAt')]
+                for key in keys if key in previous}
+    atomic(root / 'report.json', {**retained, 'state': 'rollback',
+           'receivedRevision': pending['revision'], 'appliedRevision': pending['previousApplied'],
+           'error': 'Změna nebyla potvrzena; obnovena záloha.', 'checkedAt': time.time()})
     (root / 'pending.json').unlink()
 
 
@@ -1949,19 +1955,23 @@ def validate_software_info(value):
 def status_report(root):
     root = Path(root)
     report = read(root / 'report.json', {})
-    # Service definitions are authoritative and survive a network rollback.
-    # Reconstruct their published projection when rollback replaced report.json
-    # without the catalog fields.
-    if (root / 'services.json').exists():
-        try:
-            envelope = read(root / 'accepted.json')
-            doc = validate_document(verify((root / 'root.pub').read_text(), envelope))
-            node = self_node(root, doc)
-            if node and node['id'] in doc['members']:
+    # Rebuild the passive projection even when rollback replaced report.json.
+    # Service definitions are authoritative; hosts come only from local passive
+    # neighbour and DHCP state and never trigger a scan.
+    try:
+        envelope = read(root / 'accepted.json')
+        doc = validate_document(verify((root / 'root.pub').read_text(), envelope))
+        node = self_node(root, doc)
+        if node and node['id'] in doc['members']:
+            if not any(key in report for key in ['hosts', 'hostsObservedAt']):
+                hosts = discover_hosts(node)
+                if hosts is not None:
+                    report = {**report, 'hosts': hosts, 'hostsObservedAt': time.time()}
+            if (root / 'services.json').exists():
                 report = {**report, 'services': local_services(root, node),
                           'servicesObservedAt': time.time()}
-        except (OSError, TypeError, ValueError, KeyError):
-            pass
+    except (OSError, TypeError, ValueError, KeyError):
+        pass
     return {**report, 'software': software_info(), 'components': installed_components()}
 
 
@@ -2255,6 +2265,7 @@ def controller(root, req):
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))
     check_node = 'import json; assert json.load(open("/etc/turris-federation/node.json"))["nodeId"] == ' + repr(node['id'])
     members = read(root / 'members.json', {})
+    existing_member = node['id'] in members
     if mode == 'settings':
         if node['id'] not in members:
             raise ValueError('Nejdřív proveďte kompletní instalaci a přijetí uzlu.')
@@ -2289,6 +2300,12 @@ def controller(root, req):
             raise ValueError('Identita přijatého routeru se změnila. Automatické nahrazení je zakázáno.')
         members[node['id']] = member
         atomic(root / 'members.json', members)
+        if existing_member:
+            # Activate the verified software before touching network settings.
+            # If the subsequent configuration rolls back, status, versions and
+            # passive catalogs still come from the newly installed agent.
+            ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
+            ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
     envelope = snapshot(root, config, members)
     pending = remote(node, credentials, 'apply', envelope=envelope, expectedRouterHash=plan['routerHash'])
     # Separate SSH session proves that management survived network changes.

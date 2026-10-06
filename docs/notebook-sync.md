@@ -105,7 +105,11 @@ stavu, protože vyžadují rozdílnou nápravu.
 
 Vzájemně autentizovaný synchronizační kanál předává také otisk verze backendu
 a čas vytvoření instalované kopie. Starší protějšek hlavičky bezpečně ignoruje;
-novější UI zvýrazní chybějící údaj i rozdíl proti místnímu backendu.
+novější UI zvýrazní chybějící údaj i rozdíl proti místnímu backendu. Ověřená
+verze místního i úspěšně synchronizovaného notebooku se zapisuje také do
+`deployment/notebook-software.json`, odkud ji čte společný přehled a podepsaný
+provozní snapshot pro uživatelské notebooky. `runtime.json` zůstává pouze
+provozním stavem posledního spojení, nikoli jediným zdrojem verze.
 
 Databáze a soubory federace se mění pod společným zámkem s controllerem. Před
 zápisem vzniká záznam obnovy. Po přerušení se přenos dokončí při dalším načtení
