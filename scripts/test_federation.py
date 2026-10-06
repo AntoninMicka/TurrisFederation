@@ -363,10 +363,14 @@ class FederationTests(unittest.TestCase):
         cached = {'services': [{'id': 'camera', 'name': 'Camera', 'hostAddress': '192.168.2.20',
                                'protocol': 'https', 'port': 8443, 'path': None}],
                   'servicesObservedAt': 100}
-        f.atomic(self.root / 'reports.json', {node(1)['id']: {'state': 'active'}, node(2)['id']: cached})
+        local_cached = {'state': 'active', 'services': [{
+            'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+            'protocol': 'tcp', 'port': 11434, 'path': None}], 'servicesObservedAt': 99}
+        f.atomic(self.root / 'reports.json', {node(1)['id']: local_cached, node(2)['id']: cached})
         with patch.object(f, 'peer_status', return_value={'state': 'active'}):
             reports = f.refresh_reports(self.root, doc)
         self.assertEqual({node(1)['id']}, set(reports))
+        self.assertEqual('ollama', reports[node(1)['id']]['services'][0]['id'])
         self.assertNotIn(node(2)['id'], f.read(self.root / 'reports.json'))
 
     def test_mutated_or_expired_plan_cannot_start_deploy(self):
@@ -970,6 +974,13 @@ class FederationTests(unittest.TestCase):
         published = f.read(self.root / 'report.json')
         self.assertEqual([service], published['services'])
         self.assertIsInstance(published['servicesObservedAt'], float)
+
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
+        f.atomic(self.root / 'report.json', {'state': 'rollback', 'appliedRevision': 0})
+        recovered = f.status_report(self.root)
+        self.assertEqual([service], recovered['services'])
+        self.assertIsInstance(recovered['servicesObservedAt'], float)
 
         invalid = [
             dict(service, hostAddress='192.168.2.20'),

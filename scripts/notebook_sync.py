@@ -704,6 +704,18 @@ class Store:
                 notebook_software[notebook_id] = f.validate_software_info(software)
             except (TypeError, ValueError):
                 continue
+        runtime = f.read(self.root / 'runtime.json', {})
+        runtime_peers = runtime.get('peers', {}) if isinstance(runtime, dict) else {}
+        runtime_peers = runtime_peers if isinstance(runtime_peers, dict) else {}
+        for notebook_id, peer in runtime_peers.items():
+            if notebook_id not in known_notebooks or not isinstance(peer, dict):
+                continue
+            try:
+                software = f.validate_software_info(peer.get('software'))
+                if software:
+                    notebook_software[notebook_id] = software
+            except (TypeError, ValueError):
+                continue
         administrator = next((item for item in document['config'].get('notebooks', [])
                               if item['id'] == self.id and item.get('role') == 'administrator'), None)
         if administrator:
@@ -747,8 +759,42 @@ class Store:
     def store_operational_snapshot(self, envelope, root_public, document):
         payload, reports, notebook_software = self.validate_operational_snapshot(
             envelope, root_public, document)
-        f.atomic(self.fleet / 'reports.json', reports)
-        f.atomic(self.fleet / 'notebook-software.json', notebook_software)
+        nodes = {node['id']: node for node in document['config']['nodes']
+                 if node['id'] in document['members']}
+        previous_reports = f.read(self.fleet / 'reports.json', {})
+        previous_reports = previous_reports if isinstance(previous_reports, dict) else {}
+        merged_reports = {}
+        for node_id, node in nodes.items():
+            previous = previous_reports.get(node_id, {})
+            try:
+                previous = f.validate_catalog(node, previous) or {}
+            except (TypeError, ValueError):
+                previous = {}
+            incoming = reports.get(node_id, {})
+            merged = dict(previous)
+            for keys in [('hosts', 'hostsObservedAt'), ('services', 'servicesObservedAt')]:
+                if any(key in incoming for key in keys):
+                    for key in keys:
+                        merged.pop(key, None)
+                        if key in incoming:
+                            merged[key] = incoming[key]
+            if 'software' in incoming:
+                merged['software'] = incoming['software']
+            if merged:
+                merged_reports[node_id] = merged
+        known_notebooks = {item['id'] for item in document['config'].get('notebooks', [])}
+        previous_software = f.read(self.fleet / 'notebook-software.json', {})
+        previous_software = previous_software if isinstance(previous_software, dict) else {}
+        merged_software = {}
+        for notebook_id in known_notebooks:
+            value = notebook_software.get(notebook_id, previous_software.get(notebook_id))
+            try:
+                if value is not None:
+                    merged_software[notebook_id] = f.validate_software_info(value)
+            except (TypeError, ValueError):
+                pass
+        f.atomic(self.fleet / 'reports.json', merged_reports)
+        f.atomic(self.fleet / 'notebook-software.json', merged_software)
         f.atomic(self.fleet / 'operational-snapshot.json', envelope)
         return payload
 

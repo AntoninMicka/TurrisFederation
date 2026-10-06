@@ -1442,7 +1442,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     def esc(value):
         return html.escape(str(value), quote=True)
     root = Path(root)
-    report = read(root / 'report.json', {})
+    report = status_report(root)
     envelope = read(root / 'accepted.json')
     doc = validate_document(verify((root / 'root.pub').read_text(), envelope)) if envelope else None
     own_id = read(root / 'node.json', {}).get('nodeId')
@@ -1913,7 +1913,22 @@ def validate_software_info(value):
 
 
 def status_report(root):
-    return {**read(Path(root) / 'report.json', {}), 'software': software_info()}
+    root = Path(root)
+    report = read(root / 'report.json', {})
+    # Service definitions are authoritative and survive a network rollback.
+    # Reconstruct their published projection when rollback replaced report.json
+    # without the catalog fields.
+    if (root / 'services.json').exists():
+        try:
+            envelope = read(root / 'accepted.json')
+            doc = validate_document(verify((root / 'root.pub').read_text(), envelope))
+            node = self_node(root, doc)
+            if node and node['id'] in doc['members']:
+                report = {**report, 'services': local_services(root, node),
+                          'servicesObservedAt': time.time()}
+        except (OSError, TypeError, ValueError, KeyError):
+            pass
+    return {**report, 'software': software_info()}
 
 
 def installed_artifact_hash(node, credentials):
@@ -2028,7 +2043,18 @@ def refresh_reports(root, doc):
         jobs = {pool.submit(peer_status, peer, doc['members'][peer['id']], root / 'root.pem'): peer for peer in peers}
         for future, peer in jobs.items():
             try:
-                reports[peer['id']] = dict(future.result(), reachable=True)
+                fresh = dict(future.result(), reachable=True)
+                previous_report = reports.get(peer['id'], {})
+                previous_report = previous_report if isinstance(previous_report, dict) else {}
+                # Missing means "not reported". An explicit empty list is the
+                # authoritative way for a router to remove all catalog entries.
+                for keys in [('hosts', 'hostsObservedAt'),
+                             ('services', 'servicesObservedAt')]:
+                    if not any(key in fresh for key in keys):
+                        for key in keys:
+                            if key in previous_report:
+                                fresh[key] = previous_report[key]
+                reports[peer['id']] = fresh
                 reports[peer['id']].pop('error', None)
             except Exception as error:
                 reports[peer['id']] = dict(reports.get(peer['id'], {}), error=str(error), reachable=False)

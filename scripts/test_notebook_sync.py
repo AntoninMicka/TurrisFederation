@@ -586,6 +586,37 @@ class NotebookTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.b.topology_refresh_plan(json.dumps(tampered))
 
+    def test_operational_snapshot_omission_preserves_cached_catalog_and_version(self):
+        self.onboard_user()
+        router_id = str(uuid.UUID(int=1))
+        service = {'id': 'home', 'name': 'Home Assistant', 'hostAddress': '192.168.1.30',
+                   'protocol': 'http', 'port': 8123, 'path': '/lovelace'}
+        old_user_version = {'version': 'c' * 64, 'builtAt': 198}
+        f.atomic(self.b.fleet / 'reports.json', {router_id: {
+            'services': [service], 'servicesObservedAt': 200,
+            'software': {'version': 'b' * 64, 'builtAt': 199}}})
+        f.atomic(self.b.fleet / 'notebook-software.json', {self.b.id: old_user_version})
+        f.atomic(self.a.fleet / 'reports.json', {router_id: {
+            'state': 'rollback', 'software': {'version': 'd' * 64, 'builtAt': 201}}})
+        (self.a.fleet / 'notebook-software.json').unlink(missing_ok=True)
+
+        with patch.object(f, 'refresh_reports'):
+            plan = self.b.topology_refresh_plan(self.a.topology_update_export())
+        self.b.topology_refresh_apply(plan['id'])
+        cached = f.read(self.b.fleet / 'reports.json')[router_id]
+        self.assertEqual([service], cached['services'])
+        self.assertEqual('d' * 64, cached['software']['version'])
+        self.assertEqual(old_user_version,
+                         f.read(self.b.fleet / 'notebook-software.json')[self.b.id])
+
+        f.atomic(self.a.fleet / 'reports.json', {router_id: {
+            'services': [], 'servicesObservedAt': 202,
+            'software': {'version': 'd' * 64, 'builtAt': 201}}})
+        with patch.object(f, 'refresh_reports'):
+            removal = self.b.topology_refresh_plan(self.a.topology_update_export())
+        self.b.topology_refresh_apply(removal['id'])
+        self.assertEqual([], f.read(self.b.fleet / 'reports.json')[router_id]['services'])
+
     def test_topology_refresh_restores_profile_and_revision_after_commit_failure(self):
         invitation = self.onboard_user()
         public = invitation['rootPublic']
