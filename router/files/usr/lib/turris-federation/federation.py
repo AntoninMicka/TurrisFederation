@@ -2247,12 +2247,18 @@ def controller(root, req):
                                       for notebook in config.get('notebooks', []))
         versions_match = installed == available and not component_mismatches
         settings_supported = updating and installed and (versions_match or not requires_endpoint_agent)
+        available_modes = ['full']
+        if updating:
+            available_modes.append('software')
+        if settings_supported:
+            available_modes.append('settings')
         plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': available,
                 'installedArtifactHash': installed, 'artifactComponents': available_parts,
                 'installedArtifactComponents': installed_parts,
                 'componentMismatches': component_mismatches, 'versionMismatch': not versions_match,
-                'availableModes': ['full', 'settings'] if settings_supported else ['full'],
-                'recommendedMode': 'settings' if updating and versions_match else 'full',
+                'availableModes': available_modes,
+                'recommendedMode': ('settings' if updating and versions_match else
+                                    'software' if updating else 'full'),
                 'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
@@ -2269,7 +2275,13 @@ def controller(root, req):
             'Podepsat a přenést konfiguraci včetně všech draftů.',
             'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
             'Ověřit další SSH spojení a potvrdit aplikování nastavení.',
-            'Předat síťové nastavení ostatním přijatým routerům přes ZeroTier.']}
+            'Předat síťové nastavení ostatním přijatým routerům přes ZeroTier.'],
+            'software': [
+                'Doinstalovat pouze chybějící závislosti z repozitáře routeru.',
+                'Atomicky aktualizovat agenta, init službu a webové soubory přes přímou LAN.',
+                'Ověřit identitu již přijatého routeru a shodu všech komponent.',
+                'Restartovat agenta a načíst nový podepsaný provozní report.',
+                'Neměnit UCI síť, firewall, WireGuard ani podepsanou topologii.']}
         atomic(root / ('plan-' + node['id'] + '.json'), plan)
         return plan
     if action != 'deploy':
@@ -2299,9 +2311,9 @@ def controller(root, req):
     check_node = 'import json; assert json.load(open("/etc/turris-federation/node.json"))["nodeId"] == ' + repr(node['id'])
     members = read(root / 'members.json', {})
     existing_member = node['id'] in members
+    if mode in ['settings', 'software'] and node['id'] not in members:
+        raise ValueError('Nejdřív proveďte kompletní instalaci a přijetí uzlu.')
     if mode == 'settings':
-        if node['id'] not in members:
-            raise ValueError('Nejdřív proveďte kompletní instalaci a přijetí uzlu.')
         check_member = 'import json; assert json.load(open("/etc/turris-federation/node.json")) == ' + repr(members[node['id']])
         ssh(node, credentials, 'set -eu; test -f ' + REMOTE + '/root.pub; ' + check +
             '; test ! -f ' + REMOTE + '/pending.json; python3 -c ' + shell_quote(check_member))
@@ -2339,6 +2351,13 @@ def controller(root, req):
             # passive catalogs still come from the newly installed agent.
             ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
             ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
+    if mode == 'software':
+        result = dict(remote(node, credentials, 'status'), reachable=True)
+        reports = read(root / 'reports.json', {})
+        reports[node['id']] = merge_report(target, reports.get(node['id'], {}), result)
+        atomic(root / 'reports.json', reports)
+        (root / ('plan-' + node['id'] + '.json')).unlink()
+        return overview(root, config)
     envelope = snapshot(root, config, members)
     pending = remote(node, credentials, 'apply', envelope=envelope, expectedRouterHash=plan['routerHash'])
     # Separate SSH session proves that management survived network changes.

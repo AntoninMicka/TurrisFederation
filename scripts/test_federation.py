@@ -552,11 +552,11 @@ class FederationTests(unittest.TestCase):
             plan = f.controller(self.root, req)
         return req, plan, lan
 
-    def test_validation_recommends_full_update_for_different_or_missing_version(self):
+    def test_validation_recommends_mode_by_installation_state(self):
         for installed, enrolled, recommended, modes in [
-                (f.artifact_hash(), True, 'settings', ['full', 'settings']),
-                ('a' * 64, True, 'full', ['full', 'settings']),
-                (None, True, 'full', ['full']),
+                (f.artifact_hash(), True, 'settings', ['full', 'software', 'settings']),
+                ('a' * 64, True, 'software', ['full', 'software', 'settings']),
+                (None, True, 'software', ['full', 'software']),
                 (f.artifact_hash(), False, 'full', ['full'])]:
             with self.subTest(installed=installed, enrolled=enrolled):
                 _, plan, _ = self.validation_fixture(installed, enrolled)
@@ -576,11 +576,11 @@ class FederationTests(unittest.TestCase):
         config = f.normalize_with_notebook_endpoints(self.nodes, self.config['networkId'], [endpoint])
         f.snapshot(self.root, config, {})
         _, plan, _ = self.validation_fixture('a' * 64)
-        self.assertEqual(['full'], plan['availableModes'])
-        self.assertEqual('full', plan['recommendedMode'])
+        self.assertEqual(['full', 'software'], plan['availableModes'])
+        self.assertEqual('software', plan['recommendedMode'])
 
     def test_settings_update_preserves_software_and_uses_apply_confirm(self):
-        # A version mismatch recommends full update but an explicit settings-only choice remains valid.
+        # A version mismatch recommends software-only, but an explicit settings-only choice remains valid.
         req, plan, lan = self.validation_fixture('a' * 64)
         before = (self.root / 'members.json').read_bytes()
         req.update(action='deploy', mode='settings', planId=plan['id'])
@@ -620,6 +620,39 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(SOURCE.read_bytes() + f.INIT.encode(), uploads[0].kwargs['input_data'])
         self.assertLess(len(uploads[0].args[2]), 8192)
         self.assertNotIn(base64.b64encode(SOURCE.read_bytes()).decode(), uploads[0].args[2])
+
+    def test_software_only_update_never_applies_or_distributes_network(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        req.update(action='deploy', mode='software', planId=plan['id'])
+        service = {'id': 'home', 'name': 'Home Assistant',
+                   'hostAddress': '192.168.1.20', 'protocol': 'http',
+                   'port': 8123, 'path': '/'}
+        report = {'state': 'rollback', 'receivedRevision': 12, 'appliedRevision': 11,
+                  'hosts': [{'address': '192.168.1.20', 'name': 'home.local'}],
+                  'hostsObservedAt': 100, 'services': [service], 'servicesObservedAt': 101,
+                  'software': f.software_info(), 'components': f.artifact_components()}
+        before_members = (self.root / 'members.json').read_bytes()
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', return_value=b'hash') as ssh, \
+                patch.object(f, 'installed_artifact_hash',
+                             side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'],
+                                          f.artifact_components()]), \
+                patch.object(f, 'remote', side_effect=[self.member(1), report]) as remote, \
+                patch.object(f, 'snapshot') as snapshot, \
+                patch.object(f, 'distribute_bundle') as distribute:
+            result = f.controller(self.root, req)
+        self.assertEqual(['bootstrap', 'status'], [call.args[2] for call in remote.call_args_list])
+        snapshot.assert_not_called()
+        distribute.assert_not_called()
+        self.assertEqual(before_members, (self.root / 'members.json').read_bytes())
+        commands = '\n'.join(call.args[2] for call in ssh.call_args_list)
+        self.assertIn('install-web', commands)
+        self.assertIn('turris-federation restart', commands)
+        self.assertNotIn('uci commit', commands)
+        self.assertEqual('home', result['nodes'][node(1)['id']]['services'][0]['id'])
+        self.assertFalse((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
 
     def test_existing_router_activates_new_agent_before_configuration_apply(self):
         req, plan, lan = self.validation_fixture('a' * 64)

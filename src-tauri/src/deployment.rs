@@ -11,7 +11,7 @@ pub async fn deployment_action(action: String, node_id: Option<String>, credenti
     if !["overview", "refresh", "validate", "deploy", "publish", "diagnostics", "diagnostics_overview", "read_only_overview"].contains(&action.as_str()) {
         return Err("Neznámá operace deploye.".into());
     }
-    if mode.as_deref().is_some_and(|value| !["full", "settings"].contains(&value)) {
+    if mode.as_deref().is_some_and(|value| !["full", "settings", "software"].contains(&value)) {
         return Err("Neznámý režim aktualizace.".into());
     }
     if ["diagnostics", "diagnostics_overview", "read_only_overview"].contains(&action.as_str()) {

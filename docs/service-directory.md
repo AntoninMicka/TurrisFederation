@@ -81,9 +81,10 @@ Agent zachová poslední ověřenou dvojici `hosts`/`hostsObservedAt` a
 katalogů i tehdy, když síťová revize zůstala v rollbacku;
 při každém podepsaném dotazu navíc znovu složí hosty z pasivní tabulky sousedů
 a DHCP lease a služby z autoritativního `services.json`. Neprovádí přitom
-aktivní skenování. Při kompletní aktualizaci již přijatého routeru se nový agent
-spustí ještě před změnou sítě, takže i případný následný rollback vrací katalog
-a verzi nového agenta.
+aktivní skenování. Režim **Pouze software** u již přijatého routeru nový agent
+ověří a spustí bez jakékoli změny sítě; kompletní aktualizace jej spustí ještě
+před změnou sítě. I případný následný rollback proto vrací katalog a verzi
+nového agenta.
 
 Všechny cesty, které zapisují stav nasazení nebo distribuovaný report, slučují
 části katalogu nezávisle. Chybějící pole znamená „tato odpověď údaj neobsahuje“

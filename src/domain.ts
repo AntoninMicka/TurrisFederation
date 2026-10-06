@@ -227,7 +227,7 @@ export interface TopologyRefreshPlan {
   forwarding?: { ipv4: boolean | null; ipv6: boolean | null };
   steps: string[];
 }
-export type DeploymentMode = "full" | "settings";
+export type DeploymentMode = "full" | "settings" | "software";
 export interface DeploymentPlan {
   operation: "install" | "update";
   lan: { host: string; device: string; source: string };

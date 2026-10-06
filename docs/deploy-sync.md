@@ -5,7 +5,7 @@ implementovaná; níže uvedený návrh zahrnuje i dosud nedokončené funkce.
 
 ## Instalace a aktualizace pouze v přímé LAN
 
-Instalace i oba režimy cíleného deploye vyžadují notebook připojený
+Instalace i všechny režimy cíleného deploye vyžadují notebook připojený
 přímo přes fyzický Ethernet nebo Wi-Fi do LAN cílového routeru. SSH adresa
 musí být číselná IPv4 z LAN uvedené v draftu. Controller kontroluje skutečnou
 trasu bez brány a lokální adresu ve stejném subnetu; odmítá virtuální rozhraní,
@@ -17,19 +17,25 @@ Kontrola se opakuje před každým SSH krokem včetně instalátoru, aktualizace
 potvrzení a restartu služby. SSH je vázané na ověřené rozhraní a zdrojovou
 adresu. Plán obsahuje LAN adresy/rozhraní a otisk konkrétního agenta i jeho
 služby; změna připojení nebo artefaktu plán zneplatní. Starší plány bez těchto
-údajů je nutné znovu validovat. Po validaci UI nabízí dva režimy:
+údajů je nutné znovu validovat. Po validaci již přijatého uzlu UI nabízí tři
+oddělené režimy:
 
 - **Kompletní aktualizace:** agent, web, chybějící závislosti a síťové nastavení;
   po dokončení se restartuje služba a ověří web.
 - **Pouze nastavení:** zachová software a členství, podepíše konfiguraci,
   aplikuje ji s UCI zálohou a rollbackem a potvrdí výsledek dalším SSH spojením.
   Nevolá instalátor ani restart služby agenta. Změny předá ostatním přijatým uzlům.
+- **Pouze software:** atomicky aktualizuje agenta, init službu a webové soubory,
+  ověří stávající identitu a načte nový podepsaný report. Nepodepisuje ani
+  neaplikuje topologii, nemění UCI síť, firewall nebo WireGuard a nic
+  nedistribuuje ostatním routerům. Je určený také k bezpečné opravě agenta na
+  uzlu, který zůstal v rollbacku síťové revize.
 
 Validace přečte SHA-256 otisk obsahu agenta a jeho init služby a porovná jej
 s lokálním instalačním artefaktem, který zahrnuje i web. Při rozdílu verzí
-předvolí a doporučí kompletní aktualizaci; u nainstalovaného přijatého uzlu
-lze přesto výslovně zvolit pouze nastavení. Při shodě předvolí pouze nastavení.
-Nové uzly nebo chybějící agent/služba vyžadují kompletní instalaci.
+předvolí u již přijatého uzlu režim pouze software. Teprve po jeho úspěšném
+dokončení lze samostatně validovat a případně aplikovat nastavení. Při shodě
+předvolí pouze nastavení. Nový dosud nepřijatý uzel vyžaduje kompletní instalaci.
 Otisk routeru se kontroluje znovu před deployem; změna od validace plán zneplatní.
 UI zobrazuje kroky podle vybraného režimu a při změně režimu ruší potvrzení.
 
@@ -275,10 +281,11 @@ Desktop ukazuje samostatně požadovanou, přijatou a aplikovanou revizi,
 Kontrola verze routeru používá komponentní manifest. Vedle zpětně
 kompatibilního souhrnného hashe porovnává samostatně Python agenta, init
 službu, registraci webové dlaždice, ikonu a konfiguraci lighttpd proxy. Shoda
-uzlu znamená shodu všech povinných komponent; chybějící nebo
-neznámá komponenta doporučí kompletní aktualizaci. Validovaný plán uchovává
-instalované i očekávané hashe, před deployem je znovu ověří a po kompletní
-instalaci odmítne pokračovat, pokud se byť jediná komponenta neshoduje.
+uzlu znamená shodu všech povinných komponent; chybějící nebo neznámá komponenta
+na již přijatém uzlu doporučí aktualizaci pouze softwaru, u nového uzlu
+kompletní instalaci. Validovaný plán uchovává instalované i očekávané hashe,
+před deployem je znovu ověří a po instalaci softwaru odmítne pokračovat, pokud
+se byť jediná komponenta neshoduje.
 Starší agent bez manifestu se zobrazuje jako neznámý, nikoli jako shodný.
 
 ## Pořadí implementace a ověření

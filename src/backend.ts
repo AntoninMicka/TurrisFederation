@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuditFinding, FederationNode, HostIdentity, NotebookVpnStatus, SoftwareInfo, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
+import type { AuditFinding, DeploymentMode, FederationNode, HostIdentity, NotebookVpnStatus, SoftwareInfo, SshCredentials, ZeroTierSettings, ZeroTierStatus } from "./domain";
 
 const browserMode = !("__TAURI_INTERNALS__" in window);
 
@@ -65,7 +65,7 @@ export async function openServiceEndpoint(endpoint: string): Promise<string> {
   return invoke("open_service_endpoint", { endpoint });
 }
 
-export async function deploymentAction<T>(action: "overview" | "refresh" | "validate" | "deploy" | "publish" | "diagnostics" | "diagnostics_overview" | "read_only_overview", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null, mode: "full" | "settings" | null = null): Promise<T> {
+export async function deploymentAction<T>(action: "overview" | "refresh" | "validate" | "deploy" | "publish" | "diagnostics" | "diagnostics_overview" | "read_only_overview", nodeId: string | null = null, credentials: SshCredentials | null = null, planId: string | null = null, mode: DeploymentMode | null = null): Promise<T> {
   if (browserMode) throw new Error("Deploy a synchronizace jsou dostupné v desktopové aplikaci.");
   return invoke("deployment_action", { action, nodeId, credentials, planId, mode });
 }

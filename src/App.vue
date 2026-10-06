@@ -5,7 +5,7 @@ import FederationOverview from "./FederationOverview.vue";
 import ServiceDirectory from "./ServiceDirectory.vue";
 import { notebookAction, notebookEnrollmentAction, notebookVpnAction, manageNotebookService, checkNotebookZeroTier, auditNode, connectNode, inspectConnection, listNodes, saveNode, getZeroTierSettings, saveZeroTierSettings, listZeroTierStatus, manageZeroTier, openZeroTierCentral, exportSettings, importSettings, deploymentAction } from "./backend";
 import type { NotebookSyncStatus, NotebookPeer } from "./backend";
-import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, TopologyRefreshPlan } from "./domain";
+import type { AuditFinding, FederationNode, HostIdentity, ZeroTierSettings, ZeroTierStatus, DeploymentMode, DeploymentOverview, DeploymentPlan, ReadOnlyOverview, NotebookVpnDiagnostics, NotebookVpnPlan, NotebookVpnStatus, TopologyRefreshPlan } from "./domain";
 
 const tabs = [
   { id: 'services', label: 'Zlaté stránky' },
@@ -365,7 +365,7 @@ const editing = ref(false);
 const deployment = ref<DeploymentOverview | null>(null);
 const plans = ref<Record<string, DeploymentPlan>>({});
 const deployConfirmed = ref(false);
-const deployMode = ref<"full" | "settings">("full");
+const deployMode = ref<DeploymentMode>("full");
 const publishing = ref(false);
 const deploymentError = ref("");
 const overviewLoading = ref(false);
@@ -695,11 +695,12 @@ async function submitConnection() {
   try {
     if (connectionAction.value === "validate") {
       plans.value[node.id] = await deploymentAction<DeploymentPlan>("validate", node.id, credentials);
-      message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut. ${plans.value[node.id].versionMismatch ? "Verze agenta se liší nebo chybí — doporučena kompletní aktualizace." : "Verze agenta odpovídá, stačí aktualizovat nastavení."}`;
+      message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut. ${plans.value[node.id].versionMismatch ? "Verze agenta se liší nebo chybí — nejdřív je doporučena aktualizace pouze softwaru bez zásahu do sítě." : "Verze agenta odpovídá, stačí aktualizovat nastavení."}`;
     } else if (connectionAction.value === "deploy") {
       deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id, deployMode.value);
       plans.value = {};
-      message.value = `${deployMode.value === "settings" ? "Aktualizace nastavení" : "Kompletní deploy"} ${node.name} dokončen. Stav spojení s protějšky je uveden u stanoviště.`;
+      const label = deployMode.value === "settings" ? "Aktualizace nastavení" : deployMode.value === "software" ? "Aktualizace softwaru" : "Kompletní deploy";
+      message.value = `${label} ${node.name} dokončena. Stav spojení s protějšky je uveden u stanoviště.`;
     } else if (connectionAction.value === "audit") {
       findings.value = await auditNode(node.id, credentials);
       auditedNodeName.value = node.name;
@@ -840,7 +841,7 @@ async function submitConnection() {
               <p v-else class="muted">Uzel zatím neoznámil žádné pasivně známé LAN hosty.</p>
               <small v-if="deployment?.nodes[node.id]?.hostsObservedAt">Pozorováno {{ new Date(deployment.nodes[node.id].hostsObservedAt! * 1000).toLocaleString('cs-CZ') }} · bez aktivního skenování</small>
             </div>
-            <p v-if="plans[node.id]?.versionMismatch" class="warning">{{ plans[node.id].installedArtifactHash ? 'Verze agenta na routeru se liší od dostupné verze. Doporučujeme kompletní aktualizaci.' : 'Agent nebo jeho služba chybí. Je nutná kompletní instalace.' }}</p>
+            <p v-if="plans[node.id]?.versionMismatch" class="warning">{{ plans[node.id].operation === 'update' ? 'Verze agenta na routeru se liší. Doporučený režim „Pouze software“ ji sjednotí bez změny sítě a firewallu.' : 'Agent nebo jeho služba chybí. Je nutná kompletní instalace.' }}</p>
             <details v-if="plans[node.id]">
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
               <p>LAN: {{ plans[node.id].lan.source }} → {{ plans[node.id].lan.host }} ({{ plans[node.id].lan.device }})</p>
@@ -1158,12 +1159,14 @@ async function submitConnection() {
         </div>
         <div v-if="connectionAction === 'deploy' && plans[connectionNode.id]" class="setup-preview">
           <strong>Plán nasazení na {{ connectionNode.name }}</strong>
-          <p v-if="plans[connectionNode.id].versionMismatch" class="warning">{{ plans[connectionNode.id].installedArtifactHash ? 'Verze agenta se liší. Doporučujeme kompletní aktualizaci, aby router získal nové funkce a opravy.' : 'Agent nebo jeho služba chybí. Pro tento uzel je dostupná kompletní instalace.' }}</p>
+          <p v-if="plans[connectionNode.id].versionMismatch" class="warning">{{ plans[connectionNode.id].operation === 'update' ? 'Verze agenta se liší. Doporučujeme nejdřív aktualizovat pouze software bez změny sítě a firewallu.' : 'Agent nebo jeho služba chybí. Pro tento uzel je dostupná kompletní instalace.' }}</p>
           <label class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="full" :disabled="submitting" @change="deployConfirmed = false" /> Kompletní aktualizace — agent, web a nastavení</label>
+          <label v-if="plans[connectionNode.id].availableModes.includes('software')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="software" :disabled="submitting" @change="deployConfirmed = false" /> Pouze software — neměnit síť ani firewall routeru</label>
           <label v-if="plans[connectionNode.id].availableModes.includes('settings')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="settings" :disabled="submitting" @change="deployConfirmed = false" /> Pouze nastavení — zachovat nainstalovaný software</label>
           <ol><li v-for="step in plans[connectionNode.id].stepsByMode[deployMode]" :key="step">{{ step }}</li></ol>
+          <p v-if="deployMode === 'software'" class="muted">Níže uvedené nastavení zůstane v tomto režimu beze změny a nebude publikováno ani aplikováno.</p>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
-          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji {{ deployMode === 'settings' ? 'aktualizaci pouze nastavení' : 'kompletní instalaci / aktualizaci' }} přes přímou LAN a aplikování plánu včetně předání síťových změn ostatním přijatým routerům přes ZeroTier.</label>
+          <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji {{ deployMode === 'settings' ? 'aktualizaci pouze nastavení včetně síťových změn' : deployMode === 'software' ? 'aktualizaci pouze softwaru bez změny sítě, firewallu a topologie' : 'kompletní instalaci / aktualizaci včetně síťových změn' }} přes přímou LAN.</label>
         </div>
         <p v-if="inspecting" role="status">Načítám otisk SSH klíče routeru…</p>
         <p v-if="connectionError" class="error connection-error" role="alert">{{ connectionError }}</p>
