@@ -73,6 +73,16 @@ function builtAtLabel(software: SoftwareInfo | null | undefined) {
   return software?.builtAt ? new Date(software.builtAt * 1000).toLocaleString("cs-CZ") : "čas sestavení neznámý";
 }
 
+const componentLabels = {
+  agent: "agent", init: "init služba", webTile: "web dlaždice",
+  webIcon: "web ikona", webProxy: "lighttpd proxy",
+} as const;
+
+function componentClass(installed: string | null | undefined, available: string | null | undefined) {
+  if (!installed || !available) return "unknown";
+  return installed === available ? "green" : "red";
+}
+
 function notebookSoftware(id: string) {
   if (id === props.notebook?.id) return props.notebook.software;
   return props.notebook?.peers.find(peer => peer.id === id)?.software
@@ -189,6 +199,10 @@ function presenceLabel(value: boolean | null, positive: string) {
               <td>
                 <span :class="['overview-signal', 'software-version', versionClass(node.software, overview?.availableRouterVersion)]">{{ versionLabel(node.software, overview?.availableRouterVersion) }}</span>
                 <small class="overview-line">{{ builtAtLabel(node.software) }}</small>
+                <small v-for="(label, component) in componentLabels" :key="component"
+                  :class="['overview-line', 'overview-signal', componentClass(node.components?.[component], overview?.availableRouterComponents?.[component])]">
+                  {{ label }}: {{ node.components?.[component]?.slice(0, 12) || "neznámá" }}
+                </small>
               </td>
               <td><code>{{ node.zeroTierAddress || "—" }}</code></td>
               <td><code>{{ node.wireguardAddress || "—" }}</code></td>

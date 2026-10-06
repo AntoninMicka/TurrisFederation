@@ -780,6 +780,8 @@ class Store:
                             merged[key] = incoming[key]
             if 'software' in incoming:
                 merged['software'] = incoming['software']
+            if 'components' in incoming:
+                merged['components'] = incoming['components']
             if merged:
                 merged_reports[node_id] = merged
         known_notebooks = {item['id'] for item in document['config'].get('notebooks', [])}

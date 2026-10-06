@@ -488,6 +488,7 @@ class FederationTests(unittest.TestCase):
                 f.controller(self.root, req)
             ssh.assert_not_called()
         plan['artifactHash'] = f.artifact_hash()
+        plan['artifactComponents'] = f.artifact_components()
         f.atomic(path, plan)
         with patch.object(f, 'direct_lan', return_value=dict(lan, device='wlan0')), patch.object(f, 'ssh') as ssh:
             with self.assertRaisesRegex(ValueError, 'změnilo'):
@@ -502,7 +503,9 @@ class FederationTests(unittest.TestCase):
                  'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
         req = {'action': 'validate', 'nodes': [target], 'networkId': 'abcdef0123456789',
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
-        with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, (f.artifact_hash() + '  -').encode(), b'hash']) as ssh:
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', side_effect=[probe, (f.artifact_hash() + '  -').encode(), b'hash']) as ssh, \
+                patch.object(f, 'installed_artifact_components', return_value=f.artifact_components()):
             plan = f.controller(self.root, req)
         self.assertEqual('update', plan['operation'])
         self.assertEqual(lan, plan['lan'])
@@ -517,8 +520,12 @@ class FederationTests(unittest.TestCase):
                  'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
         req = {'action': 'validate', 'nodes': self.nodes, 'networkId': self.config['networkId'],
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
+        parts = (f.artifact_components() if installed == f.artifact_hash() else
+                 {name: installed for name in f.artifact_components()} if installed else
+                 {name: None for name in f.artifact_components()})
         with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', side_effect=[probe, b'hash']), \
-                patch.object(f, 'installed_artifact_hash', return_value=installed):
+                patch.object(f, 'installed_artifact_hash', return_value=installed), \
+                patch.object(f, 'installed_artifact_components', return_value=parts):
             plan = f.controller(self.root, req)
         return req, plan, lan
 
@@ -534,6 +541,9 @@ class FederationTests(unittest.TestCase):
                 self.assertEqual(modes, plan['availableModes'])
                 self.assertEqual(installed, plan['installedArtifactHash'])
                 self.assertEqual(installed != f.artifact_hash(), plan['versionMismatch'])
+                self.assertEqual(f.artifact_components(), plan['artifactComponents'])
+                self.assertEqual(not (installed == f.artifact_hash()),
+                                 bool(plan['componentMismatches']))
                 self.assertNotEqual(plan['stepsByMode']['full'], plan['stepsByMode']['settings'])
 
     def test_notebook_endpoint_protocol_requires_current_router_agent(self):
@@ -553,6 +563,7 @@ class FederationTests(unittest.TestCase):
         req.update(action='deploy', mode='settings', planId=plan['id'])
         with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
                 patch.object(f, 'installed_artifact_hash', return_value='a' * 64), \
+                patch.object(f, 'installed_artifact_components', return_value=plan['installedArtifactComponents']), \
                 patch.object(f, 'remote', side_effect=[{'token': 'confirm-me'}, {'state': 'active', 'appliedRevision': 1}]) as remote, \
                 patch.object(f, 'distribute_bundle') as distribute:
             result = f.controller(self.root, req)
@@ -571,7 +582,9 @@ class FederationTests(unittest.TestCase):
         req, plan, lan = self.validation_fixture('a' * 64)
         req.update(action='deploy', mode='full', planId=plan['id'])
         with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
-                patch.object(f, 'installed_artifact_hash', return_value='a' * 64), \
+                patch.object(f, 'installed_artifact_hash', side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'], f.artifact_components()]), \
                 patch.object(f, 'remote', side_effect=[self.member(1), {'token': None}, {'state': 'active'}]) as remote, \
                 patch.object(f, 'distribute_bundle'):
             f.controller(self.root, req)
@@ -608,6 +621,21 @@ class FederationTests(unittest.TestCase):
         for output in [b'', b'permission denied', b'not-a-hash']:
             with patch.object(f, 'ssh', return_value=output), self.assertRaisesRegex(ValueError, 'verzi'):
                 f.installed_artifact_hash(node(1), {})
+
+    def test_installed_component_probe_reports_each_file_independently(self):
+        expected = {name: (chr(97 + index) * 64)
+                    for index, name in enumerate(f.artifact_components())}
+        paths = [f.PROGRAM, '/etc/init.d/turris-federation',
+                 '/etc/turris-webapps/80-turris-federation.json',
+                 '/www/webapps-icons/turris-federation.svg', str(f.WEB_PROXY_PATH)]
+        output = ''.join('%s  %s\n' % (version, path)
+                         for version, path in zip(expected.values(), paths)).encode()
+        with patch.object(f, 'ssh', return_value=output):
+            self.assertEqual(expected, f.installed_artifact_components(node(1), {}))
+        missing = ''.join('missing %s\n' % path for path in paths).encode()
+        with patch.object(f, 'ssh', return_value=missing):
+            self.assertEqual({name: None for name in f.artifact_components()},
+                             f.installed_artifact_components(node(1), {}))
 
     def test_publish_only_sends_network_document_and_never_installs(self):
         f.atomic(self.root / 'members.json', {node(1)['id']: self.member(1)})
@@ -694,12 +722,15 @@ class FederationTests(unittest.TestCase):
         plan = {'id': 'deploy-second', 'expiresAt': time.time() + 600, 'configHash': f.digest(self.config),
                 'hostKeyHash': f.digest('key'), 'membersHash': f.digest(members),
                 'sshHash': f.digest({k: target[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
-                'lan': lan, 'availableModes': ['full'], 'installedArtifactHash': f.artifact_hash(), 'artifactHash': f.artifact_hash(), 'routerHash': 'hash'}
+                'lan': lan, 'availableModes': ['full'], 'installedArtifactHash': f.artifact_hash(),
+                'artifactHash': f.artifact_hash(), 'artifactComponents': f.artifact_components(),
+                'installedArtifactComponents': f.artifact_components(), 'routerHash': 'hash'}
         f.atomic(self.root / ('plan-' + target['id'] + '.json'), plan)
         req = {'action': 'deploy', 'nodes': self.nodes, 'networkId': self.config['networkId'],
                'nodeId': target['id'], 'planId': plan['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
         with patch.object(f, 'direct_lan', return_value=lan), patch.object(f, 'ssh', return_value=b'hash') as ssh, \
                 patch.object(f, 'installed_artifact_hash', return_value=f.artifact_hash()), \
+                patch.object(f, 'installed_artifact_components', return_value=f.artifact_components()), \
                 patch.object(f, 'remote', side_effect=[self.member(2), {'token': 'ok'},
                     {'state': 'waiting_peers', 'appliedRevision': 2}]) as remote, \
                 patch.object(f, 'request_http', side_effect=ValueError('offline')) as http:
@@ -824,6 +855,7 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'reports.json', {node(1)['id']: {
             'state': 'active', 'reachable': True, 'checkedAt': 100,
             'software': {'version': 'a' * 64, 'builtAt': 99},
+            'components': {**f.artifact_components(), 'agent': 'b' * 64, 'init': 'c' * 64},
             'hosts': [{'address': '192.168.1.20', 'name': 'printer'}], 'hostsObservedAt': 100,
             'services': [{'id': 'printer-web', 'name': 'Printer', 'hostAddress': '192.168.1.20',
                           'protocol': 'https', 'port': 8443, 'path': '/status'}], 'servicesObservedAt': 100,
@@ -840,8 +872,12 @@ class FederationTests(unittest.TestCase):
         enrolled, draft = result['nodes']
         self.assertTrue(enrolled['enrolled'])
         self.assertEqual({'version': 'a' * 64, 'builtAt': 99}, enrolled['software'])
+        self.assertEqual({**f.artifact_components(), 'agent': 'b' * 64, 'init': 'c' * 64},
+                         enrolled['components'])
         self.assertIsNone(draft['software'])
+        self.assertIsNone(draft['components'])
         self.assertEqual(f.artifact_hash(), result['availableRouterVersion'])
+        self.assertEqual(f.artifact_components(), result['availableRouterComponents'])
         self.assertEqual([{'address': '192.168.1.20', 'name': 'printer'}], enrolled['hosts'])
         self.assertFalse(draft['enrolled'])
         self.assertEqual([], draft['hosts'])

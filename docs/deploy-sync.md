@@ -272,6 +272,15 @@ Desktop ukazuje samostatně požadovanou, přijatou a aplikovanou revizi,
 čas posledního kontaktu a chybu. Nedostupný router zůstává čekající;
 částečný úspěch federace se nesmí zobrazit jako dokončený deploy.
 
+Kontrola verze routeru používá komponentní manifest. Vedle zpětně
+kompatibilního souhrnného hashe porovnává samostatně Python agenta, init
+službu, registraci webové dlaždice, ikonu a konfiguraci lighttpd proxy. Shoda
+uzlu znamená shodu všech povinných komponent; chybějící nebo
+neznámá komponenta doporučí kompletní aktualizaci. Validovaný plán uchovává
+instalované i očekávané hashe, před deployem je znovu ověří a po kompletní
+instalaci odmítne pokračovat, pokud se byť jediná komponenta neshoduje.
+Starší agent bez manifestu se zobrazuje jako neznámý, nikoli jako shodný.
+
 ## Pořadí implementace a ověření
 
 1. Oddělit přenosný model nastavení, opravit sběr citlivých dat při auditu

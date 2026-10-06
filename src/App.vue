@@ -341,6 +341,11 @@ const actionLabels: Record<ConnectionAction, string> = {
   validate: "Validovat stanoviště", deploy: "Potvrdit a nasadit",
   connect: "Ověřit připojení", audit: "Připojit a auditovat", "zerotier-check": "Zkontrolovat ZeroTier", "zerotier-setup": "Provést nastavení ZeroTier",
 };
+const routerComponentKeys = ["agent", "init", "webTile", "webIcon", "webProxy"] as const;
+const routerComponentLabels = {
+  agent: "Agent", init: "Init služba", webTile: "Web dlaždice",
+  webIcon: "Web ikona", webProxy: "Lighttpd proxy",
+} as const;
 const ztSettings = ref<ZeroTierSettings>({ networkId: null, central: "new", zeroTierSubnet: null, wireguardSubnet: null });
 const ztDraft = reactive({ networkId: "", central: "new" as ZeroTierSettings["central"], zeroTierSubnet: "", wireguardSubnet: "" });
 const ztStatuses = ref<Record<string, ZeroTierStatus>>({});
@@ -840,6 +845,12 @@ async function submitConnection() {
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
               <p>LAN: {{ plans[node.id].lan.source }} → {{ plans[node.id].lan.host }} ({{ plans[node.id].lan.device }})</p>
               <p>Verze agenta: {{ plans[node.id].installedArtifactHash?.slice(0, 12) ?? 'nenainstalováno' }} → {{ plans[node.id].artifactHash.slice(0, 12) }}</p>
+              <p v-for="component in routerComponentKeys" :key="component">
+                {{ routerComponentLabels[component] }}:
+                {{ plans[node.id].installedArtifactComponents[component]?.slice(0, 12) ?? 'chybí' }}
+                → {{ plans[node.id].artifactComponents[component]?.slice(0, 12) }}
+                · {{ plans[node.id].componentMismatches.includes(component) ? 'neshoda' : 'shoda' }}
+              </p>
               <ol><li v-for="step in plans[node.id].stepsByMode[plans[node.id].recommendedMode]" :key="step">{{ step }}</li></ol>
               <pre>{{ JSON.stringify(plans[node.id].config, null, 2) }}</pre>
             </details>

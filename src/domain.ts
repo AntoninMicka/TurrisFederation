@@ -98,6 +98,13 @@ export interface SoftwareInfo {
   version: string | null;
   builtAt: number | null;
 }
+export interface RouterComponents {
+  agent: string | null;
+  init: string | null;
+  webTile: string | null;
+  webIcon: string | null;
+  webProxy: string | null;
+}
 export interface ReadOnlyNode {
   id: string;
   name: string;
@@ -111,6 +118,7 @@ export interface ReadOnlyNode {
   hosts: { address: string; name: string | null }[];
   hostsObservedAt?: number;
   software?: SoftwareInfo | null;
+  components?: RouterComponents | null;
 }
 export interface ReadOnlyNotebook {
   id: string;
@@ -139,6 +147,7 @@ export interface ReadOnlyOverview {
   revision: number;
   networkId: string;
   availableRouterVersion: string;
+  availableRouterComponents: RouterComponents;
   nodes: ReadOnlyNode[];
   notebooks: ReadOnlyNotebook[];
   services: ServiceDirectoryEntry[];
@@ -224,6 +233,9 @@ export interface DeploymentPlan {
   lan: { host: string; device: string; source: string };
   artifactHash: string;
   installedArtifactHash: string | null;
+  artifactComponents: RouterComponents;
+  installedArtifactComponents: RouterComponents;
+  componentMismatches: (keyof RouterComponents)[];
   versionMismatch: boolean;
   availableModes: DeploymentMode[];
   recommendedMode: DeploymentMode;

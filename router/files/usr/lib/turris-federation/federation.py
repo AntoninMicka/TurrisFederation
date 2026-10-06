@@ -715,17 +715,18 @@ def read_only_notebook_overview(root):
         state = report.get('state') if report.get('state') in WEB_LABELS else None
         checked = report.get('checkedAt') if isinstance(report.get('checkedAt'), (int, float)) else None
         reachable = report.get('reachable') if type(report.get('reachable')) is bool else None
-        software = None
+        software, components = None, None
         if node['id'] in doc['members']:
             try:
                 software = validate_software_info(report.get('software'))
+                components = validate_components(report.get('components'))
             except (TypeError, ValueError):
                 pass
         nodes.append({'id': node['id'], 'name': node['name'], 'lanCidrs': node['lanCidrs'],
                       'zeroTierAddress': node['zeroTierAddress'], 'wireguardAddress': node['wireguardAddress'],
                       'enrolled': node['id'] in doc['members'], 'state': state, 'reachable': reachable,
                       'checkedAt': checked, 'hosts': hosts, 'hostsObservedAt': observed,
-                      'software': software})
+                      'software': software, 'components': components})
     notebook_versions = read(root / 'notebook-software.json', {})
     notebook_versions = notebook_versions if isinstance(notebook_versions, dict) else {}
     notebooks = []
@@ -739,7 +740,8 @@ def read_only_notebook_overview(root):
                           'zeroTierAddress': item['zeroTierAddress'],
                           'wireguardAddress': item['wireguardAddress'], 'software': software})
     return {'revision': doc['revision'], 'networkId': doc['config']['networkId'],
-            'availableRouterVersion': artifact_hash(), 'nodes': nodes,
+            'availableRouterVersion': artifact_hash(),
+            'availableRouterComponents': artifact_components(), 'nodes': nodes,
             'notebooks': notebooks, 'services': aggregate_services(doc, reports),
             'diagnostics': notebook_diagnostics_overview(root)}
 
@@ -1003,12 +1005,15 @@ def validate_catalog(node, report):
     hosts = validate_hosts(node, report)
     services = validate_report_services(node, report)
     software = validate_software_info(report.get('software'))
+    components = validate_components(report.get('components'))
     if hosts is not None:
         result.update(hosts)
     if services is not None:
         result.update(services)
     if software is not None:
         result['software'] = software
+    if components is not None:
+        result['components'] = components
     return result or None
 
 
@@ -1889,6 +1894,35 @@ def artifact_hash():
     return hashlib.sha256(Path(__file__).read_bytes() + INIT.encode()).hexdigest()
 
 
+def artifact_components():
+    return {'agent': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'init': hashlib.sha256(INIT.encode()).hexdigest(),
+            'webTile': hashlib.sha256(WEB_FILES['/etc/turris-webapps/80-turris-federation.json']).hexdigest(),
+            'webIcon': hashlib.sha256(WEB_FILES['/www/webapps-icons/turris-federation.svg']).hexdigest(),
+            'webProxy': hashlib.sha256(WEB_FILES[str(WEB_PROXY_PATH)]).hexdigest()}
+
+
+def installed_components():
+    paths = {'agent': Path(__file__), 'init': Path('/etc/init.d/turris-federation'),
+             'webTile': Path('/etc/turris-webapps/80-turris-federation.json'),
+             'webIcon': Path('/www/webapps-icons/turris-federation.svg'),
+             'webProxy': WEB_PROXY_PATH}
+    return {name: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            for name, path in paths.items()}
+
+
+def validate_components(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(artifact_components()):
+        raise ValueError('Uzel vrátil neplatný manifest komponent.')
+    for version in value.values():
+        if version is not None and (not isinstance(version, str)
+                                    or not re.fullmatch(r'[0-9a-f]{64}', version)):
+            raise ValueError('Uzel vrátil neplatnou verzi komponenty.')
+    return dict(value)
+
+
 def software_info():
     try:
         built_at = Path(__file__).stat().st_mtime
@@ -1928,7 +1962,7 @@ def status_report(root):
                           'servicesObservedAt': time.time()}
         except (OSError, TypeError, ValueError, KeyError):
             pass
-    return {**report, 'software': software_info()}
+    return {**report, 'software': software_info(), 'components': installed_components()}
 
 
 def installed_artifact_hash(node, credentials):
@@ -1942,6 +1976,29 @@ def installed_artifact_hash(node, credentials):
     if not re.fullmatch('[0-9a-f]{64}', value):
         raise ValueError('Nelze zjistit verzi nainstalovaného agenta. Opakujte validaci.')
     return value
+
+
+def installed_artifact_components(node, credentials):
+    paths = {'agent': PROGRAM, 'init': '/etc/init.d/turris-federation',
+             'webTile': '/etc/turris-webapps/80-turris-federation.json',
+             'webIcon': '/www/webapps-icons/turris-federation.svg',
+             'webProxy': str(WEB_PROXY_PATH)}
+    command = ('set -eu; for path in %s; do if test -f "$path"; then '
+               'sha256sum "$path"; else echo missing "$path"; fi; done' %
+               ' '.join(shell_quote(path) for path in paths.values()))
+    lines = ssh(node, credentials, command).decode().splitlines()
+    if len(lines) != len(paths):
+        raise ValueError('Nelze zjistit verze komponent agenta.')
+    result = {}
+    for (name, path), line in zip(paths.items(), lines):
+        fields = line.split()
+        if fields == ['missing', path]:
+            result[name] = None
+        elif len(fields) >= 2 and fields[1] == path and re.fullmatch(r'[0-9a-f]{64}', fields[0]):
+            result[name] = fields[0]
+        else:
+            raise ValueError('Nelze zjistit verzi komponenty %s.' % name)
+    return result
 
 
 def ssh(node, credentials, command, input_data=None):
@@ -2054,6 +2111,9 @@ def refresh_reports(root, doc):
                         for key in keys:
                             if key in previous_report:
                                 fresh[key] = previous_report[key]
+                for key in ['software', 'components']:
+                    if key not in fresh and key in previous_report:
+                        fresh[key] = previous_report[key]
                 reports[peer['id']] = fresh
             except Exception as error:
                 reports[peer['id']] = dict(reports.get(peer['id'], {}), error=str(error), reachable=False)
@@ -2136,13 +2196,20 @@ def controller(root, req):
         updating = node['id'] in read(root / 'members.json', {})
         installed = installed_artifact_hash(node, credentials)
         available = artifact_hash()
+        installed_parts = installed_artifact_components(node, credentials)
+        available_parts = artifact_components()
+        component_mismatches = [name for name, version in available_parts.items()
+                                if installed_parts.get(name) != version]
         requires_endpoint_agent = any(notebook.get('wireguardKey')
                                       for notebook in config.get('notebooks', []))
-        settings_supported = updating and installed and (installed == available or not requires_endpoint_agent)
+        versions_match = installed == available and not component_mismatches
+        settings_supported = updating and installed and (versions_match or not requires_endpoint_agent)
         plan = {'operation': 'update' if updating else 'install', 'lan': lan, 'artifactHash': available,
-                'installedArtifactHash': installed, 'versionMismatch': installed != available,
+                'installedArtifactHash': installed, 'artifactComponents': available_parts,
+                'installedArtifactComponents': installed_parts,
+                'componentMismatches': component_mismatches, 'versionMismatch': not versions_match,
                 'availableModes': ['full', 'settings'] if settings_supported else ['full'],
-                'recommendedMode': 'settings' if updating and installed == available else 'full',
+                'recommendedMode': 'settings' if updating and versions_match else 'full',
                 'id': secrets.token_hex(24), 'nodeId': node['id'], 'configHash': digest(config),
                 'sshHash': digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}),
                 'hostKeyHash': digest(credentials['hostKey']), 'membersHash': digest(read(root / 'members.json', {})), 'routerHash': ssh(node, credentials, 'sha256sum /etc/config/network /etc/config/firewall').decode(), 'expiresAt': time.time() + 600,
@@ -2167,7 +2234,8 @@ def controller(root, req):
     plan = read(root / ('plan-' + node['id'] + '.json'))
     if not plan or plan['id'] != req.get('planId') or plan['expiresAt'] < time.time() or plan['configHash'] != digest(config) or plan['hostKeyHash'] != digest(credentials['hostKey']) or plan.get('membersHash') != digest(read(root / 'members.json', {})) or plan['sshHash'] != digest({k: node[k] for k in ['sshHost', 'sshPort', 'sshUser']}):
         raise ValueError('Plán chybí, vypršel nebo se návrh změnil. Spusťte znovu validaci.')
-    if plan.get('artifactHash') != artifact_hash() or not plan.get('lan'):
+    if (plan.get('artifactHash') != artifact_hash()
+            or plan.get('artifactComponents') != artifact_components() or not plan.get('lan')):
         raise ValueError('Plán neodpovídá verzi agenta nebo chybí LAN kontrola. Validujte znovu.')
     mode = req.get('mode') or 'full'
     if mode not in plan.get('availableModes', []):
@@ -2180,6 +2248,8 @@ def controller(root, req):
         raise ValueError('Konfigurace routeru se od validace změnila. Validujte znovu.')
     if installed_artifact_hash(node, credentials) != plan.get('installedArtifactHash'):
         raise ValueError('Verze agenta na routeru se od validace změnila. Validujte znovu.')
+    if installed_artifact_components(node, credentials) != plan.get('installedArtifactComponents'):
+        raise ValueError('Verze komponent routeru se od validace změnily. Validujte znovu.')
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))
@@ -2210,6 +2280,9 @@ def controller(root, req):
         installer += 'chmod 755 /etc/init.d/turris-federation.new; mv /etc/init.d/turris-federation.new /etc/init.d/turris-federation'
         installer += '; python3 ' + PROGRAM + ' install-web ' + REMOTE
         ssh(node, credentials, installer, input_data=payload)
+        if (installed_artifact_hash(node, credentials) != plan['artifactHash']
+                or installed_artifact_components(node, credentials) != plan['artifactComponents']):
+            raise ValueError('Po instalaci se neshodují všechny komponenty routerového agenta.')
         member = remote(node, credentials, 'bootstrap', nodeId=node['id'], rootPublic=root_public)
         members = read(root / 'members.json', {})
         if node['id'] in members and members[node['id']] != member:
