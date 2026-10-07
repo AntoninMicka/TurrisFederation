@@ -1703,6 +1703,8 @@ class Store:
             candidate = candidates.get(subject)
             if not candidate or time.time() - candidate.get('seenAt', 0) > ENROLLMENT_TTL:
                 raise ValueError('Žádost notebooku už není aktuální.')
+        if candidate.get('stage') in ['awaiting_final', 'complete']:
+            return self.network_enrollment_status()
         request_hash = f.digest(candidate['request'])
         grant = self.issue_user_join_grant(json.dumps(candidate['request']))
         with f.locked(self.root):
@@ -1710,7 +1712,10 @@ class Store:
             candidate = candidates.get(subject)
             if not candidate or f.digest(candidate['request']) != request_hash:
                 raise ValueError('Žádost notebooku se změnila; potvrďte aktuální párovací kód.')
-            candidate.update(stage='awaiting_address', grant=grant, error=None)
+            # A confirmation can arrive while the grant is being signed.
+            # Repeated approval must never undo that concurrent progress.
+            if candidate.get('stage') not in ['awaiting_final', 'complete']:
+                candidate.update(stage='awaiting_address', grant=grant, error=None)
             candidates[subject] = candidate
             f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
         return self.network_enrollment_status()
@@ -2245,9 +2250,10 @@ def make_enrollment_server(store):
                                 or pairing_code(candidate.get('request')) != candidate.get('code')
                                 or grant.get('requestHash') != f.digest(candidate.get('request'))):
                             raise ValueError('Potvrzení nepatří nalezené žádosti notebooku.')
-                        candidate.update(stage='awaiting_final', confirmation=confirmation,
-                                         zeroTierAddress=claim['zeroTierAddress'],
-                                         zeroTierDeviceId=claim['zeroTierDeviceId'], seenAt=time.time())
+                        if candidate.get('stage') != 'complete':
+                            candidate.update(stage='awaiting_final', confirmation=confirmation,
+                                             zeroTierAddress=claim['zeroTierAddress'],
+                                             zeroTierDeviceId=claim['zeroTierDeviceId'], seenAt=time.time())
                         candidates[claim['subject']] = candidate
                         f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
                 elif self.path == '/join-status':
@@ -2405,6 +2411,20 @@ def serve_enrollment(store, stopped):
                 except ValueError as error:
                     update_enrollment_session(store, expected_stage='joining',
                                               zerotier=status, error=str(error))
+            if (session.get('stage') == 'awaiting_final'
+                    and session.get('expiresAt', 0) >= time.time()
+                    and time.monotonic() >= next_join_status):
+                # Re-deliver the signed confirmation until final approval.
+                # This also recovers an administrator whose old backend
+                # regressed to awaiting_address after receiving it.
+                next_join_status = time.monotonic() + 3
+                try:
+                    confirmation = f.read(store.root / 'pending-address-confirmation.json')
+                    if confirmation:
+                        enrollment_post(session['adminAddress'], '/address-confirmation', confirmation)
+                        update_enrollment_session(store, expected_stage='awaiting_final', error=None)
+                except ValueError as error:
+                    update_enrollment_session(store, expected_stage='awaiting_final', error=str(error))
             if time.monotonic() >= next_udp_retry:
                 reconcile_udp()
                 next_udp_retry = time.monotonic() + 5

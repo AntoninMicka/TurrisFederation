@@ -482,6 +482,39 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(current['grant'], candidate['grant'])
         self.assertEqual('192.168.50.21', candidate['address'])
 
+    def test_repeated_approval_preserves_final_and_complete_stages(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('Travel notebook')
+        path = self.a.root / 'network-enrollment-candidates.json'
+        for stage in ['awaiting_final', 'complete']:
+            candidate = {'request': request, 'seenAt': time.time(), 'stage': stage}
+            f.atomic(path, {self.b.id: candidate})
+            with patch.object(self.a, 'issue_user_join_grant') as issue:
+                self.a.network_enrollment_approve_request(self.b.id)
+            issue.assert_not_called()
+            self.assertEqual(candidate, f.read(path)[self.b.id])
+
+    def test_concurrent_confirmation_is_not_undone_by_approval(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('Travel notebook')
+        path = self.a.root / 'network-enrollment-candidates.json'
+        f.atomic(path, {self.b.id: {'request': request, 'seenAt': time.time(),
+                                  'stage': 'awaiting_address'}})
+        issue = self.a.issue_user_join_grant
+        def confirm_during_issue(raw):
+            grant = issue(raw)
+            candidates = f.read(path)
+            candidates[self.b.id].update(stage='awaiting_final', grant=grant,
+                                         confirmation={'received': True})
+            f.atomic(path, candidates)
+            return grant
+        with patch.object(self.a, 'issue_user_join_grant', side_effect=confirm_during_issue):
+            self.a.network_enrollment_approve_request(self.b.id)
+        self.assertEqual('awaiting_final', f.read(path)[self.b.id]['stage'])
+        self.assertEqual({'received': True}, f.read(path)[self.b.id]['confirmation'])
+
     def test_approval_does_not_attach_grant_to_replaced_request(self):
         self.published_federation(self.a)
         self.a.bootstrap_admin_credential()
