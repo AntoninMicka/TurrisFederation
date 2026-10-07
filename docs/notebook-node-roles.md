@@ -252,8 +252,13 @@ Zbývající kroky:
 7. Rozdělit desktopové rozhraní podle oprávnění. Uživatelská role zobrazí pouze
    připojení, místní diagnostiku a povolené cíle; administrátorská role navíc
    inventář, audit, publikování a deploy routerů.
-8. Migrovat export/import a notebookovou synchronizaci tak, aby zachovaly typ,
-   roli a pověření, ale nikdy nepřenesly řídicí tajemství uživatelskému uzlu.
+8. [x] Oddělit běžný export/import draftů od notebookových identit a upravit
+   notebookovou synchronizaci tak, aby zachovala typ, roli a místní pověření.
+   Export nastavení nepřenáší notebookové klíče ani pověření. Podepsaná
+   uživatelská pozvánka a aktualizace obsahují jen veřejnou kotvu, roli a
+   ověřenou topologii; `root.pem` se uživatelskému uzlu nikdy nepředá. Plnou
+   řídicí identitu si předávají pouze výslovně spárované administrátorské
+   notebooky.
 9. Až po funkčním ověření předchozích kroků na skutečných zařízeních připravit
    podepsaný `.deb`, dodanou `systemd --user` jednotku, autostart tray a
    průvodce přijetím notebooku podle
