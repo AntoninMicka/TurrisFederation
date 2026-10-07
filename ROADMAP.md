@@ -34,7 +34,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   odmítat dodatečná pole pro software/příkazy. Publikování neinstaluje agenta.
 - [ ] Ověřit LAN instalaci i aktualizaci na routeru, ztrátu LAN během aktualizace
   a odmítnutí přechodu na ZeroTier. Doplnit automatickou obnovu softwaru při
-  neúspěšné aktualizaci (dosud se uchovává předchozí soubor agenta).
+  neúspěšné aktualizaci. Aktualizace skutečného routeru `Palackeho` po doplnění
+  transakční obnovy prošla 7. 10. 2026; zbývá cíleně ověřit ztrátu LAN,
+  odmítnutí přechodu na ZeroTier a obnovu po jednotlivých typech selhání.
 
 - [x] Deploy controller a routerový agent jsou implementované: podepsané revize,
   validace plánu, SSH instalace, UCI záloha a watchdog, synchronizace přes ZeroTier.
@@ -104,9 +106,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     zprávy vyzvedává odchozím spojením od administrátora, takže jeho příchozí
     firewall nevyžaduje změnu. Device ID se vrací
     podepsané ještě před autorizací a administrátor zachovává obě potvrzení.
-    Ruční přenos celých JSON balíčků zůstává jako nouzový fallback. Lokální
-    testy prošly; skutečný desktop ↔ uživatelský notebook a firewall LAN ještě
-    vyžadují akceptaci.
+    Ruční přenos celých JSON balíčků zůstává jako nouzový fallback. Přidání
+    nového uživatelského notebooku přes skutečnou LAN po opravách discovery,
+    výběru rozhraní a enrollment session prošlo 7. 10. 2026. Samostatně ještě
+    zbývá fyzická akceptace jeho VPN profilu a end-to-end provozu.
     Podepsané schéma 2 eviduje routery a zvlášť koncové notebooky s rolí, bez
     možnosti inzerovat notebookovou LAN. Bootstrap zapíše administrátorský
     notebook a vydání pozvánky atomicky publikuje uživatelský notebook v nové
