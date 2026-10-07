@@ -446,6 +446,61 @@ class NotebookTests(unittest.TestCase):
                          (claim['subject'], claim['zeroTierDeviceId']))
         self.assertEqual(f.digest(request), claim['requestHash'])
 
+    def test_restart_enrollment_clears_pending_handshake_only(self):
+        self.b.network_enrollment_start('Travel notebook')
+        old = f.read(self.b.root / 'pending-enrollment.json')
+        key = (self.b.root / 'key.pem').read_bytes()
+        wg = self.b.wireguard_identity()
+        for filename in ['pending-join.json', 'pending-address-confirmation.json']:
+            f.atomic(self.b.root / filename, {'old': True})
+        self.b.network_enrollment_start('Travel notebook')
+        self.assertNotEqual(old['nonce'], f.read(self.b.root / 'pending-enrollment.json')['nonce'])
+        for filename in ['pending-join.json', 'pending-address-confirmation.json']:
+            self.assertFalse((self.b.root / filename).exists())
+        self.assertEqual(key, (self.b.root / 'key.pem').read_bytes())
+        self.assertEqual(wg, self.b.wireguard_identity())
+
+    def test_candidate_resets_new_request_and_repairs_mixed_session(self):
+        old = self.b.enrollment_request('Travel notebook')
+        request = self.b.enrollment_request('Travel notebook')
+        payload = self.a.validate_enrollment_request(request)
+        packet = {'request': request, 'code': n.pairing_code(request)}
+        stale = {'request': old, 'stage': 'awaiting_address',
+                 'grant': {'request': old}, 'confirmation': {'old': True},
+                 'invitation': {'old': True}, 'zeroTierAddress': '10.147.0.59',
+                 'zeroTierDeviceId': 'abcdef1234', 'error': 'old error'}
+        for previous in [stale, dict(stale, request=request)]:
+            candidate = n.enrollment_candidate(previous, packet, payload, '192.168.50.20')
+            self.assertEqual('requesting', candidate['stage'])
+            self.assertEqual(request, candidate['request'])
+            for field in ['grant', 'confirmation', 'invitation', 'zeroTierAddress',
+                          'zeroTierDeviceId', 'error']:
+                self.assertNotIn(field, candidate)
+        current = dict(stale, request=request, grant={'request': request})
+        candidate = n.enrollment_candidate(current, packet, payload, '192.168.50.21')
+        self.assertEqual('awaiting_address', candidate['stage'])
+        self.assertEqual(current['grant'], candidate['grant'])
+        self.assertEqual('192.168.50.21', candidate['address'])
+
+    def test_approval_does_not_attach_grant_to_replaced_request(self):
+        self.published_federation(self.a)
+        self.a.bootstrap_admin_credential()
+        request = self.b.enrollment_request('Travel notebook')
+        subject = self.b.id
+        path = self.a.root / 'network-enrollment-candidates.json'
+        f.atomic(path, {subject: {'request': request, 'seenAt': time.time()}})
+        issue = self.a.issue_user_join_grant
+        def replace_during_issue(raw):
+            grant = issue(raw)
+            replacement = self.b.enrollment_request('Travel notebook')
+            f.atomic(path, {subject: {'request': replacement, 'seenAt': time.time(),
+                                     'stage': 'requesting'}})
+            return grant
+        with patch.object(self.a, 'issue_user_join_grant', side_effect=replace_during_issue):
+            with self.assertRaisesRegex(ValueError, 'se změnila'):
+                self.a.network_enrollment_approve_request(subject)
+        self.assertNotIn('grant', f.read(path)[subject])
+
     def test_enrollment_transport_reports_unreachable_peer_without_raw_oserror(self):
         connection = Mock()
         connection.request.side_effect = OSError('connection refused')

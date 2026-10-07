@@ -1652,6 +1652,10 @@ class Store:
         if interfaces is not None:
             save_enrollment_interfaces(self, interfaces)
         request = self.enrollment_request(name)
+        # An explicit start replaces the previous handshake, not the identity
+        # or the already authorized ZeroTier membership.
+        for filename in ['pending-join.json', 'pending-address-confirmation.json']:
+            (self.root / filename).unlink(missing_ok=True)
         session = {'schema': NETWORK_ENROLLMENT_SCHEMA, 'stage': 'requesting',
                    'request': request, 'code': pairing_code(request),
                    'createdAt': time.time(), 'expiresAt': time.time() + ENROLLMENT_TTL}
@@ -1699,12 +1703,13 @@ class Store:
             candidate = candidates.get(subject)
             if not candidate or time.time() - candidate.get('seenAt', 0) > ENROLLMENT_TTL:
                 raise ValueError('Žádost notebooku už není aktuální.')
+        request_hash = f.digest(candidate['request'])
         grant = self.issue_user_join_grant(json.dumps(candidate['request']))
         with f.locked(self.root):
             candidates = f.read(self.root / 'network-enrollment-candidates.json', {})
             candidate = candidates.get(subject)
-            if not candidate:
-                raise ValueError('Žádost notebooku už není aktuální.')
+            if not candidate or f.digest(candidate['request']) != request_hash:
+                raise ValueError('Žádost notebooku se změnila; potvrďte aktuální párovací kód.')
             candidate.update(stage='awaiting_address', grant=grant, error=None)
             candidates[subject] = candidate
             f.atomic(self.root / 'network-enrollment-candidates.json', candidates)
@@ -2175,6 +2180,22 @@ def direct_lan_source(source, allowed_interfaces=None):
     return False
 
 
+def enrollment_candidate(previous, packet, payload, address):
+    """Keep progress only for the same signed request and its matching grant."""
+    request_hash = f.digest(packet['request'])
+    same_request = f.digest(previous.get('request')) == request_hash
+    grant = previous.get('grant')
+    # Also repair candidates already persisted by older versions with a new
+    # request but an old grant/confirmation attached to the same subject.
+    matching_grant = (not grant or
+                      f.digest(grant.get('request')) == request_hash)
+    candidate = dict(previous) if same_request and matching_grant else {}
+    candidate.update(name=payload['name'], address=address,
+                     request=packet['request'], code=packet['code'],
+                     seenAt=time.time(), stage=candidate.get('stage', 'requesting'))
+    return candidate
+
+
 def update_enrollment_session(store, expected_stage=None, **changes):
     with f.locked(store.root):
         current = f.read(store.root / 'network-enrollment.json', {})
@@ -2436,10 +2457,8 @@ def serve_enrollment(store, stopped):
                 payload = store.validate_enrollment_request(packet['request'])
                 with f.locked(store.root):
                     candidates = f.read(store.root / 'network-enrollment-candidates.json', {})
-                    candidate = {
-                        **candidates.get(payload['subject'], {}), 'name': payload['name'],
-                        'address': source[0], 'request': packet['request'], 'code': packet['code'],
-                        'seenAt': time.time(), 'stage': candidates.get(payload['subject'], {}).get('stage', 'requesting')}
+                    candidate = enrollment_candidate(
+                        candidates.get(payload['subject'], {}), packet, payload, source[0])
                     candidates[payload['subject']] = candidate
                     f.atomic(store.root / 'network-enrollment-candidates.json', candidates)
                 if candidate.get('invitation') or candidate.get('grant'):
