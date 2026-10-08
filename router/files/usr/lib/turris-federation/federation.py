@@ -41,6 +41,7 @@ HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 SERVICE_LIMIT = 128
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
+SERVICE_ACCESS_FILE = 'service-access.json'
 
 
 def encode(value):
@@ -441,6 +442,40 @@ def notebook_endpoints(doc):
             and notebook.get('wireguardKey')]
 
 
+def validate_service_access(services, access):
+    """Validate router-local source allowlists without publishing them."""
+    if not isinstance(access, list) or len(access) > SERVICE_LIMIT:
+        raise ValueError('Neplatné místní přístupy ke službám.')
+    exposed = {service['id']: service for service in services if 'routerPort' in service}
+    normalized, seen = [], set()
+    for item in access:
+        if not isinstance(item, dict) or set(item) != {'serviceId', 'sourceAddress'}:
+            raise ValueError('Neplatný místní přístup ke službě.')
+        service_id = item['serviceId']
+        if service_id in seen or service_id not in exposed:
+            raise ValueError('Místní přístup neodpovídá zpřístupněné službě.')
+        try:
+            source = address(item['sourceAddress'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Neplatná ZeroTier adresa telefonu.') from exc
+        seen.add(service_id)
+        normalized.append({'serviceId': service_id, 'sourceAddress': source})
+    if seen != set(exposed):
+        raise ValueError('Každá zpřístupněná služba musí mít přesný zdrojový allowlist.')
+    return sorted(normalized, key=lambda item: item['serviceId'])
+
+
+def add_service_redirect_sections(node, zero_tier_zone, services, access):
+    access_by_service = {item['serviceId']: item['sourceAddress'] for item in access}
+    for index, service in enumerate(item for item in services if 'routerPort' in item):
+        uci_section('firewall', 'tf_service_%s' % index, 'redirect', {
+            'name': 'Turris Federation service %s' % service['id'],
+            'src': zero_tier_zone, 'src_ip': access_by_service[service['id']],
+            'src_dip': node['zeroTierAddress'], 'src_dport': str(service['routerPort']),
+            'dest': 'lan', 'dest_ip': service['hostAddress'], 'dest_port': str(service['port']),
+            'proto': 'tcp', 'target': 'DNAT', 'family': 'ipv4'})
+
+
 def render_apply(root, doc):
     node = self_node(root, doc)
     own_id = read(Path(root) / 'node.json')['nodeId']
@@ -499,6 +534,9 @@ def render_apply(root, doc):
             uci_section('firewall', 'tf_sync_notebook_%s' % index, 'rule', {
                 'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
                 'proto': 'tcp', 'dest_port': str(PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
+    services = local_services(root, node)
+    access = local_service_access(root, services)
+    add_service_redirect_sections(node, zero_tier_zone, services, access)
     for package in ['network', 'firewall']:
         run(['uci', 'commit', package])
     run(['ifup', 'tf_wg'])
@@ -909,8 +947,9 @@ def validate_services(node, services):
     networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
     normalized, seen = [], set()
     for service in services:
-        if not isinstance(service, dict) or set(service) != {
-                'id', 'name', 'hostAddress', 'protocol', 'port', 'path'}:
+        required = {'id', 'name', 'hostAddress', 'protocol', 'port', 'path'}
+        if not isinstance(service, dict) or frozenset(service) not in {frozenset(required),
+                                                                      frozenset(required | {'routerPort'})}:
             raise ValueError('Neplatná položka katalogu služeb.')
         service_id, name = service['id'], service['name']
         protocol, port, path = service['protocol'], service['port'], service['path']
@@ -935,9 +974,19 @@ def validate_services(node, services):
                                    or '?' in path or '#' in path
                                    or any(ord(character) < 32 or ord(character) == 127 for character in path)):
             raise ValueError('Neplatná HTTP cesta služby.')
+        router_port = service.get('routerPort')
+        if router_port is not None and (protocol not in {'http', 'https'} or type(router_port) is not int
+                                        or not 1 <= router_port <= 65535):
+            raise ValueError('Neplatný ZeroTier port routeru.')
         seen.add(service_id)
-        normalized.append({'id': service_id, 'name': name, 'hostAddress': str(host),
-                           'protocol': protocol, 'port': port, 'path': path})
+        normalized_service = {'id': service_id, 'name': name, 'hostAddress': str(host),
+                              'protocol': protocol, 'port': port, 'path': path}
+        if router_port is not None:
+            normalized_service['routerPort'] = router_port
+        normalized.append(normalized_service)
+    router_ports = [service['routerPort'] for service in normalized if 'routerPort' in service]
+    if len(router_ports) != len(set(router_ports)):
+        raise ValueError('ZeroTier port routeru používá více služeb.')
     normalized.sort(key=lambda service: service['id'])
     return normalized
 
@@ -946,19 +995,67 @@ def local_services(root, node):
     return validate_services(node, read(Path(root) / 'services.json', []))
 
 
-def store_local_services(root, services):
+def local_service_access(root, services):
+    return validate_service_access(services, read(Path(root) / SERVICE_ACCESS_FILE, []))
+
+
+def reconcile_service_redirects(root, node, services, access):
+    """Apply only local service DNAT entries; topology apply also regenerates them."""
+    root = Path(root)
+    envelope = read(root / 'accepted.json')
+    if not envelope or not (root / 'root.pub').exists():
+        return
+    doc = validate_document(verify((root / 'root.pub').read_text(), envelope))
+    own_id = read(root / 'node.json', {}).get('nodeId')
+    if own_id not in doc['members'] or self_node(root, doc) != node:
+        raise ValueError('Router nemá platné členství pro zpřístupnění služby.')
+    services = validate_services(node, services)
+    access = validate_service_access(services, access)
+    local = local_check(node, doc['config']['networkId'])
+    zero_tier_zone = firewall_zone_for_device(local['zeroTierDevice']) or 'tf_zt'
+    output = run(['uci', 'show', 'firewall']).decode()
+    requested_ports = {str(service['routerPort']) for service in services if 'routerPort' in service}
+    for line in output.splitlines():
+        match = re.fullmatch(r"firewall\.([A-Za-z0-9_]+)\.src_dport='?([0-9]+)'?", line)
+        if match and not match.group(1).startswith('tf_service_') and match.group(2) in requested_ports:
+            raise ValueError('ZeroTier port routeru koliduje s existujícím přesměrováním.')
+    listeners = run(['ss', '-H', '-ltn4']).decode()
+    for _, port in re.findall(r'(\*|0\.0\.0\.0|%s):([0-9]+)\s' %
+                              re.escape(node['zeroTierAddress']), listeners):
+        if port in requested_ports:
+            raise ValueError('ZeroTier port routeru koliduje se službou běžící na routeru.')
+    config_path = CONFIG_DIR / 'firewall'
+    previous = config_path.read_bytes()
+    try:
+        for section in owned_sections('firewall'):
+            if section.startswith('firewall.tf_service_'):
+                run(['uci', 'delete', section])
+        add_service_redirect_sections(node, zero_tier_zone, services, access)
+        run(['uci', 'commit', 'firewall'])
+        run(['/etc/init.d/firewall', 'reload'])
+    except Exception:
+        atomic(config_path, previous)
+        run(['/etc/init.d/firewall', 'reload'])
+        raise
+
+
+def store_local_services(root, services, access=None):
     """Persist definitions and publish the same snapshot in the signed status source."""
     root = Path(root)
+    access = local_service_access(root, services) if access is None else validate_service_access(services, access)
     atomic(root / 'services.json', services)
+    atomic(root / SERVICE_ACCESS_FILE, access)
     report = read(root / 'report.json', {})
     report.update(services=services, servicesObservedAt=time.time())
     atomic(root / 'report.json', report)
 
 
-def save_local_service(root, node, service, allow_duplicate=False):
+def save_local_service(root, node, service, allow_duplicate=False, source_address=None):
     root = Path(root)
     with locked(root):
         services = local_services(root, node)
+        had_redirect = any('routerPort' in item for item in services)
+        access = local_service_access(root, services)
         validated = validate_services(node, [service])[0]
         duplicate = next((item for item in services if item['id'] != validated['id'] and
                           (item['hostAddress'], item['protocol'], item['port'], item['path']) ==
@@ -967,7 +1064,13 @@ def save_local_service(root, node, service, allow_duplicate=False):
             raise ValueError('Stejný endpoint už má jinou službu; potvrďte duplicitu.')
         services = [item for item in services if item['id'] != validated['id']] + [validated]
         services = validate_services(node, services)
-        store_local_services(root, services)
+        access = [item for item in access if item['serviceId'] != validated['id']]
+        if 'routerPort' in validated:
+            access.append({'serviceId': validated['id'], 'sourceAddress': source_address})
+        access = validate_service_access(services, access)
+        if had_redirect or any('routerPort' in item for item in services):
+            reconcile_service_redirects(root, node, services, access)
+        store_local_services(root, services, access)
         return services
 
 
@@ -977,10 +1080,15 @@ def delete_local_service(root, node, service_id):
     root = Path(root)
     with locked(root):
         services = local_services(root, node)
+        had_redirect = any('routerPort' in item for item in services)
+        access = local_service_access(root, services)
         if not any(item['id'] == service_id for item in services):
             raise ValueError('Služba neexistuje.')
         services = [item for item in services if item['id'] != service_id]
-        store_local_services(root, services)
+        access = [item for item in access if item['serviceId'] != service_id]
+        if had_redirect:
+            reconcile_service_redirects(root, node, services, access)
+        store_local_services(root, services, access)
         return services
 
 
@@ -1034,6 +1142,13 @@ def service_endpoint(service):
     return '%s://%s:%s%s' % (service['protocol'], service['hostAddress'], service['port'], path)
 
 
+def service_router_endpoint(service, router_address):
+    if 'routerPort' not in service:
+        return None
+    path = quote(service['path'] or '', safe="/!$&'()*+,-.:;=@_~")
+    return '%s://%s:%s%s' % (service['protocol'], router_address, service['routerPort'], path)
+
+
 def aggregate_services(doc, reports, now=None):
     """Build a reviewed read-only projection from signed, enrolled-node reports."""
     now = time.time() if now is None else now
@@ -1058,6 +1173,7 @@ def aggregate_services(doc, reports, now=None):
             result.append({**service, 'routerId': node['id'], 'routerName': node['name'],
                            'hostName': host_names.get(service['hostAddress']),
                            'endpoint': service_endpoint(service), 'observedAt': observed,
+                           'routerEndpoint': service_router_endpoint(service, node['zeroTierAddress']),
                            'stale': stale, 'routeAdvertised': True})
     return sorted(result, key=lambda item: (item['routerName'].casefold(), item['name'].casefold(), item['id']))
 
@@ -1502,6 +1618,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     own_id = read(root / 'node.json', {}).get('nodeId')
     own = next((node for node in doc['config']['nodes'] if node['id'] == own_id), None) if doc else None
     local_definitions = local_services(root, own) if own else []
+    local_access = local_service_access(root, local_definitions) if own else []
+    access_by_service = {item['serviceId']: item['sourceAddress'] for item in local_access}
     state = WEB_LABELS.get(report.get('state'), 'Zatím nenasazeno')
     checked = report.get('checkedAt')
     checked_text = time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(checked)) if isinstance(checked, (int, float)) else 'Dosud neověřeno'
@@ -1553,8 +1671,11 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
         host['address'] == filters['editorHost'] for host in editable_hosts) else ''
     selected_definitions = [service for service in local_definitions if service['hostAddress'] == editor_host]
     local_service_rows = ''.join(
-        '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
+        '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code>%s</td><td>%s</td><td><form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
             esc(service['name']), esc(service['id']), esc(service_endpoint(service)),
+            ('<br><small>Přes ZeroTier router: port %s · zdroj %s</small>' %
+             (esc(service['routerPort']), esc(access_by_service.get(service['id'], '—'))))
+            if 'routerPort' in service else '',
             esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'), WEB_OVERVIEW_PATH,
             esc(csrf_token), esc(service['id'])) for service in selected_definitions)
     host_selector = '''<form class="service-form" method="get" action="''' + WEB_OVERVIEW_PATH + '''">
@@ -1574,6 +1695,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <label>Protokol<select name="protocol"><option value="tcp">tcp</option><option value="http">http</option><option value="https">https</option></select></label>
 <label>Port<input name="port" required type="number" min="1" max="65535"></label>
 <label>Cesta HTTP(S)<input name="path" placeholder="/lovelace"></label>
+<label>ZeroTier port routeru (volitelné, jen web)<input name="routerPort" type="number" min="1" max="65535" placeholder="18123"></label>
+<label>ZeroTier IPv4 telefonu (povinné s portem)<input name="sourceAddress" inputmode="decimal" placeholder="10.147.0.50"></label>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
 <button class="button">Uložit službu</button></form>'''
     selected_host = next((host for host in editable_hosts if host['address'] == editor_host), None)
@@ -1583,7 +1706,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
         (local_service_rows or '<tr><td colspan="4">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
         '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
     local_services_section = '''<section><h2>Editor služeb · tento router</h2>
-<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Editor nemění firewall, DNS ani cílového hosta. Změna se místně publikuje ihned; ostatní routery ji převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
+<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Běžná definice nemění síť; volitelné zpřístupnění vytvoří jen přesný ZeroTier DNAT pro zadanou IP telefonu. DNS ani cílového hosta editor nemění. Změna se místně publikuje ihned; ostatní routery ji převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:
@@ -1597,13 +1720,17 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
                  and filters['host'].casefold() in ('%s %s' % (service['hostAddress'], service['hostName'] or '')).casefold()
                  and filters['router'].casefold() in service['routerName'].casefold()]
     directory_rows = ''.join(
-        '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s<br><code>%s</code></td><td>%s<br><small>%s</small></td><td><span class="badge">%s</span></td><td><button type="button" class="button" data-copy-endpoint="%s">Kopírovat endpoint</button>%s</td></tr>' % (
+        '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s<br><code>%s</code>%s</td><td>%s<br><small>%s</small></td><td><span class="badge">%s</span></td><td><button type="button" class="button" data-copy-endpoint="%s">Kopírovat endpoint</button>%s%s</td></tr>' % (
             esc(service['name']), esc(service['protocol']), esc(service['hostName'] or service['hostAddress']),
-            esc(service['endpoint']), esc(service['routerName']),
+            esc(service['endpoint']), ('<br><small>Přes ZeroTier router</small><br><code>%s</code>' %
+                                       esc(service['routerEndpoint'])) if service['routerEndpoint'] else '',
+            esc(service['routerName']),
             esc(time.strftime('%d. %m. %Y %H:%M:%S UTC', time.gmtime(service['observedAt']))),
             'Zastaralé' if service['stale'] else 'Aktuální', esc(service['endpoint']),
             (' <a class="button" href="%s" target="_blank" rel="noopener noreferrer">Otevřít v prohlížeči</a>' % esc(service['endpoint']))
-            if service['protocol'] in {'http', 'https'} else '') for service in directory)
+            if service['protocol'] in {'http', 'https'} else '',
+            (' <a class="button" href="%s" target="_blank" rel="noopener noreferrer">Otevřít přes router</a>' %
+             esc(service['routerEndpoint'])) if service['routerEndpoint'] else '') for service in directory)
     directory_section = '''<section><h2>Zlaté stránky služeb</h2>
 <p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
 <form class="service-form" method="get" action="''' + WEB_PATH + '''">
@@ -1726,7 +1853,8 @@ def web_handler(root):
                         if existing:
                             redirect_location += '?editorHost=' + existing['hostAddress']
                     else:
-                        expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path', 'confirmDuplicate'}
+                        expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path',
+                                    'routerPort', 'sourceAddress', 'confirmDuplicate'}
                         if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
@@ -1740,12 +1868,20 @@ def web_handler(root):
                         service = {'id': fields['id'][0], 'name': fields['name'][0],
                                    'hostAddress': fields['hostAddress'][0], 'protocol': fields['protocol'][0],
                                    'port': port, 'path': fields['path'][0] or None}
+                        if fields['routerPort'][0]:
+                            try:
+                                service['routerPort'] = int(fields['routerPort'][0])
+                            except ValueError as exc:
+                                raise ValueError('Neplatný ZeroTier port routeru.') from exc
+                        elif fields['sourceAddress'][0]:
+                            raise ValueError('ZeroTier adresa telefonu vyžaduje vstupní port routeru.')
                         definitions = local_services(root, node)
                         allowed_hosts = {host['address'] for host in editable_service_hosts(
                             node, read(Path(root) / 'report.json', {}), definitions)}
                         if service['hostAddress'] not in allowed_hosts:
                             raise ValueError('Vyberte hosta propagovaného tímto routerem.')
-                        save_local_service(root, node, service, fields['confirmDuplicate'][0] == '1')
+                        save_local_service(root, node, service, fields['confirmDuplicate'][0] == '1',
+                                           fields['sourceAddress'][0] or None)
                         redirect_location += '?editorHost=' + service['hostAddress']
             except ValueError as error:
                 self.send_error(409, 'Operation unavailable', explain=str(error))

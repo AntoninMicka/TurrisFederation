@@ -185,10 +185,12 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
 - [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
-- [ ] Přidat volitelný webový vstup přes ZeroTier port oznamujícího routeru,
+- [x] Přidat volitelný webový vstup přes ZeroTier port oznamujícího routeru,
   přesný zdrojový allowlist, kontrolu kolizí a transakční rollback firewallu.
-- [ ] Ve Zlatých stránkách odlišit přímý LAN endpoint od endpointu **Přes
+- [x] Ve Zlatých stránkách odlišit přímý LAN endpoint od endpointu **Přes
   ZeroTier router** a na telefonu otevírat přesměrovanou variantu.
+- [ ] Na skutečném routeru a telefonu ověřit DNAT, odmítnutí jiné zdrojové IP,
+  restart firewallu, kolizi portu a odstranění pravidla spolu se službou.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.
 - [ ] Test na dvou routerech a notebooku včetně neplatných portů, cizích LAN adres,
    podvržených reportů, zastaralého katalogu a odvolaného routeru.

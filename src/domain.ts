@@ -137,6 +137,8 @@ export interface ServiceDirectoryEntry {
   port: number;
   path: string | null;
   endpoint: string;
+  routerPort?: number;
+  routerEndpoint: string | null;
   routerId: string;
   routerName: string;
   observedAt: number;
