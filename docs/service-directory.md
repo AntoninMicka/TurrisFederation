@@ -59,16 +59,15 @@ potvrzení správce.
 
 Místní editor je součástí přihlášené záložky **Přehled** daného routeru.
 Zápis vyžaduje PAM přihlášení, CSRF token, přesný tvar požadavku a atomické
-uložení do samostatného souboru vlastněného službou. Běžná definice nemění UCI
-ani firewall; výslovně zvolený ZeroTier vstup spravuje pouze DNAT popsaný níže.
+uložení do samostatného souboru vlastněného službou. Definice nemění UCI ani
+firewall.
 Editor nemění DNS ani konfiguraci cílového hosta. Správce nejdřív vybere
 propagovaného hosta, potom vidí jen jeho služby a může k němu doplnit další.
 Host s existujícími
 definicemi zůstane v editoru dostupný i při dočasném výpadku z pasivního
 pozorování, aby šlo jeho služby opravit nebo odstranit.
-Každý existující záznam má akci **Upravit**; formulář předvyplní všechna pole
-včetně ZeroTier portu a zachová stabilní `id`, takže úprava nevytvoří vedlejší
-novou službu.
+Každý existující záznam má akci **Upravit**; formulář předvyplní všechna pole a
+zachová stabilní `id`, takže úprava nevytvoří vedlejší novou službu.
 
 Router přidá validovaný seznam do svého podepsaného provozního reportu vedle
 katalogu hostů. Příjemce ověří podpis routeru, členství, vlastnictví cílové IP,
@@ -118,45 +117,6 @@ URL pouze z validovaných polí a nabídne **Otevřít v systémovém prohlíže
 Tato akce sama nepotvrzuje dostupnost služby ani důvěryhodnost jejího TLS
 certifikátu.
 
-## Dočasný webový vstup přes ZeroTier port routeru
-
-Než bude hotový plnohodnotný mobilní klient, může místní správce u jednotlivé
-webové služby volitelně zapnout **Zpřístupnit přes ZeroTier port routeru**.
-Tok je vždy přesně:
-
-```text
-telefon v ZeroTier → ZeroTier IPv4 routeru:vstupní port
-                   → LAN IPv4 aplikace:cílový port služby
-```
-
-Jde o spravované DNAT jedné služby, ne o obecnou proxy, routu telefonu do LAN
-nebo publikování služby přes federovaný WireGuard. V první verzi je tato volba
-dostupná pouze pro `http` a `https`, jejichž cílovou LAN adresu, cílový port a
-cestu převezme z již validované definice služby. Správce doplní jen volný
-vstupní TCP port routeru. Skutečné ZeroTier rozhraní, jeho firewallovou zónu a
-ZeroTier adresu routeru zjistí agent z místního ověřeného stavu; formulář je
-nesmí nechat zadat libovolně.
-
-Firewallové pravidlo přijímá provoz od kteréhokoliv zařízení v příslušné
-ZeroTier firewallové zóně, včetně zařízení bez členství ve federaci. Omezuje
-však cíl na ZeroTier IP a jeden vstupní port routeru a DNAT na přesnou LAN IP a
-port služby. Nesmí vytvořit obecný forwarding `tf_zt ↔ lan`, WAN vstup ani vstup
-přes `tf_wg`. Kolize se službou běžící na routeru nebo jiným
-přesměrováním se odmítne. Zapnutí, změna i vypnutí se aplikují transakčně;
-odstranění služby odstraní i její spravované pravidlo.
-
-Podepsaný katalog publikuje skutečnost, že oznamující router nabízí tento vstup,
-a jeho TCP port. Zlaté stránky pak ukážou vedle přímého LAN endpointu samostatný
-endpoint **Přes ZeroTier router**, například
-`http://10.147.0.21:18123/lovelace`, a na telefonu otevřou právě ten. Záznam
-potvrzuje konfiguraci, nikoli aktuální dostupnost nebo členství zařízení v
-ZeroTier síti.
-
-Při přechodu na NetBird se každé takové přesměrování výslovně nahradí cílenou
-resource policy, nebo vypne. Současné síťové oprávnění pro všechny členy
-ZeroTier sítě se nesmí automaticky převést na širší NetBird oprávnění a původní
-ZeroTier cesta nesmí zůstat zapnutá bez viditelného rozhodnutí správce.
-
 Volba **Otevřít v aplikaci** je samostatná pozdější fáze. Vložený obsah musí být
 izolovaný od Tauri API, místního backendu a přihlašovacích údajů aplikace, nesmí
 dostat privilegovaná oprávnění ani možnost navigovat na `file:`, `data:`, vlastní
@@ -169,9 +129,7 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - Read-only Zlaté stránky na routeru jsou dostupné bez přihlášení. Síťový
   přehled, diagnostika a editor služeb jsou na samostatné cestě chráněné PAM;
   oddělení vynucuje lighttpd, nikoli pouze skrytí prvků v HTML.
-- Běžná položka Zlatých stránek nevytváří firewallová pravidla ani nové routy.
-  Jedinou výjimkou je správcem výslovně zapnutý dočasný webový vstup popsaný
-  výše; i ten vytváří pouze konkrétní DNAT pravidlo jedné služby.
+- Položka Zlatých stránek nevytváří firewallová pravidla ani nové routy.
 - Router neprovádí plošný scan portů. Položka je tvrzení místního správce,
   nikoli důkaz, že služba právě odpovídá.
 - Budoucí kontrola dostupnosti smí být jen jednotlivá, uživatelem vyžádaná
@@ -191,12 +149,6 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
 - [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
-- [x] Přidat volitelný webový vstup přes ZeroTier port oznamujícího routeru,
-  přístup z celé ZeroTier sítě, kontrolu kolizí a transakční rollback firewallu.
-- [x] Ve Zlatých stránkách odlišit přímý LAN endpoint od endpointu **Přes
-  ZeroTier router** a na telefonu otevírat přesměrovanou variantu.
-- [ ] Na skutečném routeru a telefonu bez členství ve federaci ověřit DNAT,
-  restart firewallu, kolizi portu a odstranění pravidla spolu se službou.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.
 - [ ] Test na dvou routerech a notebooku včetně neplatných portů, cizích LAN adres,
    podvržených reportů, zastaralého katalogu a odvolaného routeru.

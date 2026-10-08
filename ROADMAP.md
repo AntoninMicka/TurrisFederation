@@ -231,18 +231,13 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   `tf_zt`: první nftables skok obešel pravidla druhé zóny. Generátor nyní bezpečnou
   existující zónu znovu použije a duplicitního vlastníka nevytvoří; opakovaný
   deploy a WireGuard handshake na fyzickém routeru ještě zbývá potvrdit.
-- [x] **P1: Webová služba přes ZeroTier port routeru.** Ve Zlatých stránkách u
-  místní `http`/`https` služby je dočasná volba pro telefon:
-  `ZeroTier IP routeru:vstupní port → LAN IP aplikace:cílový port`. Přístup má
-  kterékoliv zařízení v ZeroTier síti i bez členství ve federaci. Správce zadá
-  jen vstupní TCP port; rozhraní, zónu, adresu routeru a cíl převezme agent z
-  ověřeného stavu a validované služby. Vytvoří pouze konkrétní DNAT, nikdy
-  obecný forwarding `tf_zt ↔ lan`, WAN nebo vstup přes `tf_wg`. Podepsaný
-  katalog zveřejní endpoint **Přes ZeroTier router**. Změny musí
-  odmítat kolize, mít rollback a při odstranění služby uklidit pravidlo.
-  Podrobnosti jsou v [Zlatých stránkách služeb](docs/service-directory.md).
-- [ ] Na skutečném routeru a telefonu bez členství ve federaci ověřit DNAT,
-  restart firewallu, kolizi portu a úklid po odstranění služby.
+- [x] **P1: Odstranit experimentální webový vstup přes ZeroTier port routeru.**
+  Praktická kontrola ukázala problémy s TLS, absolutními redirecty a veřejnou
+  adresou aplikace. Katalog zůstává read-only a nesmí vytvářet DNAT ani proxy.
+  Staré `routerPort` se při načtení místních definic zahodí a nejbližší potvrzené
+  aplikování nastavení odstraní dříve vlastněné `tf_service_*` sekce firewallu.
+  Mobilní přístup pokračuje cílenými zdroji a politikami podle
+  [návrhu klienta](docs/mobile-client-netbird.md).
 - [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také

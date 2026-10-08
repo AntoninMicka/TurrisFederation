@@ -15,11 +15,9 @@ lokality, LAN prefixy, katalog služeb a požadovaná oprávnění. Samotná pol
 Zlatých stránkách nikdy automaticky neuděluje síťový přístup; oprávnění musí být
 samostatně a výslovně potvrzené administrátorem.
 
-Dočasný webový vstup přes ZeroTier port routeru, popsaný ve
-[Zlatých stránkách služeb](service-directory.md), je migrační most pro telefon
-bez tohoto klienta. Při migraci se každé takové DNAT pravidlo výslovně převede
-na cílenou NetBird resource policy, nebo vypne; původní ZeroTier cesta se nesmí
-ponechat jako skrytá širší alternativa.
+Přístup telefonu ke službám nebude nahrazovat dočasné přesměrování portů přes
+router. Každý dostupný cíl musí mít samostatnou, cílenou NetBird resource policy;
+samotná dosažitelnost transportu ani záznam ve Zlatých stránkách přístup neudělí.
 
 ## Platformní varianta
 
