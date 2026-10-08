@@ -1184,38 +1184,33 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(2, len(f.save_local_service(self.root, node(1), second, allow_duplicate=True)))
         self.assertEqual([second], f.delete_local_service(self.root, node(1), first['id']))
 
-    def test_service_zerotier_redirect_keeps_phone_allowlist_local(self):
+    def test_service_zerotier_redirect_is_published_without_federation_membership(self):
         service = {'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': 8123,
                    'path': '/lovelace', 'routerPort': 18123}
-        saved = f.save_local_service(self.root, node(1), service, source_address='10.147.0.50')
+        saved = f.save_local_service(self.root, node(1), service)
         self.assertEqual([service], saved)
-        self.assertEqual([{'serviceId': 'home-assistant', 'sourceAddress': '10.147.0.50'}],
-                         f.read(self.root / f.SERVICE_ACCESS_FILE))
-        self.assertEqual(0o600, (self.root / f.SERVICE_ACCESS_FILE).stat().st_mode & 0o777)
-        self.assertNotIn('sourceAddress', json.dumps(f.read(self.root / 'report.json')['services']))
+        self.assertEqual([service], f.read(self.root / 'report.json')['services'])
 
         doc = self.document(members={node(1)['id']: self.member(1)})
         directory = f.aggregate_services(doc, {node(1)['id']: {
             'services': [service], 'servicesObservedAt': 100}}, now=100)
         self.assertEqual('https://10.147.0.1:18123/lovelace', directory[0]['routerEndpoint'])
 
-        for bad_service, source in [({**service, 'protocol': 'tcp', 'path': None}, '10.147.0.50'),
-                                    ({**service, 'routerPort': 0}, '10.147.0.50'),
-                                    (service, None), (service, 'not-an-ip')]:
-            with self.subTest(service=bad_service, source=source), self.assertRaises(ValueError):
-                f.save_local_service(self.root, node(1), bad_service, source_address=source)
+        for bad_service in [{**service, 'protocol': 'tcp', 'path': None},
+                            {**service, 'routerPort': 0}]:
+            with self.subTest(service=bad_service), self.assertRaises(ValueError):
+                f.save_local_service(self.root, node(1), bad_service)
 
-    def test_service_redirect_is_exact_dnat_from_phone_to_web(self):
+    def test_service_redirect_is_exact_dnat_from_zerotier_zone_to_web(self):
         service = {'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'http', 'port': 8123,
                    'path': '/', 'routerPort': 18123}
-        access = [{'serviceId': service['id'], 'sourceAddress': '10.147.0.50'}]
         with patch.object(f, 'uci_section') as section:
-            f.add_service_redirect_sections(node(1), 'tf_zt', [service], access)
+            f.add_service_redirect_sections(node(1), 'tf_zt', [service])
         section.assert_called_once_with('firewall', 'tf_service_0', 'redirect', {
             'name': 'Turris Federation service home-assistant',
-            'src': 'tf_zt', 'src_ip': '10.147.0.50', 'src_dip': '10.147.0.1',
+            'src': 'tf_zt', 'src_dip': '10.147.0.1',
             'src_dport': '18123', 'dest': 'lan', 'dest_ip': '192.168.1.20',
             'dest_port': '8123', 'proto': 'tcp', 'target': 'DNAT', 'family': 'ipv4'})
 
@@ -1223,7 +1218,6 @@ class FederationTests(unittest.TestCase):
         service = {'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'http', 'port': 8123,
                    'path': '/', 'routerPort': 18123}
-        access = [{'serviceId': service['id'], 'sourceAddress': '10.147.0.50'}]
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', {'signed': True})
         config = self.root / 'config'
@@ -1236,7 +1230,7 @@ class FederationTests(unittest.TestCase):
         with common[0], common[1], common[2], common[3], \
                 patch.object(f, 'run', return_value=b"firewall.manual.src_dport='18123'\n"):
             with self.assertRaisesRegex(ValueError, 'koliduje'):
-                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service], access)
+                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service])
 
         def listening_port(args, data=None, timeout=30):
             if args == ['ss', '-H', '-ltn4']:
@@ -1248,7 +1242,7 @@ class FederationTests(unittest.TestCase):
                   patch.object(f, 'CONFIG_DIR', config)]
         with common[0], common[1], common[2], common[3], patch.object(f, 'run', side_effect=listening_port):
             with self.assertRaisesRegex(ValueError, 'službou běžící'):
-                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service], access)
+                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service])
 
         reloads = 0
         def failing_reload(args, data=None, timeout=30):
@@ -1266,7 +1260,7 @@ class FederationTests(unittest.TestCase):
                   patch.object(f, 'CONFIG_DIR', config)]
         with common[0], common[1], common[2], common[3], patch.object(f, 'run', side_effect=failing_reload):
             with self.assertRaisesRegex(ValueError, 'reload failed'):
-                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service], access)
+                f.reconcile_service_redirects(self.root, self.config['nodes'][0], [service])
         self.assertEqual(b'original firewall\n', (config / 'firewall').read_bytes())
         self.assertEqual(2, reloads)
 
@@ -1297,7 +1291,7 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('Zlaté stránky služeb</h2>'.encode(), selected)
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
-                   'path': '/lovelace', 'routerPort': '', 'sourceAddress': '',
+                   'path': '/lovelace', 'routerPort': '',
                    'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
                                 ({'hostAddress': '192.168.1.21'}, b'409'),
@@ -1311,9 +1305,30 @@ class FederationTests(unittest.TestCase):
         self.assertIn(b'Location: /turris-federation/overview/?editorHost=192.168.1.20', response)
         self.assertNotIn(b'home-assistant', self.web_request('GET', f.WEB_PATH, handler=handler))
         self.assertIn('Home Assistant'.encode(), self.web_request('GET', f.WEB_PATH, handler=handler))
-        self.assertIn(b'home-assistant', self.web_request('GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20', handler=handler))
-        response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/delete',
-                                    urlencode({'token': token, 'id': 'home-assistant'}), handler)
+        service_list = self.web_request('GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20', handler=handler)
+        self.assertIn(b'home-assistant', service_list)
+        self.assertIn(b'editorService=home-assistant', service_list)
+        edit_page = self.web_request(
+            'GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20&editorService=home-assistant', handler=handler)
+        for expected in [b'Upravit slu', b'value="home-assistant" readonly', b'value="Home Assistant"',
+                         b'value="8123"', b'value="/lovelace"', b'<option value="https" selected>']:
+            self.assertIn(expected, edit_page)
+        updated = {**service, 'name': 'Home Assistant upravený', 'protocol': 'http',
+                   'port': '8124', 'path': '/dashboard', 'routerPort': '18124'}
+        with patch.object(f, 'reconcile_service_redirects') as reconcile:
+            response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/save',
+                                        urlencode(updated), handler)
+        self.assertIn(b'303', response)
+        reconcile.assert_called_once()
+        saved = f.local_services(self.root, node(1))
+        self.assertEqual(1, len(saved))
+        self.assertEqual(('Home Assistant upravený', 'http', 8124, '/dashboard', 18124),
+                         (saved[0]['name'], saved[0]['protocol'], saved[0]['port'],
+                          saved[0]['path'], saved[0]['routerPort']))
+        with patch.object(f, 'reconcile_service_redirects') as reconcile:
+            response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/delete',
+                                        urlencode({'token': token, 'id': 'home-assistant'}), handler)
+        reconcile.assert_called_once()
         self.assertIn(b'303', response)
         self.assertEqual([], f.local_services(self.root, node(1)))
         self.assertEqual([], f.read(self.root / 'report.json')['services'])

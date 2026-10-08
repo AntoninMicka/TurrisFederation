@@ -229,15 +229,15 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   deploy a WireGuard handshake na fyzickém routeru ještě zbývá potvrdit.
 - [x] **P1: Webová služba přes ZeroTier port routeru.** Ve Zlatých stránkách u
   místní `http`/`https` služby je dočasná volba pro telefon:
-  `ZeroTier IP routeru:vstupní port → LAN IP aplikace:cílový port`. Správce zadá
-  vstupní TCP port a přesnou ZeroTier IP telefonu; rozhraní, zónu, adresu
-  routeru a cíl převezme agent z ověřeného stavu a validované služby. Vytvořit
-  pouze konkrétní DNAT, nikdy celý ZeroTier subnet, obecný forwarding
-  `tf_zt ↔ lan`, WAN nebo vstup přes `tf_wg`. Zdrojový allowlist zůstane místní,
-  podepsaný katalog zveřejní jen endpoint **Přes ZeroTier router**. Změny musí
+  `ZeroTier IP routeru:vstupní port → LAN IP aplikace:cílový port`. Přístup má
+  kterékoliv zařízení v ZeroTier síti i bez členství ve federaci. Správce zadá
+  jen vstupní TCP port; rozhraní, zónu, adresu routeru a cíl převezme agent z
+  ověřeného stavu a validované služby. Vytvoří pouze konkrétní DNAT, nikdy
+  obecný forwarding `tf_zt ↔ lan`, WAN nebo vstup přes `tf_wg`. Podepsaný
+  katalog zveřejní endpoint **Přes ZeroTier router**. Změny musí
   odmítat kolize, mít rollback a při odstranění služby uklidit pravidlo.
   Podrobnosti jsou v [Zlatých stránkách služeb](docs/service-directory.md).
-- [ ] Na skutečném routeru a telefonu ověřit DNAT, odmítnutí jiné zdrojové IP,
+- [ ] Na skutečném routeru a telefonu bez členství ve federaci ověřit DNAT,
   restart firewallu, kolizi portu a úklid po odstranění služby.
 - [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
