@@ -1,7 +1,9 @@
 # Privilegovaná síťová služba notebooku
 
-Stav: schválený návrh a první vývojová implementace pro Linux. Fyzická
-akceptace instalace, nftables, ZeroTier a NetworkManageru zůstává otevřená.
+Stav: schválený návrh a první vývojová implementace pro Linux. Nasazení
+spravovaného profilu na notebook a následná dostupnost routeru `Palackeho` byly
+fyzicky potvrzené 8. 10. 2026. Úplná akceptace nftables, ZeroTier,
+NetworkManageru a provozních hraničních stavů zůstává otevřená.
 
 `turris-federation-network.service` odděluje privilegované síťové operace od
 uživatelského backendu a grafické aplikace. Běží jako systémová služba a vlastní
@@ -104,8 +106,10 @@ Na skutečném notebooku je nutné ověřit:
 8. vypnutí nebo chyba služby nesmaže existující guard pravidla.
 
 Body 6 a 7 jsou pokryté lokálními testy s nahrazenými systémovými příkazy.
-Skutečný NetworkManager, změna hotspotu a end-to-end WireGuard provoz zatím
-nejsou fyzicky ověřené.
+První skutečné nasazení spravovaného profilu a dostupnost routeru `Palackeho`
+po nasazení byly potvrzené 8. 10. 2026. Změna hotspotu, samostatný záznam
+handshaku a rout, zákaz forwardingu, obnova profilu a ostatní body výše zatím
+nejsou fyzicky ověřené jako celek.
 
 Úspěšný reconcile na novou podepsanou revizi zahodí uloženou místní diagnostiku
 starší revize. Diagnostika se nepřenáší mezi notebooky a nová kontrola se spouští

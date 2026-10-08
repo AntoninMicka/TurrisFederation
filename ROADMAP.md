@@ -156,9 +156,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     stav **VPN profil vyžaduje aktualizaci**. Tray je do potvrzené výměny profilu
     nejvýše ve stavu omezeného připojení. Živá read-only kontrola opravy na gx10
     rozpoznala instalovanou revizi 9 se dvěma routami proti revizi 10 se čtyřmi
-    routami, včetně Palackého `10.203.0.84/32` a `192.168.1.0/24`. Skutečná
-    instalace nového profilu a následný end-to-end provoz zůstávají k fyzickému
-    ověření po aktualizaci aplikace a routerů.
+    routami, včetně Palackého `10.203.0.84/32` a `192.168.1.0/24`. Nasazení
+    nového profilu na notebook a následná dostupnost routeru `Palackeho` byly
+    fyzicky potvrzené 8. 10. 2026. Samostatně ještě zbývá zaznamenat čerstvý
+    WireGuard handshake, přesné `/32` a LAN routy, zákaz forwardingu a chování
+    při změně fyzického připojení notebooku.
     Kontrola cestovního notebooku `tony` následně ukázala platné členství,
     běžící backend a ZeroTier, ale žádný uložený NetworkManager profil
     `turris-federation`; všechny federované cíle proto používaly běžnou výchozí
@@ -171,9 +173,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
     přesné schéma s jednou `/32`, privátními endpointy a nepřekrývajícími se
     privátními routami; služba zakazuje default route, zapíná autoconnect,
     kontroluje skutečnou adresu a routy a při chybě obnoví předchozí profil.
-    Statický polkit plán zůstává dočasný fallback. Lokální testy prošly, ale
-    automatické vytvoření profilu, změna hotspotu a end-to-end provoz na `tony`
-    ještě vyžadují fyzickou akceptaci.
+    Statický polkit plán zůstává dočasný fallback. Lokální testy prošly;
+    automatické vytvoření profilu a dosažitelnost routeru `Palackeho` po
+    nasazení na notebook byly fyzicky potvrzené 8. 10. 2026. Změna hotspotu
+    a zbývající bezpečnostní a provozní body akceptace ještě vyžadují
+    samostatné ověření.
     První živé spuštění na `gx10-efde` odhalilo, že Ubuntu AppArmor profil
     `unprivileged_userns` odmítá backendu spojení k rootem vlastněnému Unix
     socketu navzdory správné skupině a režimu `0660`. Generovaná uživatelská
