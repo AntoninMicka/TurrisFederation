@@ -15,6 +15,12 @@ lokality, LAN prefixy, katalog služeb a požadovaná oprávnění. Samotná pol
 Zlatých stránkách nikdy automaticky neuděluje síťový přístup; oprávnění musí být
 samostatně a výslovně potvrzené administrátorem.
 
+Dočasný webový vstup přes ZeroTier port routeru, popsaný ve
+[Zlatých stránkách služeb](service-directory.md), je migrační most pro telefon
+bez tohoto klienta. Při migraci se každé takové DNAT pravidlo výslovně převede
+na cílenou NetBird resource policy, nebo vypne; původní ZeroTier cesta se nesmí
+ponechat jako skrytá širší alternativa.
+
 ## Platformní varianta
 
 ### Android
@@ -125,4 +131,3 @@ cestu firewallu.
 - [Jednorázové setup keys](https://docs.netbird.io/manage/peers/register-machines-using-setup-keys)
 - [NetBird Networks a resource policies](https://docs.netbird.io/manage/networks)
 - [Android `VpnService`](https://developer.android.com/reference/android/net/VpnService.Builder)
-

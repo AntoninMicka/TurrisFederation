@@ -113,6 +113,44 @@ URL pouze z validovaných polí a nabídne **Otevřít v systémovém prohlíže
 Tato akce sama nepotvrzuje dostupnost služby ani důvěryhodnost jejího TLS
 certifikátu.
 
+## Dočasný webový vstup přes ZeroTier port routeru
+
+Než bude hotový plnohodnotný mobilní klient, může místní správce u jednotlivé
+webové služby volitelně zapnout **Zpřístupnit přes ZeroTier port routeru**.
+Tok je vždy přesně:
+
+```text
+telefon v ZeroTier → ZeroTier IPv4 routeru:vstupní port
+                   → LAN IPv4 aplikace:cílový port služby
+```
+
+Jde o spravované DNAT jedné služby, ne o obecnou proxy, routu telefonu do LAN
+nebo publikování služby přes federovaný WireGuard. V první verzi je tato volba
+dostupná pouze pro `http` a `https`, jejichž cílovou LAN adresu, cílový port a
+cestu převezme z již validované definice služby. Správce doplní jen volný
+vstupní TCP port routeru a konkrétní ZeroTier IPv4 adresu telefonu. Skutečné
+ZeroTier rozhraní, jeho firewallovou zónu a ZeroTier adresu routeru zjistí agent
+z místního ověřeného stavu; formulář je nesmí nechat zadat libovolně.
+
+Firewallové pravidlo musí současně omezit zdroj na zadanou IP telefonu, cíl na
+ZeroTier IP a vstupní port routeru a DNAT na přesnou LAN IP a port služby.
+Nesmí povolit celý ZeroTier subnet, obecný forwarding `tf_zt ↔ lan`, WAN vstup
+ani vstup přes `tf_wg`. Kolize se službou běžící na routeru nebo jiným
+přesměrováním se odmítne. Zapnutí, změna i vypnutí se aplikují transakčně;
+odstranění služby odstraní i její spravované pravidlo.
+
+Podepsaný katalog publikuje jen skutečnost, že oznamující router nabízí tento
+vstup, a jeho TCP port. Zdrojová IP telefonu zůstává pouze v místním nastavení
+routeru. Zlaté stránky pak ukážou vedle přímého LAN endpointu samostatný
+endpoint **Přes ZeroTier router**, například
+`http://10.147.0.21:18123/lovelace`, a na telefonu otevřou právě ten. Záznam
+potvrzuje konfiguraci, nikoli aktuální dostupnost nebo oprávnění daného telefonu.
+
+Při přechodu na NetBird se každé takové přesměrování výslovně nahradí cílenou
+resource policy, nebo vypne. Ručně zadaný IP allowlist se nesmí automaticky
+povýšit na širší oprávnění a původní ZeroTier cesta nesmí zůstat zapnutá bez
+viditelného rozhodnutí správce.
+
 Volba **Otevřít v aplikaci** je samostatná pozdější fáze. Vložený obsah musí být
 izolovaný od Tauri API, místního backendu a přihlašovacích údajů aplikace, nesmí
 dostat privilegovaná oprávnění ani možnost navigovat na `file:`, `data:`, vlastní
@@ -125,7 +163,9 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - Read-only Zlaté stránky na routeru jsou dostupné bez přihlášení. Síťový
   přehled, diagnostika a editor služeb jsou na samostatné cestě chráněné PAM;
   oddělení vynucuje lighttpd, nikoli pouze skrytí prvků v HTML.
-- Zlaté stránky nevytvářejí firewallová pravidla ani nové routy.
+- Běžná položka Zlatých stránek nevytváří firewallová pravidla ani nové routy.
+  Jedinou výjimkou je správcem výslovně zapnutý dočasný webový vstup popsaný
+  výše; i ten vytváří pouze konkrétní DNAT pravidlo jedné služby.
 - Router neprovádí plošný scan portů. Položka je tvrzení místního správce,
   nikoli důkaz, že služba právě odpovídá.
 - Budoucí kontrola dostupnosti smí být jen jednotlivá, uživatelem vyžádaná
@@ -145,6 +185,10 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
 - [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
+- [ ] Přidat volitelný webový vstup přes ZeroTier port oznamujícího routeru,
+  přesný zdrojový allowlist, kontrolu kolizí a transakční rollback firewallu.
+- [ ] Ve Zlatých stránkách odlišit přímý LAN endpoint od endpointu **Přes
+  ZeroTier router** a na telefonu otevírat přesměrovanou variantu.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.
 - [ ] Test na dvou routerech a notebooku včetně neplatných portů, cizích LAN adres,
    podvržených reportů, zastaralého katalogu a odvolaného routeru.

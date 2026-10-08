@@ -1,6 +1,6 @@
 # Turris Federation — roadmapa a TODO
 
-Aktualizováno: 3. 10. 2026.
+Aktualizováno: 8. 10. 2026.
 
 ## Cíl a podklady
 
@@ -227,10 +227,16 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   `tf_zt`: první nftables skok obešel pravidla druhé zóny. Generátor nyní bezpečnou
   existující zónu znovu použije a duplicitního vlastníka nevytvoří; opakovaný
   deploy a WireGuard handshake na fyzickém routeru ještě zbývá potvrdit.
-- [ ] **P1: Přesměrování pouze v rámci routeru.** Umožnit nastavit lokální
-  přesměrování na vybrané kontejnery/služby bez publikování do federovaných LAN.
-  Výslovně vybírat vstupní zónu, cílovou IP, protokol a porty; přístup přes
-  `tf_zt` povolovat jednotlivě, nikdy otevřením celé LAN.
+- [ ] **P1: Webová služba přes ZeroTier port routeru.** Ve Zlatých stránkách u
+  místní `http`/`https` služby nabídnout dočasnou volbu pro telefon:
+  `ZeroTier IP routeru:vstupní port → LAN IP aplikace:cílový port`. Správce zadá
+  vstupní TCP port a přesnou ZeroTier IP telefonu; rozhraní, zónu, adresu
+  routeru a cíl převezme agent z ověřeného stavu a validované služby. Vytvořit
+  pouze konkrétní DNAT, nikdy celý ZeroTier subnet, obecný forwarding
+  `tf_zt ↔ lan`, WAN nebo vstup přes `tf_wg`. Zdrojový allowlist zůstane místní,
+  podepsaný katalog zveřejní jen endpoint **Přes ZeroTier router**. Změny musí
+  odmítat kolize, mít rollback a při odstranění služby uklidit pravidlo.
+  Podrobnosti jsou v [Zlatých stránkách služeb](docs/service-directory.md).
 - [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také
