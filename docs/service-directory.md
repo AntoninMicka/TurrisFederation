@@ -61,9 +61,9 @@ Místní editor je součástí přihlášené záložky **Přehled** daného rou
 Zápis vyžaduje PAM přihlášení, CSRF token, přesný tvar požadavku a atomické
 uložení do samostatného souboru vlastněného službou. Definice nemění UCI ani
 firewall.
-Editor nemění konfiguraci cílového hosta ani přímo nevolá NetBird API. Navržená
-NetBird integrace promítne platný katalog místním agentem do DNS zóny vlastněné
-routerem a do jeho omezených forward pravidel. Správce nejdřív vybere
+Editor nemění konfiguraci cílového hosta, firewall ani přímo nevolá NetBird API.
+Navržená NetBird integrace promítne platný katalog místním agentem pouze do DNS
+zóny vlastněné routerem. Správce nejdřív vybere
 propagovaného hosta, potom vidí jen jeho služby a může k němu doplnit další.
 Host s existujícími
 definicemi zůstane v editoru dostupný i při dočasném výpadku z pasivního
@@ -83,8 +83,10 @@ služby. Změna nebo odstranění položky se projeví jen v této zóně. Route
 NetBird management token a nebude moci měnit DNS jiného uzlu. Centrální
 konfigurace NetBirdu pouze jednou přiřadí wildcard domain resource danému routing
 peeru; hvězdička deleguje prostor, ale místní DNS neodpoví na názvy bez
-odpovídající položky katalogu. Firewall bude nadále vynucovat přesnou cílovou
-adresu a port a odmítne router samotný, administrační služby a ostatní LAN provoz.
+odpovídající položky katalogu. Ostatní federované routery tuto zónu podmíněně
+forwardují přes NetBird, takže záznamy fungují klientům NetBirdu i ve všech LAN.
+Zlaté stránky nevytvářejí firewallová pravidla a neomezují vzájemný provoz
+federovaných sítí.
 
 Uložení nebo odstranění místní služby aktualizuje stejný snapshot v provozním
 reportu okamžitě. Přijaté routery jej stáhnou v následujícím periodickém

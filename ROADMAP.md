@@ -441,14 +441,15 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
     členství uzlů, jejich LAN prefixy, role, požadovanou dosažitelnost a policy.
     NetBird má být vykonavatelem transportu a rout, nikoli primární evidencí
     logické topologie federace.
-  - [ ] Z modelu Federation generovat/aktualizovat NetBird network routes a
-    access policies: LAN prefix lokality musí být publikován přes správný Turris
-    routing peer a pouze požadovaným členům/skupinám.
+  - [ ] Z modelu Federation generovat/aktualizovat NetBird Networks: celý LAN
+    prefix lokality publikovat přes správný Turris routing peer. Mezi přijatými
+    federovanými sítěmi provoz neomezovat podle položek Zlatých stránek.
   - [ ] Každému routeru přidělit stabilní DNS zónu v podepsané topologii a z jeho
     lokálních Zlatých stránek generovat přesné záznamy přímo na routeru. NetBird
     jednorázově deleguje wildcard domain resource správnému routing peeru; router
-    nemá management token a nemůže měnit cizí zóny. Místní firewall dynamicky
-    povolí jen katalogové cíle a porty; samotné DNS nikdy neuděluje přístup.
+    nemá management token a nemůže měnit cizí zóny. Ostatní routery zónu
+    podmíněně forwardují přes NetBird, aby fungovala také ve všech LAN. Zlaté
+    stránky nemění firewall ani vzájemnou dosažitelnost federovaných sítí.
   - [ ] Před publikací do NetBirdu nadále validovat duplicity a překryvy LAN
     prefixů, konfliktní routy a neúplnou topologii; chybný model nesmí být
     automaticky propagován do transportní vrstvy.
@@ -500,15 +501,14 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## Nejbližší postup
 
-1. V NetBird Cloud připravit oddělený PoC účet/skupiny, zapnout MFA a odstranit
-   výchozí full-mesh policy; zatím nepřidávat obecnou LAN routu.
+1. V NetBird Cloud připravit oddělený PoC účet/skupiny, zapnout MFA a vytvořit
+   výslovné plné propojení přijatých federovaných sítí.
 2. Na jednom vybraném Turrisu read-only ověřit verzi systému, dostupný NetBird
    balíček, architekturu, volné místo a kolize rozhraní/firewallu. Teprve potom
    připravit přesný instalační plán s rollbackem.
-3. Připojit jeden Android klient, zpřístupnit mu jediný `/32` resource a port a
-   přidat pro něj jeden záznam v privátní DNS zóně. Samostatně negativně ověřit
-   router, LuCI, SSH, ostatní porty a ostatní LAN adresy a potvrdit, že aktivní
-   datová cesta obsahuje jen NetBird podle
+3. Připojit jeden klient, publikovat celý LAN prefix Cackého a přidat první
+   záznam do jeho autoritativní zóny. Ověřit stejné jméno z NetBird klienta i z
+   jiné federované LAN a potvrdit, že aktivní datová cesta obsahuje jen NetBird podle
    [NetBird Cloud PoC](docs/netbird-cloud-poc.md).
 4. Navrhnout transportní backend, který převede potvrzené členství a role
    Federation na NetBird groups, Networks a policies, ale DNS záznamy nechá ve

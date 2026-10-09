@@ -7,19 +7,18 @@ Stav: **návrh k ověření, není implementováno ani provozně přijato**.
 Migraci transportu ze současného `ZeroTier → tf_wg` na NetBird spojit s
 podporou telefonu jako uživatelského koncového uzlu. První PoC dočasně použije
 spravovaný NetBird Cloud; self-hosted control plane zůstává pozdější cílovou
-variantou a nesmí být podmínkou ověření transportu. Telefon smí
-používat výslovně povolené federované služby a zobrazit ověřený read-only stav,
-ale nesmí se stát routerem lokality ani administrátorským notebookem.
+variantou a nesmí být podmínkou ověření transportu. Telefon smí používat
+routované federované LAN a zobrazit ověřený read-only stav, ale nesmí se stát
+routerem lokality ani administrátorským notebookem.
 
-NetBird zajišťuje VPN transport, NAT traversal, relay fallback a vynucení
-síťových politik. Turris Federation zůstává zdrojem pravdy pro členství, role,
-lokality, LAN prefixy, katalog služeb a požadovaná oprávnění. Samotná položka ve
-Zlatých stránkách nikdy automaticky neuděluje síťový přístup; oprávnění musí být
-samostatně a výslovně potvrzené administrátorem.
+NetBird zajišťuje VPN transport, NAT traversal, relay fallback a propojení
+federovaných LAN. Turris Federation zůstává zdrojem pravdy pro členství, role,
+lokality, LAN prefixy a katalog služeb. Mezi přijatými sítěmi se provoz nefiltruje
+podle Zlatých stránek; katalog pouze pojmenovává služby v distribuovaném DNS.
 
-Přístup telefonu ke službám nebude nahrazovat dočasné přesměrování portů přes
-router. Každý dostupný cíl musí mít samostatnou, cílenou NetBird resource policy;
-samotná dosažitelnost transportu ani záznam ve Zlatých stránkách přístup neudělí.
+Přístup telefonu ke službám nebude používat přesměrování portů přes router.
+Přijatý NetBird klient používá routy do federovaných LAN a stejné DNS názvy jako
+klienti uvnitř těchto LAN.
 
 ## Platformní varianta
 
@@ -77,7 +76,7 @@ Mobilní uzel:
 - neinzeruje fyzickou Wi-Fi ani mobilní síť;
 - nemá forwarding, masquerade, exit-node ani routing-peer roli;
 - nedostává výchozí trasu přes federaci;
-- obdrží jen zdroje a protokoly povolené jeho skupině;
+- obdrží routy federovaných LAN určené jeho členství;
 - nemá SSH údaje, deploy, audit, root identitu ani administrační API.
 
 Každý router je autoritativní pro vlastní stabilní doménu z podepsané topologie,
@@ -86,8 +85,12 @@ přesné DNS záznamy; nemá proto NetBird API token ani oprávnění měnit zó
 routerů. NetBird pouze jednorázově deleguje odpovídající doménový resource na
 správný routing peer. Zápis `*.cacke.internal` označuje delegovaný jmenný prostor,
 nikoli univerzální DNS odpověď pro neexistující služby. Překlad jména sám o sobě
-není oprávnění; routerový firewall povolí jen cílové adresy a porty z platného
-katalogu.
+nemění síťovou dosažitelnost.
+
+Každý federovaný router poskytuje svou zónu klientům vlastní LAN a ostatním
+routerům přes NetBird. Ostatní routery zónu podmíněně forwardují, takže
+`neurodiary.cacke.internal` funguje stejně v NetBird síti i ve všech přijatých
+LAN bez kopírování jednotlivých záznamů do centrálního DNS.
 
 Pro nové nasazení se použije NetBird **Networks** a jejich povinné resource
 groups/policies, nikoli staré Network Routes bez ACL. Turris router je routing
@@ -103,8 +106,8 @@ cestu firewallu.
    routing peer bez změny produkční topologie. Před přidáním uživatelského
    klienta odstranit výchozí full-mesh policy a nahradit ji explicitními
    skupinami a pravidly. Podrobný postup: [NetBird Cloud PoC](netbird-cloud-poc.md).
-3. Připojit běžnou oficiální Android aplikaci a ověřit jednu explicitně
-   povolenou službu a jeden LAN zdroj.
+3. Připojit běžnou oficiální Android aplikaci, ověřit celý publikovaný LAN prefix
+   a stejné DNS jméno z NetBird klienta i jiné federované LAN.
 4. Navrhnout transportní backend Federation a převod členství, lokalit a
    oprávnění na NetBird peer groups, Networks/resources a policies.
 5. Implementovat read-only mobilní klient Federation pro Android; následně
@@ -119,11 +122,10 @@ cestu firewallu.
 
 - Android i zvolený Linux ARM64 telefon přežijí změnu Wi-Fi/mobilních dat,
   uspání a restart a obnoví připojení bez nové dlouhodobé pozvánky.
-- Telefon vidí pouze povolené lokality, hosty a služby; zakázané zdroje nemají
-  routu ani průchod firewallu.
+- Telefon vidí federované LAN určené jeho členství; Zlaté stránky tento provoz
+  dále nefiltrují podle služeb nebo portů.
 - Privátní DNS jméno obslouží autoritativní router pouze pro platnou položku jeho
-  Zlatých stránek; znalost nebo ruční zadání IP neobejde routerovou portovou
-  policy.
+  Zlatých stránek a stejné jméno funguje přes NetBird i ve všech federovaných LAN.
 - Zlaté stránky zobrazují pouze podepsaný katalog a HTTP(S) otevírají v
   systémovém prohlížeči; TCP endpoint pouze kopírují.
 - Telefon neinzeruje vlastní síť a nemůže se stát routing peerem ani správcem.
