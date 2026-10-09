@@ -4,8 +4,10 @@ Stav: **návrh k ověření, není implementováno ani provozně přijato**.
 
 ## Cíl
 
-Migraci transportu ze současného `ZeroTier → tf_wg` na self-hosted NetBird
-spojit s podporou telefonu jako uživatelského koncového uzlu. Telefon smí
+Migraci transportu ze současného `ZeroTier → tf_wg` na NetBird spojit s
+podporou telefonu jako uživatelského koncového uzlu. První PoC dočasně použije
+spravovaný NetBird Cloud; self-hosted control plane zůstává pozdější cílovou
+variantou a nesmí být podmínkou ověření transportu. Telefon smí
 používat výslovně povolené federované služby a zobrazit ověřený read-only stav,
 ale nesmí se stát routerem lokality ani administrátorským notebookem.
 
@@ -23,8 +25,8 @@ samotná dosažitelnost transportu ani záznam ve Zlatých stránkách přístup
 
 ### Android
 
-První PoC použije oficiální NetBird aplikaci připojenou k self-hosted management
-serveru. Mobilní aplikace Turris Federation nebude v první etapě implementovat
+První PoC použije oficiální NetBird aplikaci připojenou k NetBird Cloud.
+Mobilní aplikace Turris Federation nebude v první etapě implementovat
 vlastní VPN ani vkládat NetBird engine. Bude samostatným klientem pro:
 
 - přijetí uživatelského členství ve federaci;
@@ -34,8 +36,9 @@ vlastní VPN ani vkládat NetBird engine. Bude samostatným klientem pro:
 
 Android dovoluje jen jedno aktivní VPN rozhraní. Mobilní uzel proto nebude
 současně používat ZeroTier, vlastní `tf_wg` a NetBird. V paralelní migrační fázi
-se NetBird zapne pouze vybraným mobilním testovacím uzlům; běžící routerová
-federace může zatím zůstat na dosavadním transportu.
+se NetBird zapne pouze vybraným mobilním testovacím uzlům a jejich původní VPN
+se předtím vypne. Ostatní uzly mohou dočasně zůstat na dosavadním transportu,
+ale žádná datová cesta nesmí skládat nebo současně směrovat více VPN vrstev.
 
 ### Linuxový telefon
 
@@ -77,6 +80,12 @@ Mobilní uzel:
 - obdrží jen zdroje a protokoly povolené jeho skupině;
 - nemá SSH údaje, deploy, audit, root identitu ani administrační API.
 
+Služby za routing peerem dostanou plná jména z privátní NetBird Custom Zone.
+Zóna se distribuuje pouze skupinám, které ji potřebují, a DNS záznam musí mířit
+na stejný jednotlivý host jako odpovídající `/32` resource. Pro první PoC se
+nepoužije wildcard ani search domain. Překlad jména sám o sobě není oprávnění;
+provoz musí stále povolit samostatná resource policy s konkrétním portem.
+
 Pro nové nasazení se použije NetBird **Networks** a jejich povinné resource
 groups/policies, nikoli staré Network Routes bez ACL. Turris router je routing
 peer své lokality. Přístup ke službě běžící přímo na routeru a přístup do jeho
@@ -87,16 +96,21 @@ cestu firewallu.
 
 1. Dokončit fyzickou akceptaci současné federace a zachovat ji jako rollback
    baseline.
-2. Zprovoznit self-hosted NetBird control plane a jeden Turris jako testovací
-   routing peer bez změny produkční topologie.
+2. Založit oddělený PoC v NetBird Cloud a připojit jeden Turris jako testovací
+   routing peer bez změny produkční topologie. Před přidáním uživatelského
+   klienta odstranit výchozí full-mesh policy a nahradit ji explicitními
+   skupinami a pravidly. Podrobný postup: [NetBird Cloud PoC](netbird-cloud-poc.md).
 3. Připojit běžnou oficiální Android aplikaci a ověřit jednu explicitně
    povolenou službu a jeden LAN zdroj.
 4. Navrhnout transportní backend Federation a převod členství, lokalit a
    oprávnění na NetBird peer groups, Networks/resources a policies.
 5. Implementovat read-only mobilní klient Federation pro Android; následně
    ověřit Linux ARM64 telefon s CLI/daemonem.
-6. Ověřit paralelní provoz a návrat na původní transport, potom postupně převést
-   routery a notebooky. `NetBird only` je možný až po samostatném schválení.
+6. Ověřit řízené přepnutí a návrat mezi původním transportem a NetBirdem bez
+   jejich vrstvení, potom samostatně rozhodnout o self-hosted control plane a
+   postupně převést routery a notebooky. Každý převedený uzel používá jen
+   NetBird; úplné odstranění rollback konfigurace je možné až po samostatném
+   schválení.
 
 ## Akceptace mobilního řezu
 
@@ -104,6 +118,8 @@ cestu firewallu.
   uspání a restart a obnoví připojení bez nové dlouhodobé pozvánky.
 - Telefon vidí pouze povolené lokality, hosty a služby; zakázané zdroje nemají
   routu ani průchod firewallu.
+- Privátní DNS jméno se přeloží pouze oprávněné skupině a vede na stejný `/32`
+  resource; znalost nebo ruční zadání IP neobejde portovou policy.
 - Zlaté stránky zobrazují pouze podepsaný katalog a HTTP(S) otevírají v
   systémovém prohlížeči; TCP endpoint pouze kopírují.
 - Telefon neinzeruje vlastní síť a nemůže se stát routing peerem ani správcem.
@@ -115,7 +131,8 @@ cestu firewallu.
 
 ## Otevřená rozhodnutí
 
-- umístění a provozní vlastník veřejně dostupného NetBird control plane;
+- podmínky a postup případného přechodu z NetBird Cloud na self-hosted control
+  plane včetně obnovy přístupu při selhání migrace;
 - SSO versus serverem vydávaný jednorázový setup key pro osobní zařízení;
 - distribuce Android klienta Federation (obchod, F-Droid nebo podepsaný APK);
 - první podporovaná linuxová mobilní distribuce a její správce služeb;

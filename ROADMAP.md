@@ -355,31 +355,25 @@ a rozumí konkrétním rozdílům i tomu, z jak starého auditu pocházejí.
 
 ## 3. P1 — navrhnout síť federace a plán změn
 
-- [ ] Potvrdit role ZeroTier a WireGuard: discovery/správa, datový provoz a požadovaná topologie.
+- [x] Role původního `ZeroTier → tf_wg` řešení uzavřít jako rollback baseline;
+  cílový transport používá jedinou VPN vrstvu spravovanou NetBirdem.
 - [ ] Doplnit model federace: členství, síťové identifikátory, adresní plán a vztahy mezi uzly.
 - [x] Implementovat ZeroTier členství ve společné uložené síti a ruční autorizaci routerů na webu Central.
-- [ ] Ověřit instalaci, autorizaci a zachování ZeroTier identity/členství po restartu na skutečném Turris OS.
-- [ ] Navrhnout WireGuard peery, endpointy, `AllowedIPs`, směrování a pravidla firewallu.
-- [ ] **Ověřit životní cyklus WireGuard peeru podle členství:** draft uzel nesmí
-  být nasazen jako peer; po přijetí člena musí vzniknout peer na relevantních
-  routerech a po odvolání musí být bezpečně odstraněn.
+- [~] Další akceptaci ZeroTier identity a vlastních WireGuard peerů provádět jen
+  tehdy, pokud bude potřeba obnovit rollback baseline; není součástí cílového
+  NetBird transportu.
 - [x] **První ověřený transport:** použít ZeroTier IPv4 adresu peeru jako WG endpoint
   a ověřit handshake přes UDP/51830 ještě před zapnutím routování LAN sítí.
-- [ ] **Firewall underlaye:** nepovyšovat ZeroTier zónu na důvěryhodnou LAN; místo
-  toho generovat minimální explicitní pravidla potřebná pro Federation a WireGuard.
-- [ ] **Budoucí adresní plán WireGuardu:** současný overlay ponechat IPv4; následně
-  doplnit volitelný dual-stack s interními IPv6 adresami WireGuard peerů, bez
-  nutnosti měnit IPv4 LAN routing.
-- [ ] **Oddělit transport a overlay WireGuardu:** umožnit, aby WG endpoint běžel
-  přes ZeroTier IPv4/IPv6 nebo přímé IPv4/IPv6 spojení, zatímco routované sítě
-  a interní WG adresace zůstanou na transportní vrstvě nezávislé.
-- [ ] **Transportní preference/failover:** navrhnout pořadí přímé IPv6 → přímé IPv4
-  → ZeroTier a bezpečnou změnu aktuálního endpointu peeru bez změny `AllowedIPs`.
-- [ ] **IPv6 LAN routing:** až po zavedení dual-stack overlaye doplnit podporu
-  routování IPv6 prefixů mezi lokalitami a odpovídající firewall/health kontroly.
-- [ ] **ZeroTier RFC4193 IPv6 transport:** adresy jsou na testovacích uzlech
-  automaticky přidělené a routované na ZT rozhraní, ale end-to-end ICMPv6 zatím
-  nebylo úspěšně ověřeno; před použitím pro WG endpoint provést samostatný test.
+- [~] **Firewall původního underlaye:** existující ZeroTier zónu zachovat omezenou
+  jen pro případ rollbacku; nerozšiřovat ji o další cílové funkce Federation.
+- [~] **Původní rozvoj vlastního WireGuard overlaye je nahrazen NetBirdem:**
+  samostatný dual-stack adresní plán, WireGuard přes ZeroTier a vlastní volba
+  endpointů/failoveru se dále neimplementují. NetBird spravuje jednu VPN vrstvu,
+  její WireGuard klíče, přímé cesty a relay fallback.
+- [ ] **IPv6 LAN routing:** po základním NetBird PoC ověřit IPv6 resources mezi
+  lokalitami a odpovídající firewall/health kontroly bez druhé VPN vrstvy.
+- [~] **ZeroTier RFC4193 IPv6 transport:** historický test se pro cílovou
+  architekturu nedokončuje, protože NetBird nesmí běžet uvnitř ZeroTieru.
 - [ ] Vyhodnocovat konflikty adres, překryvy sítí a dosažitelnost endpointů před návrhem změn.
 - [ ] Vytvářet konkrétní plán z rozdílu draftu a auditu: balíčky, konfigurace, routy a firewall.
 - [ ] U každé operace ukázat cílový router, současnou a požadovanou hodnotu, závislosti a dopad na připojení.
@@ -421,19 +415,25 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## 6. Budoucí rozvoj a optimalizace
 
-- [ ] **P2: Cílová transportní architektura — self-hosted NetBird.**
-  - [ ] Současnou kombinaci `ZeroTier → tf_wg` zachovat jako funkční baseline pro
-    prostředí bez vlastního veřejně dosažitelného uzlu; neinvestovat do ní
-    zbytečně funkce, které může později převzít NetBird.
+- [ ] **P2: Cílová transportní architektura — NetBird.**
+  - [ ] První omezený PoC provést přes spravovaný NetBird Cloud. Cloud je v této
+    etapě pouze koordinátor transportu; nesmí se stát zdrojem pravdy federace ani
+    získat SSH, deploy metadata, kořenovou identitu nebo obecný přístup do LAN.
+    Bezpečné pořadí a akceptace: [NetBird Cloud PoC](docs/netbird-cloud-poc.md).
+  - [ ] Současnou kombinaci `ZeroTier → tf_wg` zachovat dočasně jako vypnutou
+    rollback variantu. Každý migrovaný uzel používá jen jednu aktivní VPN vrstvu
+    — NetBird; transporty se nesmí vnořovat ani současně směrovat stejný provoz.
   - [ ] Jakmile bude k dispozici alespoň jeden stabilně veřejně dosažitelný uzel
     (preferovaně přes globální IPv6, případně veřejnou IPv4), ověřit na něm
-    self-hosted NetBird control plane a potřebné signal/relay služby.
+    self-hosted NetBird control plane a potřebné signal/relay služby. Přechod z
+    NetBird Cloud udělat až po úspěšném PoC a se samostatně ověřeným rollbackem.
   - [ ] Centrální NetBird uzel chápat jako koordinační bod, nikoli jako povinný
     datový router: provoz mezi lokalitami má při dostupnosti přímé cesty zůstat
     peer-to-peer přes WireGuard; relay používat pouze jako fallback.
-  - [ ] Zavést přechodové režimy transportu: `ZeroTier + tf_wg` → paralelní
-    NetBird PoC → `NetBird only`, aby migrace nevyžadovala jednorázový výpadek
-    existující federace.
+  - [ ] Zavést přechod po jednotlivých uzlech: vypnout jejich `ZeroTier + tf_wg`,
+    zapnout NetBird, ověřit jej a při neúspěchu provést opačné přepnutí. Starý a
+    nový transport mohou během migrace obsluhovat různé uzly, nikdy však netvoří
+    společnou datovou cestu jednoho uzlu.
   - [ ] Po úspěšném PoC přesunout do NetBirdu správu WireGuard peerů, klíčů,
     endpoint discovery, NAT traversal, relay fallback a overlay konektivity;
     odstranit vlastní `tf_wg` orchestrace tam, kde ji NetBird plně nahrazuje.
@@ -444,6 +444,9 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Z modelu Federation generovat/aktualizovat NetBird network routes a
     access policies: LAN prefix lokality musí být publikován přes správný Turris
     routing peer a pouze požadovaným členům/skupinám.
+  - [ ] Z katalogu služeb generovat NetBird Custom Zones a přesné DNS záznamy.
+    Zóna se distribuuje jen oprávněným skupinám a záznam musí mít odpovídající
+    `/32` resource a portovou policy; samotné DNS nikdy neuděluje přístup.
   - [ ] Před publikací do NetBirdu nadále validovat duplicity a překryvy LAN
     prefixů, konfliktní routy a neúplnou topologii; chybný model nesmí být
     automaticky propagován do transportní vrstvy.
@@ -495,8 +498,18 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## Nejbližší postup
 
-1. Na routeru ověřit ZeroTier kontrolu → případnou instalaci/nastavení → autorizaci na webu → členství OK a adresu.
-2. Potvrdit zachování identity a členství po restartu a dostupnost přes požadovanou správcovskou cestu.
-3. Před deployem opravit sběr citlivých dat a zbývající případy neúplného auditu.
-4. Navrhnout konkrétní deploy na dvou uzlech: topologii, routy, firewall a WireGuard, včetně náhledu změn.
-5. Zavést potvrzenou aplikaci plánu, kontrolní audit a rollback. Implementovaný deploy zatím není ověřený na routerech.
+1. V NetBird Cloud připravit oddělený PoC účet/skupiny, zapnout MFA a odstranit
+   výchozí full-mesh policy; zatím nepřidávat obecnou LAN routu.
+2. Na jednom vybraném Turrisu read-only ověřit verzi systému, dostupný NetBird
+   balíček, architekturu, volné místo a kolize rozhraní/firewallu. Teprve potom
+   připravit přesný instalační plán s rollbackem.
+3. Připojit jeden Android klient, zpřístupnit mu jediný `/32` resource a port a
+   přidat pro něj jeden záznam v privátní DNS zóně. Samostatně negativně ověřit
+   router, LuCI, SSH, ostatní porty a ostatní LAN adresy a potvrdit, že aktivní
+   datová cesta obsahuje jen NetBird podle
+   [NetBird Cloud PoC](docs/netbird-cloud-poc.md).
+4. Navrhnout transportní backend, který převede potvrzené členství, services a
+   role Federation na NetBird groups, Networks, resources, policies a DNS, ale
+   před potvrzením pouze zobrazí plán změn.
+5. Po akceptaci PoC převádět další uzly řízeným přepnutím na NetBird, s auditem a
+   rollbackem, ale bez souběžné nebo vnořené VPN datové cesty.
