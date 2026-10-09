@@ -80,10 +80,14 @@ Routerový agent umí být zdrojem vlastní stabilní DNS
 zóny uložené v podepsané topologii, například `cacke.internal`. Místní agent z
 validovaného `services.json` atomicky složí přesné `A` záznamy podle ID
 služby. Změna nebo odstranění položky se projeví jen v této zóně. Router nedostane
-NetBird management token a nebude moci měnit DNS jiného uzlu. Centrální
+trvalý NetBird management token a nebude moci průběžně měnit DNS jiného uzlu.
+Jednorázové zprovoznění z PAM chráněného WebApps smí použít krátce platný token
+Network Admin pouze v paměti: nejdřív zobrazí plán a po potvrzení vytvoří nebo
+doplní cloudové objekty lokality. Centrální
 konfigurace NetBirdu pouze jednou přiřadí wildcard domain resource danému routing
-peeru; hvězdička deleguje prostor, ale místní DNS neodpoví na názvy bez
-odpovídající položky katalogu. Ostatní federované routery tuto zónu podmíněně
+peeru se zapnutým **Routing Peer DNS Resolution**; NetBird klient tedy nemusí mít
+router nastavený jako přímý nameserver. Hvězdička deleguje prostor, ale místní
+DNS neodpoví na názvy bez odpovídající položky katalogu. Ostatní federované routery tuto zónu podmíněně
 forwardují přes NetBird, takže záznamy fungují klientům NetBirdu i ve všech LAN.
 Zlaté stránky nevytvářejí firewallová pravidla a neomezují vzájemný provoz
 federovaných sítí.

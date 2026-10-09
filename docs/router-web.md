@@ -17,6 +17,14 @@ končící `.internal`, například `cacke.internal`, nebo ji vypnout. Agent do 
 Resolveru načítá pouze přesná `<id-sluzby>.<zona>` jména z validovaných místních
 Zlatých stránek. Tato volba nemění firewall, routy, DHCP ani NetBird Cloud.
 
+Samostatná část **NetBird Cloud · jednorázové zprovoznění** umí připravit
+Network lokality, její celé LAN prefixy, wildcard doménový resource, tento
+router jako routing peer a policy z vybrané zdrojové skupiny. První požadavek je
+pouze read-only náhled. Aplikování token vyžádá znovu a proběhne jen tehdy, když
+se přepočtený plán shoduje s náhledem. Použitý token se neukládá do souboru,
+HTML ani logu. Při dílčí chybě se mažou v opačném pořadí pouze objekty vytvořené
+daným pokusem; existující cloudová konfigurace zůstává nedotčená.
+
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
 U každého routeru uvádí otisk verze agenta a čas vytvoření instalované kopie.

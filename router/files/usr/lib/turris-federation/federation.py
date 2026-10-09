@@ -25,6 +25,8 @@ import threading
 import time
 import uuid
 from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 VERSION = 1
 NOTEBOOK_VERSION = 2
@@ -48,6 +50,9 @@ SERVICE_DNS_LOADED = 'service-dns.loaded'
 SERVICE_DNS_STATUS = 'service-dns-status.json'
 KRESD_CONTROL_DIR = Path('/tmp/kresd/control')
 KRESD_SERVICE_HOSTS = Path('/tmp/kresd/turris-federation.hosts')
+NETBIRD_API = 'https://api.netbird.io/api'
+NETBIRD_CLOUD_PLAN = 'netbird-cloud-plan.json'
+NETBIRD_CLOUD_STATUS = 'netbird-cloud-status.json'
 
 
 def encode(value):
@@ -1084,7 +1089,8 @@ def kresd_hint_command(command, control_dir=KRESD_CONTROL_DIR):
         return False
     if not response:
         raise ValueError('Knot Resolver odmítl změnu lokálních jmen.')
-    raise ValueError('Knot Resolver vrátil neznámou odpověď.')
+    # Successful hints.add_hosts may return a record count rather than a bool.
+    return True
 
 
 def reconcile_service_dns(root, node, hint_command=kresd_hint_command,
@@ -1137,6 +1143,218 @@ def serve_service_dns(root):
             atomic(root / SERVICE_DNS_STATUS,
                    {'state': 'error', 'error': str(error), 'checkedAt': checked})
         time.sleep(30)
+
+
+def validate_netbird_token(token):
+    if (not isinstance(token, str) or not 20 <= len(token) <= 2048
+            or any(ord(character) < 33 or ord(character) > 126 for character in token)):
+        raise ValueError('Neplatný jednorázový NetBird token.')
+    return token
+
+
+def netbird_api_request(token, method, path, payload=None, opener=urlopen):
+    """Call the fixed NetBird Cloud API without ever persisting the credential."""
+    validate_netbird_token(token)
+    if method not in {'GET', 'POST', 'DELETE'} or not re.fullmatch(r'/[a-zA-Z0-9_?=&.*%/-]+', path):
+        raise ValueError('Neplatný NetBird API požadavek.')
+    data = encode(payload) if payload is not None else None
+    headers = {'Accept': 'application/json', 'Authorization': 'Token ' + token}
+    if data is not None:
+        headers['Content-Type'] = 'application/json'
+    request = Request(NETBIRD_API + path, data=data, headers=headers, method=method)
+    try:
+        with opener(request, timeout=10) as response:
+            raw = response.read(LIMIT + 1)
+    except HTTPError as error:
+        raise ValueError('NetBird API odmítlo požadavek (HTTP %s).' % error.code) from None
+    except (URLError, TimeoutError, OSError):
+        raise ValueError('NetBird API není dostupné.') from None
+    if len(raw) > LIMIT:
+        raise ValueError('NetBird API vrátilo příliš velkou odpověď.')
+    try:
+        return json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        raise ValueError('NetBird API vrátilo neplatnou odpověď.') from None
+
+
+def local_netbird_identity():
+    try:
+        value = json.loads(run(['netbird', 'status', '--json']))
+        ip = str(ipaddress.ip_interface(value['netbirdIp']).ip)
+        fqdn = value['fqdn']
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError('Místní NetBird klient nemá platnou identitu.') from error
+    if not isinstance(fqdn, str) or not fqdn:
+        raise ValueError('Místní NetBird klient nemá platnou identitu.')
+    return {'ip': ip, 'fqdn': fqdn}
+
+
+def unique_named(items, name, kind):
+    matches = [item for item in items if item.get('name') == name]
+    if len(matches) > 1:
+        raise ValueError('NetBird obsahuje duplicitní %s „%s“.' % (kind, name))
+    return matches[0] if matches else None
+
+
+def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_request):
+    """Build an idempotent, secret-free plan. No cloud mutation happens here."""
+    if (not isinstance(source_group_name, str) or source_group_name != source_group_name.strip()
+            or not 1 <= len(source_group_name) <= 128):
+        raise ValueError('Vyberte přesný název zdrojové NetBird skupiny.')
+    identity = local_netbird_identity()
+    get = lambda path: api(token, 'GET', path)
+    peers = get('/peers?ip=' + quote(identity['ip'], safe=''))
+    if not isinstance(peers, list):
+        raise ValueError('NetBird API vrátilo neplatný seznam peerů.')
+    peers = [peer for peer in peers if peer.get('ip') == identity['ip']]
+    if len(peers) != 1:
+        raise ValueError('Nelze jednoznačně najít tento router v NetBird Cloud.')
+    peer_id = peers[0].get('id')
+    groups = get('/groups')
+    if not isinstance(groups, list):
+        raise ValueError('NetBird API vrátilo neplatný seznam skupin.')
+    source = unique_named(groups, source_group_name, 'skupinu')
+    if not source:
+        raise ValueError('Zdrojová NetBird skupina neexistuje.')
+    zone = service_dns_configuration(root)
+    if not zone:
+        raise ValueError('Nejdřív zapněte místní DNS zónu lokality.')
+    zone = zone['zone']
+    wildcard = '*.' + zone
+    network_name = 'Turris Federation · ' + node['name']
+    resource_group_name = 'tf-site-' + zone.replace('.', '-')
+    policy_name = 'Turris Federation · ' + node['name'] + ' access'
+    networks = get('/networks')
+    if not isinstance(networks, list):
+        raise ValueError('NetBird API vrátilo neplatný seznam Networks.')
+    inventories = []
+    for network in networks:
+        network_id = network.get('id')
+        resources = get('/networks/%s/resources' % quote(str(network_id), safe=''))
+        routers = get('/networks/%s/routers' % quote(str(network_id), safe=''))
+        inventories.append((network, resources, routers))
+    containing = [(network, resources, routers) for network, resources, routers in inventories
+                  if any(resource.get('address') == wildcard for resource in resources)]
+    named = unique_named(networks, network_name, 'Network')
+    if len(containing) > 1:
+        raise ValueError('Doménový resource je v několika NetBird Networks.')
+    if containing and named and containing[0][0].get('id') != named.get('id'):
+        raise ValueError('Doménový resource je v jiné Network než spravovaná lokalita.')
+    selected = containing[0] if containing else next(
+        ((network, resources, routers) for network, resources, routers in inventories
+         if named and network.get('id') == named.get('id')), None)
+    network = selected[0] if selected else None
+    resources = selected[1] if selected else []
+    routers = selected[2] if selected else []
+    destination = unique_named(groups, resource_group_name, 'cílovou skupinu')
+    if containing:
+        wildcard_resource = next(resource for resource in resources if resource.get('address') == wildcard)
+        wildcard_groups = wildcard_resource.get('groups') or []
+        if len(wildcard_groups) != 1:
+            raise ValueError('Doménový resource musí patřit právě do jedné cílové skupiny.')
+        cloud_destination = wildcard_groups[0]
+        if destination and destination.get('id') != cloud_destination.get('id'):
+            raise ValueError('Doménový resource používá jinou cílovou skupinu.')
+        destination = cloud_destination
+    actions = []
+    if not network:
+        actions.append({'kind': 'create-network', 'name': network_name})
+    if not destination:
+        actions.append({'kind': 'create-group', 'name': resource_group_name})
+    lan_addresses = set(node['lanCidrs'])
+    present_addresses = {resource.get('address') for resource in resources}
+    for cidr in sorted(lan_addresses - present_addresses):
+        actions.append({'kind': 'create-resource', 'name': node['name'] + ' LAN', 'address': cidr})
+    if wildcard not in present_addresses:
+        actions.append({'kind': 'create-resource', 'name': node['name'] + ' DNS', 'address': wildcard})
+    if not any(router.get('peer') == peer_id for router in routers):
+        actions.append({'kind': 'create-router', 'peerId': peer_id, 'peer': identity['fqdn']})
+    policies = get('/policies')
+    if not isinstance(policies, list):
+        raise ValueError('NetBird API vrátilo neplatný seznam policy.')
+    existing_policy = unique_named(policies, policy_name, 'policy')
+    if existing_policy:
+        # Never silently take over an existing policy with unknown semantics.
+        actions.append({'kind': 'verify-policy', 'name': policy_name})
+    else:
+        actions.append({'kind': 'create-policy', 'name': policy_name})
+    plan = {'version': 1, 'networkId': network.get('id') if network else None,
+            'networkName': network_name, 'destinationGroupId': destination.get('id') if destination else None,
+            'destinationGroupName': resource_group_name, 'sourceGroupId': source.get('id'),
+            'sourceGroupName': source_group_name, 'peerId': peer_id, 'zone': zone,
+            'lanCidrs': sorted(node['lanCidrs']), 'actions': actions}
+    return {**plan, 'digest': digest(plan)}
+
+
+def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_digest,
+                             api=netbird_api_request):
+    plan = netbird_cloud_plan(root, node, token, source_group_name, api)
+    if not isinstance(expected_digest, str) or not secrets.compare_digest(plan['digest'], expected_digest):
+        raise ValueError('NetBird Cloud se od náhledu změnil; vytvořte nový plán.')
+    post = lambda path, payload: api(token, 'POST', path, payload)
+    delete = lambda path: api(token, 'DELETE', path)
+    network_id = plan['networkId']
+    destination_id = plan['destinationGroupId']
+    results, rollback_paths = [], []
+    try:
+        for action in plan['actions']:
+            if action['kind'] == 'create-network':
+                created = post('/networks', {'name': plan['networkName'],
+                               'description': 'Managed by Turris Federation'})
+                network_id = created.get('id')
+                if network_id:
+                    rollback_paths.append('/networks/' + quote(str(network_id), safe=''))
+            elif action['kind'] == 'create-group':
+                created = post('/groups', {'name': plan['destinationGroupName'], 'peers': [], 'resources': []})
+                destination_id = created.get('id')
+                if destination_id:
+                    rollback_paths.append('/groups/' + quote(str(destination_id), safe=''))
+            elif action['kind'] == 'create-resource':
+                if not network_id or not destination_id:
+                    raise ValueError('NetBird API nevytvořilo závislé objekty.')
+                created = post('/networks/%s/resources' % quote(str(network_id), safe=''), {
+                    'name': action['name'], 'description': 'Managed by Turris Federation',
+                    'address': action['address'], 'enabled': True, 'groups': [destination_id]})
+                if created.get('id'):
+                    rollback_paths.append('/networks/%s/resources/%s' % (
+                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')))
+            elif action['kind'] == 'create-router':
+                if not network_id:
+                    raise ValueError('NetBird API nevytvořilo Network.')
+                created = post('/networks/%s/routers' % quote(str(network_id), safe=''), {
+                    'peer': plan['peerId'], 'metric': 9999, 'masquerade': True, 'enabled': True})
+                if created.get('id'):
+                    rollback_paths.append('/networks/%s/routers/%s' % (
+                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')))
+            elif action['kind'] == 'create-policy':
+                if not destination_id:
+                    raise ValueError('NetBird API nevytvořilo cílovou skupinu.')
+                created = post('/policies', {'name': action['name'],
+                     'description': 'Managed by Turris Federation', 'enabled': True,
+                     'source_posture_checks': [], 'rules': [{
+                         'name': action['name'], 'description': 'Full access between accepted federation groups',
+                         'enabled': True, 'action': 'accept', 'bidirectional': True,
+                         'protocol': 'all', 'sources': [plan['sourceGroupId']],
+                         'destinations': [destination_id]}]})
+                if created.get('id'):
+                    rollback_paths.append('/policies/' + quote(str(created['id']), safe=''))
+            elif action['kind'] == 'verify-policy':
+                raise ValueError('Stejnojmenná NetBird policy už existuje; program ji bez ověření nepřevezme.')
+            results.append(action['kind'])
+    except Exception as error:
+        rollback_failed = False
+        for path in reversed(rollback_paths):
+            try:
+                delete(path)
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise ValueError('%s Cloud rollback nebyl úplný; zkontrolujte NetBird Activity.' % error) from None
+        raise
+    status = {'state': 'applied', 'networkId': network_id, 'zone': plan['zone'],
+              'sourceGroup': plan['sourceGroupName'], 'actions': results, 'appliedAt': time.time()}
+    atomic(Path(root) / NETBIRD_CLOUD_STATUS, status)
+    return status
 
 
 def editable_service_hosts(node, report, services):
@@ -1769,6 +1987,28 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <button class="button">Uložit DNS zónu</button></form>''' + (
         '''<form method="post" action="''' + WEB_OVERVIEW_PATH + '''dns/disable"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><button class="button danger">Vypnout DNS zónu</button></form>'''
         if dns_configuration else '') + '''</section>'''
+    cloud_plan = read(root / NETBIRD_CLOUD_PLAN, {})
+    cloud_status = read(root / NETBIRD_CLOUD_STATUS, {})
+    action_labels = {'create-network': 'vytvořit Network', 'create-group': 'vytvořit cílovou skupinu',
+                     'create-resource': 'vytvořit resource', 'create-router': 'přiřadit tento router',
+                     'create-policy': 'vytvořit policy', 'verify-policy': 'ověřit existující policy'}
+    plan_summary = ''
+    if isinstance(cloud_plan, dict) and cloud_plan.get('digest') and cloud_plan.get('actions') is not None:
+        plan_summary = '''<h3>Čekající potvrzení</h3><p>Zdrojová skupina: <strong>''' + esc(cloud_plan.get('sourceGroupName', '')) + '''</strong></p><ul>''' + ''.join(
+            '<li>%s%s</li>' % (esc(action_labels.get(action.get('kind'), action.get('kind'))),
+             ': <code>%s</code>' % esc(action.get('address') or action.get('peer') or action.get('name'))
+             if action.get('address') or action.get('peer') or action.get('name') else '')
+            for action in cloud_plan.get('actions', [])) + '''</ul>
+<form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/apply"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><input type="hidden" name="sourceGroup" value="''' + esc(cloud_plan.get('sourceGroupName', '')) + '''"><input type="hidden" name="digest" value="''' + esc(cloud_plan.get('digest', '')) + '''">
+<label>Jednorázový token znovu<input type="password" name="cloudToken" required autocomplete="off"></label><button class="button">Potvrdit a aplikovat shodný plán</button></form>'''
+    applied_summary = ('''<p>Poslední aplikování: <strong>hotovo</strong>, Network <code>''' +
+                       esc(cloud_status.get('networkId', '')) + '''</code></p>''') \
+        if isinstance(cloud_status, dict) and cloud_status.get('state') == 'applied' else ''
+    netbird_cloud_section = '''<section><h2>NetBird Cloud · jednorázové zprovoznění</h2>
+<p class="muted">Program připraví Network, celý LAN prefix, <code>*.''' + esc(dns_configuration['zone'] if dns_configuration else 'site.internal') + '''</code>, routing peer a policy. Token se použije jen v paměti během požadavku a neukládá se. Nejdřív vznikne pouze náhled.</p>''' + applied_summary + '''
+<form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/plan"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
+<label>Zdrojová skupina klientů<input name="sourceGroup" required maxlength="128" placeholder="All"></label>
+<label>Jednorázový Network Admin token<input type="password" name="cloudToken" required autocomplete="off"></label><button class="button">Načíst a zobrazit plán</button></form>''' + plan_summary + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:
@@ -1819,7 +2059,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + local_services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + netbird_cloud_section + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1877,7 +2117,9 @@ def web_handler(root):
                                  WEB_OVERVIEW_PATH + 'services/save',
                                  WEB_OVERVIEW_PATH + 'services/delete',
                                  WEB_OVERVIEW_PATH + 'dns/config',
-                                 WEB_OVERVIEW_PATH + 'dns/disable']:
+                                 WEB_OVERVIEW_PATH + 'dns/disable',
+                                 WEB_OVERVIEW_PATH + 'netbird/plan',
+                                 WEB_OVERVIEW_PATH + 'netbird/apply']:
                 self.send_error(405)
                 return
             try:
@@ -1906,7 +2148,23 @@ def web_handler(root):
                     node = next((item for item in doc['config']['nodes'] if item['id'] == own_id), None) if doc else None
                     if not node or own_id not in doc['members']:
                         raise ValueError('Router nemá platné členství federace.')
-                    if self.path == WEB_OVERVIEW_PATH + 'dns/config':
+                    if self.path == WEB_OVERVIEW_PATH + 'netbird/plan':
+                        expected = {'token', 'cloudToken', 'sourceGroup'}
+                        if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        plan = netbird_cloud_plan(root, node, fields['cloudToken'][0],
+                                                  fields['sourceGroup'][0])
+                        atomic(Path(root) / NETBIRD_CLOUD_PLAN, plan)
+                    elif self.path == WEB_OVERVIEW_PATH + 'netbird/apply':
+                        expected = {'token', 'cloudToken', 'sourceGroup', 'digest'}
+                        if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        apply_netbird_cloud_plan(root, node, fields['cloudToken'][0],
+                                                 fields['sourceGroup'][0], fields['digest'][0])
+                        (Path(root) / NETBIRD_CLOUD_PLAN).unlink(missing_ok=True)
+                    elif self.path == WEB_OVERVIEW_PATH + 'dns/config':
                         if set(fields) != {'token', 'zone'} or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return

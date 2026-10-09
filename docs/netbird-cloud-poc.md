@@ -40,19 +40,24 @@ adresáře.
 6. V NetBird **Networks** publikovat celý podepsaný LAN prefix Cackého přes Cacké
    jako routing peer. Provoz mezi přijatými federovanými sítěmi neomezovat podle
    položek Zlatých stránek.
+   Routerové WebApps smí k jednorázovému vytvoření nebo reconcile použít token
+   role Network Admin: nejdřív zobrazí read-only plán, při potvrzení token vyžádá
+   znovu a po požadavku jej zahodí. Trvalý PAT na routeru není dovolen.
 7. Každému routeru přidělit stabilní doménu v podepsané topologii; pro první PoC
    `cacke.internal`. Cacké je autoritativní pro tuto zónu a z vlastního
    validovaného `services.json` atomicky vytváří přesné záznamy jako
-   `neurodiary.cacke.internal`. NetBird API token na routeru není potřeba.
-8. Pro NetBird klienty delegovat `cacke.internal` na DNS Cackého. Ostatní
-   federované routery přidají podmíněný forward této zóny přes NetBird na Cacké,
-   takže stejné názvy fungují i klientům všech LAN přes jejich běžný lokální DNS.
-   Cacké obdobně přijme delegace zón ostatních lokalit.
-9. NetBird DNS management na routing peeru nastavit tak, aby místní resolver
-   routeru zůstal zdrojem vlastní zóny a NetBird nesoupeřil o port 53. Na Cackém
-   port 53 obsluhuje Knot Resolver (`kresd`), do kterého routerový agent načítá
-   přesné záznamy přes control socket. DNS odpověď neuděluje ani neomezuje
-   síťový přístup.
+   `neurodiary.cacke.internal`. Trvalý NetBird API token na routeru není potřeba.
+8. Do stejné NetBird Network jednou přidat doménový resource
+   `*.cacke.internal`, přiřadit jej Cackému jako routing peeru a ponechat zapnuté
+   **Routing Peer DNS Resolution**. NetBird klient posílá odpovídající dotaz
+   routing peeru; nepotřebuje Cacké jako přímý nameserver a router nepotřebuje
+   management token. Ostatní federované routery přidají podmíněný forward této
+   zóny přes NetBird na Cacké, takže stejné názvy fungují i klientům všech LAN
+   přes jejich běžný lokální DNS. Cacké obdobně přijme zóny ostatních lokalit.
+9. NetBird DNS management na Cackém nesmí přepsat jeho místní resolver. Port 53
+   obsluhuje Knot Resolver (`kresd`), do kterého routerový agent načítá přesné
+   záznamy přes control socket. DNS odpověď neuděluje ani neomezuje síťový
+   přístup.
 10. Před aktivací NetBirdu na testovaném uzlu odpojit jeho původní VPN transport.
    Návrat znamená NetBird vypnout a obnovit původní transport, ne provozovat oba
    tunely jako jednu vrstvenou nebo současně směrovanou cestu.

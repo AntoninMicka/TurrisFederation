@@ -1248,6 +1248,116 @@ class FederationTests(unittest.TestCase):
             f.reconcile_service_dns(self.root, node(1), lambda _: False, runtime_hosts)
         self.assertFalse((self.root / f.SERVICE_DNS_LOADED).exists())
 
+    def test_kresd_response_parser_rejects_false_and_accepts_record_count(self):
+        class FakeSocket:
+            def __init__(self, response):
+                self.response = response
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+            def settimeout(self, _):
+                pass
+            def connect(self, _):
+                pass
+            def sendall(self, _):
+                pass
+            def recv(self, _):
+                return self.response
+        control = self.root / 'control'
+        control.mkdir()
+        socket_path = control / '1'
+        socket_path.touch()
+        with patch.object(Path, 'is_socket', return_value=True), patch.object(
+                f.socket, 'socket', return_value=FakeSocket(b"> { ['result'] = false, }\n> ")):
+            self.assertFalse(f.kresd_hint_command('test', control))
+        with patch.object(Path, 'is_socket', return_value=True), patch.object(
+                f.socket, 'socket', return_value=FakeSocket(b"> { ['result'] = 6, }\n> ")):
+            self.assertTrue(f.kresd_hint_command('test', control))
+
+    def test_netbird_cloud_plan_and_apply_are_idempotent_and_secret_free(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        calls = []
+        def api(token, method, path, payload=None):
+            self.assertEqual('s' * 24, token)
+            calls.append((method, path, payload))
+            if method == 'GET':
+                return {
+                    '/peers?ip=100.81.156.128': [{'id': 'peer-cacke', 'ip': '100.81.156.128'}],
+                    '/groups': [{'id': 'group-all', 'name': 'All'}],
+                    '/networks': [],
+                    '/policies': [],
+                }[path]
+            if path == '/networks':
+                return {'id': 'network-cacke'}
+            if path == '/groups':
+                return {'id': 'group-cacke'}
+            return {'id': 'created'}
+        with patch.object(f, 'local_netbird_identity', return_value={
+                'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}):
+            plan = f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
+            self.assertEqual(['create-network', 'create-group', 'create-resource',
+                              'create-resource', 'create-router', 'create-policy'],
+                             [action['kind'] for action in plan['actions']])
+            self.assertEqual({'192.168.1.0/24', '*.cacke.internal'}, {
+                action['address'] for action in plan['actions'] if action['kind'] == 'create-resource'})
+            self.assertNotIn('s' * 24, json.dumps(plan))
+            result = f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All',
+                                                 plan['digest'], api)
+        self.assertEqual('network-cacke', result['networkId'])
+        payloads = [payload for method, path, payload in calls if method == 'POST']
+        self.assertTrue(any(payload and payload.get('address') == '*.cacke.internal'
+                            for payload in payloads))
+        self.assertTrue(any(payload and payload.get('protocol') is None
+                            and payload.get('rules', [{}])[0].get('protocol') == 'all'
+                            for payload in payloads))
+        self.assertNotIn('s' * 24, (self.root / f.NETBIRD_CLOUD_STATUS).read_text())
+
+    def test_netbird_cloud_apply_refuses_drifted_preview(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        def api(_token, method, path, payload=None):
+            if method == 'POST':
+                self.fail('drifted plan must not mutate cloud state')
+            return {
+                '/peers?ip=100.81.156.128': [{'id': 'peer-cacke', 'ip': '100.81.156.128'}],
+                '/groups': [{'id': 'group-all', 'name': 'All'}],
+                '/networks': [], '/policies': [],
+            }[path]
+        with patch.object(f, 'local_netbird_identity', return_value={
+                'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}), \
+                self.assertRaisesRegex(ValueError, 'změnil'):
+            f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', '0' * 64, api)
+
+    def test_netbird_cloud_apply_rolls_back_only_new_objects(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        deleted, counter = [], [0]
+        def api(_token, method, path, payload=None):
+            if method == 'GET':
+                return {
+                    '/peers?ip=100.81.156.128': [{'id': 'peer-cacke', 'ip': '100.81.156.128'}],
+                    '/groups': [{'id': 'group-all', 'name': 'All'}],
+                    '/networks': [], '/policies': [],
+                }[path]
+            if method == 'DELETE':
+                deleted.append(path)
+                return {}
+            counter[0] += 1
+            if path.endswith('/routers'):
+                raise ValueError('router rejected')
+            return {'id': 'new-%s' % counter[0]}
+        with patch.object(f, 'local_netbird_identity', return_value={
+                'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}):
+            plan = f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
+            with self.assertRaisesRegex(ValueError, 'router rejected'):
+                f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All',
+                                             plan['digest'], api)
+        self.assertEqual([
+            '/networks/new-1/resources/new-4',
+            '/networks/new-1/resources/new-3',
+            '/groups/new-2',
+            '/networks/new-1',
+        ], deleted)
+
     def test_authenticated_web_manages_local_service_dns_with_csrf(self):
         self.prepare_diagnostics()
         handler = f.web_handler(self.root)

@@ -83,9 +83,10 @@ Každý router je autoritativní pro vlastní stabilní doménu z podepsané top
 například `cacke.internal`. Z lokálních Zlatých stránek sám vytváří a odstraňuje
 přesné DNS záznamy; nemá proto NetBird API token ani oprávnění měnit zóny jiných
 routerů. NetBird pouze jednorázově deleguje odpovídající doménový resource na
-správný routing peer. Zápis `*.cacke.internal` označuje delegovaný jmenný prostor,
-nikoli univerzální DNS odpověď pro neexistující služby. Překlad jména sám o sobě
-nemění síťovou dosažitelnost.
+správný routing peer se zapnutým **Routing Peer DNS Resolution**. Klient proto
+nepotřebuje router jako přímý nameserver. Zápis `*.cacke.internal` označuje
+delegovaný jmenný prostor, nikoli univerzální DNS odpověď pro neexistující
+služby. Překlad jména sám o sobě nemění síťovou dosažitelnost.
 
 Každý federovaný router poskytuje svou zónu klientům vlastní LAN a ostatním
 routerům přes NetBird. Ostatní routery zónu podmíněně forwardují, takže
