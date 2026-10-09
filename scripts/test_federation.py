@@ -1328,6 +1328,41 @@ class FederationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, 'změnil'):
             f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', '0' * 64, api)
 
+    def test_netbird_cloud_adopts_ungrouped_domain_resource_with_rollback(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        puts, deleted, counter = [], [], [0]
+        def api(_token, method, path, payload=None):
+            if method == 'GET':
+                return {
+                    '/peers?ip=100.81.156.128': [{'id': 'peer-cacke', 'ip': '100.81.156.128'}],
+                    '/groups': [{'id': 'group-all', 'name': 'All'}],
+                    '/networks': [{'id': 'network-manual', 'name': 'Manual'}],
+                    '/networks/network-manual/resources': [{
+                        'id': 'resource-dns', 'name': 'Manual DNS', 'description': 'kept',
+                        'address': '*.cacke.internal', 'enabled': True, 'groups': []}],
+                    '/networks/network-manual/routers': [], '/policies': [],
+                }[path]
+            if method == 'PUT':
+                puts.append((path, payload))
+                return {'id': 'resource-dns'}
+            if method == 'DELETE':
+                deleted.append(path)
+                return {}
+            counter[0] += 1
+            if path.endswith('/routers'):
+                raise ValueError('router rejected')
+            return {'id': 'new-%s' % counter[0]}
+        with patch.object(f, 'local_netbird_identity', return_value={
+                'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}):
+            plan = f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
+            self.assertIn('assign-resource', [action['kind'] for action in plan['actions']])
+            with self.assertRaisesRegex(ValueError, 'router rejected'):
+                f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All',
+                                             plan['digest'], api)
+        self.assertEqual(['new-1'], puts[0][1]['groups'])
+        self.assertEqual([], puts[1][1]['groups'])
+        self.assertEqual(['/networks/network-manual/resources/new-2', '/groups/new-1'], deleted)
+
     def test_netbird_cloud_apply_rolls_back_only_new_objects(self):
         f.configure_service_dns(self.root, node(1), 'cacke.internal')
         deleted, counter = [], [0]

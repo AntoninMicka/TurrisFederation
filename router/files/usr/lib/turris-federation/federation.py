@@ -1155,7 +1155,7 @@ def validate_netbird_token(token):
 def netbird_api_request(token, method, path, payload=None, opener=urlopen):
     """Call the fixed NetBird Cloud API without ever persisting the credential."""
     validate_netbird_token(token)
-    if method not in {'GET', 'POST', 'DELETE'} or not re.fullmatch(r'/[a-zA-Z0-9_?=&.*%/-]+', path):
+    if method not in {'GET', 'POST', 'PUT', 'DELETE'} or not re.fullmatch(r'/[a-zA-Z0-9_?=&.*%/-]+', path):
         raise ValueError('Neplatný NetBird API požadavek.')
     data = encode(payload) if payload is not None else None
     headers = {'Accept': 'application/json', 'Authorization': 'Token ' + token}
@@ -1247,15 +1247,23 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
     resources = selected[1] if selected else []
     routers = selected[2] if selected else []
     destination = unique_named(groups, resource_group_name, 'cílovou skupinu')
+    orphaned_wildcard = None
     if containing:
         wildcard_resource = next(resource for resource in resources if resource.get('address') == wildcard)
         wildcard_groups = wildcard_resource.get('groups') or []
-        if len(wildcard_groups) != 1:
-            raise ValueError('Doménový resource musí patřit právě do jedné cílové skupiny.')
-        cloud_destination = wildcard_groups[0]
-        if destination and destination.get('id') != cloud_destination.get('id'):
-            raise ValueError('Doménový resource používá jinou cílovou skupinu.')
-        destination = cloud_destination
+        if len(wildcard_groups) > 1:
+            raise ValueError('Doménový resource patří do více skupin; program jej bez výběru nepřevezme.')
+        if wildcard_groups:
+            cloud_destination = wildcard_groups[0]
+            if not isinstance(cloud_destination, dict) or not cloud_destination.get('id'):
+                raise ValueError('Doménový resource má neplatnou cílovou skupinu.')
+            if destination and destination.get('id') != cloud_destination.get('id'):
+                raise ValueError('Doménový resource používá jinou cílovou skupinu.')
+            destination = cloud_destination
+        else:
+            if not wildcard_resource.get('id'):
+                raise ValueError('Doménový resource nemá platné ID.')
+            orphaned_wildcard = wildcard_resource
     actions = []
     if not network:
         actions.append({'kind': 'create-network', 'name': network_name})
@@ -1267,6 +1275,12 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
         actions.append({'kind': 'create-resource', 'name': node['name'] + ' LAN', 'address': cidr})
     if wildcard not in present_addresses:
         actions.append({'kind': 'create-resource', 'name': node['name'] + ' DNS', 'address': wildcard})
+    elif orphaned_wildcard:
+        actions.append({'kind': 'assign-resource', 'resourceId': orphaned_wildcard['id'],
+                        'name': orphaned_wildcard.get('name') or node['name'] + ' DNS',
+                        'description': orphaned_wildcard.get('description') or '',
+                        'address': wildcard, 'enabled': orphaned_wildcard.get('enabled', True),
+                        'previousGroups': []})
     if not any(router.get('peer') == peer_id for router in routers):
         actions.append({'kind': 'create-router', 'peerId': peer_id, 'peer': identity['fqdn']})
     policies = get('/policies')
@@ -1292,10 +1306,11 @@ def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_dige
     if not isinstance(expected_digest, str) or not secrets.compare_digest(plan['digest'], expected_digest):
         raise ValueError('NetBird Cloud se od náhledu změnil; vytvořte nový plán.')
     post = lambda path, payload: api(token, 'POST', path, payload)
+    put = lambda path, payload: api(token, 'PUT', path, payload)
     delete = lambda path: api(token, 'DELETE', path)
     network_id = plan['networkId']
     destination_id = plan['destinationGroupId']
-    results, rollback_paths = [], []
+    results, rollback_operations = [], []
     try:
         for action in plan['actions']:
             if action['kind'] == 'create-network':
@@ -1303,12 +1318,12 @@ def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_dige
                                'description': 'Managed by Turris Federation'})
                 network_id = created.get('id')
                 if network_id:
-                    rollback_paths.append('/networks/' + quote(str(network_id), safe=''))
+                    rollback_operations.append(('DELETE', '/networks/' + quote(str(network_id), safe=''), None))
             elif action['kind'] == 'create-group':
                 created = post('/groups', {'name': plan['destinationGroupName'], 'peers': [], 'resources': []})
                 destination_id = created.get('id')
                 if destination_id:
-                    rollback_paths.append('/groups/' + quote(str(destination_id), safe=''))
+                    rollback_operations.append(('DELETE', '/groups/' + quote(str(destination_id), safe=''), None))
             elif action['kind'] == 'create-resource':
                 if not network_id or not destination_id:
                     raise ValueError('NetBird API nevytvořilo závislé objekty.')
@@ -1316,16 +1331,25 @@ def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_dige
                     'name': action['name'], 'description': 'Managed by Turris Federation',
                     'address': action['address'], 'enabled': True, 'groups': [destination_id]})
                 if created.get('id'):
-                    rollback_paths.append('/networks/%s/resources/%s' % (
-                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')))
+                    rollback_operations.append(('DELETE', '/networks/%s/resources/%s' % (
+                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')), None))
+            elif action['kind'] == 'assign-resource':
+                if not network_id or not destination_id:
+                    raise ValueError('NetBird API nevytvořilo závislé objekty.')
+                path = '/networks/%s/resources/%s' % (
+                    quote(str(network_id), safe=''), quote(str(action['resourceId']), safe=''))
+                base = {'name': action['name'], 'description': action['description'],
+                        'address': action['address'], 'enabled': action['enabled']}
+                put(path, {**base, 'groups': [destination_id]})
+                rollback_operations.append(('PUT', path, {**base, 'groups': action['previousGroups']}))
             elif action['kind'] == 'create-router':
                 if not network_id:
                     raise ValueError('NetBird API nevytvořilo Network.')
                 created = post('/networks/%s/routers' % quote(str(network_id), safe=''), {
                     'peer': plan['peerId'], 'metric': 9999, 'masquerade': True, 'enabled': True})
                 if created.get('id'):
-                    rollback_paths.append('/networks/%s/routers/%s' % (
-                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')))
+                    rollback_operations.append(('DELETE', '/networks/%s/routers/%s' % (
+                        quote(str(network_id), safe=''), quote(str(created['id']), safe='')), None))
             elif action['kind'] == 'create-policy':
                 if not destination_id:
                     raise ValueError('NetBird API nevytvořilo cílovou skupinu.')
@@ -1337,15 +1361,15 @@ def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_dige
                          'protocol': 'all', 'sources': [plan['sourceGroupId']],
                          'destinations': [destination_id]}]})
                 if created.get('id'):
-                    rollback_paths.append('/policies/' + quote(str(created['id']), safe=''))
+                    rollback_operations.append(('DELETE', '/policies/' + quote(str(created['id']), safe=''), None))
             elif action['kind'] == 'verify-policy':
                 raise ValueError('Stejnojmenná NetBird policy už existuje; program ji bez ověření nepřevezme.')
             results.append(action['kind'])
     except Exception as error:
         rollback_failed = False
-        for path in reversed(rollback_paths):
+        for method, path, payload in reversed(rollback_operations):
             try:
-                delete(path)
+                delete(path) if method == 'DELETE' else put(path, payload)
             except Exception:
                 rollback_failed = True
         if rollback_failed:
@@ -1990,7 +2014,9 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     cloud_plan = read(root / NETBIRD_CLOUD_PLAN, {})
     cloud_status = read(root / NETBIRD_CLOUD_STATUS, {})
     action_labels = {'create-network': 'vytvořit Network', 'create-group': 'vytvořit cílovou skupinu',
-                     'create-resource': 'vytvořit resource', 'create-router': 'přiřadit tento router',
+                     'create-resource': 'vytvořit resource',
+                     'assign-resource': 'přiřadit existující resource do cílové skupiny',
+                     'create-router': 'přiřadit tento router',
                      'create-policy': 'vytvořit policy', 'verify-policy': 'ověřit existující policy'}
     plan_summary = ''
     if isinstance(cloud_plan, dict) and cloud_plan.get('digest') and cloud_plan.get('actions') is not None:

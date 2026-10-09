@@ -54,6 +54,9 @@ adresáře.
    management token. Ostatní federované routery přidají podmíněný forward této
    zóny přes NetBird na Cacké, takže stejné názvy fungují i klientům všech LAN
    přes jejich běžný lokální DNS. Cacké obdobně přijme zóny ostatních lokalit.
+   Pokud už wildcard resource existuje bez skupiny, potvrzený plán jej přiřadí
+   do spravované cílové skupiny a při pozdějším selhání změnu vrátí. Resource
+   s více skupinami bez výslovného výběru nepřebírá.
 9. NetBird DNS management na Cackém nesmí přepsat jeho místní resolver. Port 53
    obsluhuje Knot Resolver (`kresd`), do kterého routerový agent načítá přesné
    záznamy přes control socket. DNS odpověď neuděluje ani neomezuje síťový
