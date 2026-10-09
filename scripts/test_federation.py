@@ -1177,6 +1177,83 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(2, len(f.save_local_service(self.root, node(1), second, allow_duplicate=True)))
         self.assertEqual([second], f.delete_local_service(self.root, node(1), first['id']))
 
+    def test_service_dns_projects_only_exact_internal_names(self):
+        services = [
+            {'id': 'home-assistant', 'name': 'Home Assistant',
+             'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': 8123,
+             'path': '/lovelace'},
+            {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.30',
+             'protocol': 'tcp', 'port': 11434, 'path': None},
+        ]
+        self.assertEqual(
+            b'192.168.1.20 home-assistant.cacke.internal\n'
+            b'192.168.1.30 ollama.cacke.internal\n',
+            f.render_service_dns_hosts(node(1), services, 'cacke.internal'))
+        for zone in ['cacke.local', '*.cacke.internal', 'Cacke.internal',
+                     'cacke.internal.', 'internal']:
+            with self.subTest(zone=zone), self.assertRaises(ValueError):
+                f.render_service_dns_hosts(node(1), services, zone)
+        with self.assertRaisesRegex(ValueError, 'DNS jméno'):
+            f.render_service_dns_hosts(node(1), [dict(services[0], id='nested.name')],
+                                       'cacke.internal')
+
+    def test_service_dns_reconcile_is_owned_retryable_and_disableable(self):
+        service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
+                   'protocol': 'tcp', 'port': 11434, 'path': None}
+        f.save_local_service(self.root, node(1), service)
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        commands = []
+        result = f.reconcile_service_dns(self.root, node(1), commands.append)
+        self.assertEqual({'zone': 'cacke.internal', 'records': 1}, result)
+        hosts_path = self.root / f.SERVICE_DNS_HOSTS
+        self.assertEqual(b'192.168.1.20 ollama.cacke.internal\n', hosts_path.read_bytes())
+        self.assertEqual(['hints.add_hosts(%s)' % json.dumps(str(hosts_path))], commands)
+
+        # Reconciliation reloads memory-only hints after a resolver restart.
+        commands.clear()
+        f.reconcile_service_dns(self.root, node(1), commands.append)
+        self.assertEqual(['hints.add_hosts(%s)' % json.dumps(str(hosts_path))], commands)
+
+        f.delete_local_service(self.root, node(1), 'ollama')
+        f.save_local_service(self.root, node(1), dict(service, id='ollama-new'))
+        commands.clear()
+        f.reconcile_service_dns(self.root, node(1), commands.append)
+        self.assertEqual('hints.del("ollama.cacke.internal")', commands[0])
+        self.assertEqual('hints.add_hosts(%s)' % json.dumps(str(hosts_path)), commands[1])
+        self.assertIn(b'ollama-new.cacke.internal', hosts_path.read_bytes())
+
+        f.disable_service_dns(self.root)
+        commands.clear()
+        result = f.reconcile_service_dns(self.root, node(1), commands.append)
+        self.assertEqual({'zone': None, 'records': 0}, result)
+        self.assertEqual(['hints.del("ollama-new.cacke.internal")'], commands)
+        self.assertEqual(b'', hosts_path.read_bytes())
+
+    def test_authenticated_web_manages_local_service_dns_with_csrf(self):
+        self.prepare_diagnostics()
+        handler = f.web_handler(self.root)
+        page = self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler)
+        token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
+        self.assertIn('DNS lokality'.encode(), page)
+        self.assertNotIn(b'name="zone"', self.web_request('GET', f.WEB_PATH, handler=handler))
+
+        invalid = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'dns/config',
+                                   urlencode({'token': token, 'zone': 'example.com'}), handler)
+        self.assertIn(b'409', invalid)
+        self.assertFalse((self.root / f.SERVICE_DNS_CONFIG).exists())
+
+        configured = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'dns/config',
+                                      urlencode({'token': token, 'zone': 'cacke.internal'}), handler)
+        self.assertIn(b'303', configured)
+        self.assertEqual({'zone': 'cacke.internal'}, f.service_dns_configuration(self.root))
+        self.assertIn(b'value="cacke.internal"',
+                      self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler))
+
+        disabled = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'dns/disable',
+                                    urlencode({'token': token}), handler)
+        self.assertIn(b'303', disabled)
+        self.assertIsNone(f.service_dns_configuration(self.root))
+
     def test_legacy_router_port_is_dropped_locally_and_rejected_in_reports(self):
         service = {'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': 8123,

@@ -76,7 +76,7 @@ katalogu hostů. Příjemce ověří podpis routeru, členství, vlastnictví c�
 protokol, port, limity a přesný tvar každé položky. Neplatný katalog se celý
 odmítne; nesmí částečně prosáknout do globálního seznamu.
 
-Po doplnění NetBird integrace bude každý router autoritou vlastní stabilní DNS
+Routerový agent umí být zdrojem vlastní stabilní DNS
 zóny uložené v podepsané topologii, například `cacke.internal`. Místní agent z
 validovaného `services.json` atomicky složí přesné `A` záznamy podle ID
 služby. Změna nebo odstranění položky se projeví jen v této zóně. Router nedostane
@@ -87,6 +87,14 @@ odpovídající položky katalogu. Ostatní federované routery tuto zónu podm�
 forwardují přes NetBird, takže záznamy fungují klientům NetBirdu i ve všech LAN.
 Zlaté stránky nevytvářejí firewallová pravidla a neomezují vzájemný provoz
 federovaných sítí.
+
+Na Turris OS 9.1 agent používá podporovaný `hints` control socket běžícího Knot
+Resolveru. Zdrojový hosts soubor i seznam naposledy načtených jmen ukládá
+atomicky a každých 30 sekund je obnoví, takže přežijí restart resolveru. Spravuje
+jen vlastní přesná jména; nevkládá wildcard a nemění UCI resolveru, DHCP ani
+firewall. Zapnutí, změna a vypnutí zóny je v PAM chráněném WebApps přehledu.
+Zóna musí končit `.internal` a ID služby použité jako DNS label smí obsahovat jen
+malá písmena, číslice a vnitřní pomlčky.
 
 Uložení nebo odstranění místní služby aktualizuje stejný snapshot v provozním
 reportu okamžitě. Přijaté routery jej stáhnou v následujícím periodickém
@@ -163,6 +171,8 @@ zůstane podporované jen otevření v systémovém prohlížeči.
 - [x] Doplnit autentizovaný přenos ověřeného katalogu na uživatelské notebooky,
   které nemají lokální administrační cache provozních reportů.
 - [x] Bezpečné otevírání `http`/`https` v systémovém prohlížeči.
+- [x] Místní `.internal` zóna z přesných záznamů Zlatých stránek pro Knot Resolver,
+  včetně WebApps nastavení a vypnutí.
 - [ ] Samostatné bezpečnostní posouzení izolovaného zobrazení uvnitř aplikace.
 - [ ] Test na dvou routerech a notebooku včetně neplatných portů, cizích LAN adres,
    podvržených reportů, zastaralého katalogu a odvolaného routeru.

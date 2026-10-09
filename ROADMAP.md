@@ -519,11 +519,11 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## Nejbližší postup
 
-1. Na Cackém read-only ověřit verzi systému, dostupný NetBird
-   balíček, architekturu, volné místo a kolize rozhraní/firewallu. Teprve potom
-   připravit přesný instalační plán s rollbackem.
-2. Doplnit do routerového agenta a WebApps lokální nastavení NetBirdu a generování
-   autoritativní zóny `cacke.internal` ze Zlatých stránek.
+1. [x] Na Cackém read-only ověřit verzi systému, dostupný NetBird balíček,
+   architekturu, volné místo, aktivní rozhraní a resolver.
+2. [x] Doplnit do routerového agenta a WebApps generování místní zóny
+   `cacke.internal` ze Zlatých stránek přes Knot Resolver. Lokální nastavení a
+   stav NetBirdu v routerovém WebApps ještě zbývají.
 3. V NetBird Cloud připravit PoC skupiny/Networks, zapnout MFA a připojit Cacké
    jako routing peer celého jeho LAN prefixu.
 4. Připojit jeden běžný NetBird klient, publikovat celý LAN prefix Cackého a přidat první

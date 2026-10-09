@@ -48,9 +48,11 @@ adresáře.
    federované routery přidají podmíněný forward této zóny přes NetBird na Cacké,
    takže stejné názvy fungují i klientům všech LAN přes jejich běžný lokální DNS.
    Cacké obdobně přijme delegace zón ostatních lokalit.
-9. NetBird DNS management na routing peeru nastavit tak, aby jeho místní
-   `dnsmasq` zůstal autoritou vlastní zóny a nesoupeřil o port 53. DNS odpověď
-   neuděluje ani neomezuje síťový přístup.
+9. NetBird DNS management na routing peeru nastavit tak, aby místní resolver
+   routeru zůstal zdrojem vlastní zóny a NetBird nesoupeřil o port 53. Na Cackém
+   port 53 obsluhuje Knot Resolver (`kresd`), do kterého routerový agent načítá
+   přesné záznamy přes control socket. DNS odpověď neuděluje ani neomezuje
+   síťový přístup.
 10. Před aktivací NetBirdu na testovaném uzlu odpojit jeho původní VPN transport.
    Návrat znamená NetBird vypnout a obnovit původní transport, ne provozovat oba
    tunely jako jednu vrstvenou nebo současně směrovanou cestu.

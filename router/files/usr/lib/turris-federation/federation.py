@@ -17,6 +17,7 @@ import secrets
 import shlex
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,11 @@ HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 SERVICE_LIMIT = 128
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
+SERVICE_DNS_CONFIG = 'service-dns.json'
+SERVICE_DNS_HOSTS = 'service-dns.hosts'
+SERVICE_DNS_LOADED = 'service-dns.loaded'
+SERVICE_DNS_STATUS = 'service-dns-status.json'
+KRESD_CONTROL_DIR = Path('/tmp/kresd/control')
 
 
 def encode(value):
@@ -975,6 +981,9 @@ def save_local_service(root, node, service, allow_duplicate=False):
             raise ValueError('Stejný endpoint už má jinou službu; potvrďte duplicitu.')
         services = [item for item in services if item['id'] != validated['id']] + [validated]
         services = validate_services(node, services)
+        configuration = service_dns_configuration(root)
+        if configuration:
+            render_service_dns_hosts(node, services, configuration['zone'])
         store_local_services(root, services)
         return services
 
@@ -990,6 +999,129 @@ def delete_local_service(root, node, service_id):
         services = [item for item in services if item['id'] != service_id]
         store_local_services(root, services)
         return services
+
+
+def validate_service_dns_zone(zone):
+    """Accept a stable private suffix, never an arbitrary public DNS zone."""
+    if not isinstance(zone, str) or zone != zone.strip().lower() or len(zone) > 253:
+        raise ValueError('Neplatná DNS zóna lokality.')
+    labels = zone.split('.')
+    if len(labels) < 2 or labels[-1] != 'internal':
+        raise ValueError('DNS zóna lokality musí končit .internal.')
+    if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+           for label in labels):
+        raise ValueError('Neplatná DNS zóna lokality.')
+    return zone
+
+
+def service_dns_name(service_id, zone):
+    if not isinstance(service_id, str) or not re.fullmatch(
+            r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', service_id):
+        raise ValueError('ID služby nelze bezpečně použít jako DNS jméno.')
+    return service_id + '.' + validate_service_dns_zone(zone)
+
+
+def render_service_dns_hosts(node, services, zone):
+    """Render an exact hosts projection; no wildcard or firewall side effect."""
+    services = validate_services(node, services)
+    rows = ['%s %s' % (service['hostAddress'], service_dns_name(service['id'], zone))
+            for service in services]
+    return ('\n'.join(rows) + ('\n' if rows else '')).encode()
+
+
+def service_dns_configuration(root):
+    value = read(Path(root) / SERVICE_DNS_CONFIG)
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {'zone'}:
+        raise ValueError('Neplatné nastavení DNS lokality.')
+    return {'zone': validate_service_dns_zone(value['zone'])}
+
+
+def configure_service_dns(root, node, zone):
+    """Persist local desired state. Loading into kresd is handled independently."""
+    root = Path(root)
+    zone = validate_service_dns_zone(zone)
+    render_service_dns_hosts(node, local_services(root, node), zone)
+    atomic(root / SERVICE_DNS_CONFIG, {'zone': zone})
+    return {'zone': zone}
+
+
+def disable_service_dns(root):
+    (Path(root) / SERVICE_DNS_CONFIG).unlink(missing_ok=True)
+
+
+def service_dns_hostnames(raw):
+    names = []
+    for line in raw.decode().splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            raise ValueError('Neplatný uložený DNS záznam služby.')
+        ipaddress.ip_address(fields[0])
+        labels = fields[1].split('.')
+        if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+               for label in labels):
+            raise ValueError('Neplatný uložený DNS záznam služby.')
+        names.append(fields[1])
+    return names
+
+
+def kresd_hint_command(command, control_dir=KRESD_CONTROL_DIR):
+    sockets = sorted(path for path in Path(control_dir).iterdir() if path.is_socket())
+    if not sockets:
+        raise ValueError('Knot Resolver nemá dostupný řídicí socket.')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(2)
+        client.connect(str(sockets[0]))
+        client.sendall((command + '\n').encode())
+        response = client.recv(4096)
+    if not response:
+        raise ValueError('Knot Resolver odmítl změnu lokálních jmen.')
+    return response
+
+
+def reconcile_service_dns(root, node, hint_command=kresd_hint_command):
+    """Replace only hints previously loaded by this agent, with retry-safe state."""
+    root = Path(root)
+    configuration = service_dns_configuration(root)
+    desired = (render_service_dns_hosts(node, local_services(root, node), configuration['zone'])
+               if configuration else b'')
+    loaded_path = root / SERVICE_DNS_LOADED
+    loaded = loaded_path.read_bytes() if loaded_path.exists() else b''
+    desired_path = root / SERVICE_DNS_HOSTS
+    current = desired_path.read_bytes() if desired_path.exists() else b''
+    if current == desired and loaded == desired:
+        # Hints live only in resolver memory; reload them after a kresd restart.
+        if desired:
+            hint_command('hints.add_hosts(%s)' % json.dumps(str(desired_path)))
+        return {'zone': configuration['zone'] if configuration else None,
+                'records': len(service_dns_hostnames(desired))}
+    atomic(desired_path, desired)
+    for hostname in service_dns_hostnames(loaded):
+        hint_command('hints.del(%s)' % json.dumps(hostname))
+    if desired:
+        hint_command('hints.add_hosts(%s)' % json.dumps(str(desired_path)))
+    atomic(loaded_path, desired)
+    return {'zone': configuration['zone'] if configuration else None,
+            'records': len(service_dns_hostnames(desired))}
+
+
+def serve_service_dns(root):
+    """Keep local service names available across resolver restarts."""
+    root = Path(root)
+    while True:
+        checked = time.time()
+        try:
+            doc = verify((root / 'root.pub').read_text(), read(root / 'accepted.json'))
+            node = self_node(root, doc)
+            if not node or node['id'] not in doc['members']:
+                raise ValueError('Router není členem federace.')
+            result = reconcile_service_dns(root, node)
+            atomic(root / SERVICE_DNS_STATUS, {**result, 'state': 'active', 'checkedAt': checked})
+        except Exception as error:
+            atomic(root / SERVICE_DNS_STATUS,
+                   {'state': 'error', 'error': str(error), 'checkedAt': checked})
+        time.sleep(30)
 
 
 def editable_service_hosts(node, report, services):
@@ -1589,7 +1721,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
 <input type="hidden" name="hostAddress" value="''' + esc(editor_host) + '''">
 <h3>''' + ('Upravit službu' if editing_service else 'Přidat službu') + '''</h3>
-<label>ID služby<input name="id" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="ollama-main" value="''' + esc(form_service['id']) + '''"''' + (' readonly' if editing_service else '') + '''></label>
+<label>ID služby<input name="id" required maxlength="63" pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" placeholder="ollama-main" value="''' + esc(form_service['id']) + '''"''' + (' readonly' if editing_service else '') + '''></label>
 <label>Název<input name="name" required maxlength="80" placeholder="Ollama" value="''' + esc(form_service['name']) + '''"></label>
 <label>Protokol<select name="protocol">''' + protocol_options + '''</select></label>
 <label>Port<input name="port" required type="number" min="1" max="65535" value="''' + esc(form_service['port']) + '''"></label>
@@ -1605,7 +1737,23 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
         (local_service_rows or '<tr><td colspan="4">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
         '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
     local_services_section = '''<section><h2>Editor služeb · tento router</h2>
-<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Definice nemění síť, firewall, DNS ani cílového hosta. Změna se místně publikuje ihned; ostatní routery ji převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
+<p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Definice nemění síť, firewall ani cílového hosta. Je-li zapnutá místní DNS zóna, změna atomicky upraví jen její přesný záznam. Ostatní routery katalog převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
+    dns_configuration = service_dns_configuration(root)
+    dns_status = read(root / SERVICE_DNS_STATUS, {})
+    if not isinstance(dns_status, dict):
+        dns_status = {}
+    dns_state = ('Aktivní · %s záznamů' % dns_status.get('records', 0)
+                 if dns_status.get('state') == 'active' and dns_configuration else
+                 ('Chyba: ' + str(dns_status.get('error', 'neznámá chyba'))
+                  if dns_status.get('state') == 'error' else 'Vypnuto'))
+    dns_section = '''<section><h2>DNS lokality</h2>
+<p class="muted">Router vytváří pouze přesná jména podle ID místních služeb, například <code>ollama.cacke.internal</code>. Nevytváří wildcard, routy ani firewallová pravidla.</p>
+<p>Stav: <strong>''' + esc(dns_state) + '''</strong></p>
+<form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''dns/config"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
+<label>Zóna lokality<input name="zone" required maxlength="253" pattern="[a-z0-9-]+(\\.[a-z0-9-]+)*\\.internal" placeholder="cacke.internal" value="''' + esc(dns_configuration['zone'] if dns_configuration else '') + '''"></label>
+<button class="button">Uložit DNS zónu</button></form>''' + (
+        '''<form method="post" action="''' + WEB_OVERVIEW_PATH + '''dns/disable"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><button class="button danger">Vypnout DNS zónu</button></form>'''
+        if dns_configuration else '') + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:
@@ -1656,7 +1804,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + local_services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -1710,7 +1858,11 @@ def web_handler(root):
             self.wfile.write(body)
 
         def do_POST(self):
-            if self.path not in [WEB_OVERVIEW_PATH + 'diagnostics', WEB_OVERVIEW_PATH + 'services/save', WEB_OVERVIEW_PATH + 'services/delete']:
+            if self.path not in [WEB_OVERVIEW_PATH + 'diagnostics',
+                                 WEB_OVERVIEW_PATH + 'services/save',
+                                 WEB_OVERVIEW_PATH + 'services/delete',
+                                 WEB_OVERVIEW_PATH + 'dns/config',
+                                 WEB_OVERVIEW_PATH + 'dns/disable']:
                 self.send_error(405)
                 return
             try:
@@ -1739,7 +1891,17 @@ def web_handler(root):
                     node = next((item for item in doc['config']['nodes'] if item['id'] == own_id), None) if doc else None
                     if not node or own_id not in doc['members']:
                         raise ValueError('Router nemá platné členství federace.')
-                    if self.path == WEB_OVERVIEW_PATH + 'services/delete':
+                    if self.path == WEB_OVERVIEW_PATH + 'dns/config':
+                        if set(fields) != {'token', 'zone'} or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        configure_service_dns(root, node, fields['zone'][0])
+                    elif self.path == WEB_OVERVIEW_PATH + 'dns/disable':
+                        if set(fields) != {'token'} or fields['token'] != [token]:
+                            self.send_error(400)
+                            return
+                        disable_service_dns(root)
+                    elif self.path == WEB_OVERVIEW_PATH + 'services/delete':
                         if set(fields) != {'token', 'id'} or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
@@ -1920,6 +2082,10 @@ start_service() {
     procd_close_instance
     procd_open_instance web
     procd_set_param command /usr/bin/python3 /usr/lib/turris-federation/federation.py web /etc/turris-federation
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+    procd_open_instance dns
+    procd_set_param command /usr/bin/python3 /usr/lib/turris-federation/federation.py dns /etc/turris-federation
     procd_set_param respawn 3600 5 5
     procd_close_instance
 }
@@ -2503,6 +2669,17 @@ def main():
         check_web()
     elif mode == 'serve':
         serve(root)
+    elif mode == 'dns':
+        serve_service_dns(root)
+    elif mode == 'dns-config':
+        doc = verify((Path(root) / 'root.pub').read_text(), read(Path(root) / 'accepted.json'))
+        node = self_node(root, doc)
+        if not node or node['id'] not in doc['members']:
+            raise ValueError('Router není členem federace.')
+        print(json.dumps(configure_service_dns(root, node, sys.argv[3])))
+    elif mode == 'dns-disable':
+        disable_service_dns(root)
+        print('{}')
     elif mode == 'watchdog':
         watchdog(root, sys.argv[3])
     else:

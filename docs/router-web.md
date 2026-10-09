@@ -12,6 +12,11 @@ objeví dlaždice **Turris Federation**. Přehled je dostupný na
 přihlášení routeru přes PAM (HTTP Basic Auth); nepřebírá přihlašovací relaci
 reForisu. Na Omnii nejsou další záložky. Používejte HTTPS webserveru routeru.
 
+Přehled obsahuje také místní nastavení DNS lokality. Správce může zapnout zónu
+končící `.internal`, například `cacke.internal`, nebo ji vypnout. Agent do Knot
+Resolveru načítá pouze přesná `<id-sluzby>.<zona>` jména z validovaných místních
+Zlatých stránek. Tato volba nemění firewall, routy, DHCP ani NetBird Cloud.
+
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
 U každého routeru uvádí otisk verze agenta a čas vytvoření instalované kopie.
