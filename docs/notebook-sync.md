@@ -1,5 +1,10 @@
 # Discovery a synchronizace mezi notebooky
 
+> **Legacy dokument.** Synchronizaci řídicích notebooků nahradí routerová
+> synchronizace a autoritativní Turris podle
+> [router-only architektury](router-only-architecture.md). Dokument zůstává jako
+> popis rollback implementace.
+
 Tento dokument popisuje současnou synchronizaci **administrátorských
 notebooků**. Uživatelský notebook určený jen k síťovému připojení se do
 této synchronizace nezapojí a nesmí převzít kořenovou identitu federace. Návrh

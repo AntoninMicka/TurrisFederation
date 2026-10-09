@@ -4,10 +4,12 @@ Aktualizováno: 8. 10. 2026.
 
 ## Cíl a podklady
 
-Desktopová aplikace pro správu federace routerů Turris Omnia: vytvořit draft
-uzlů a sítí, připojit se přes SSH, zjistit skutečný stav, porovnat jej s návrhem
-a následně řízeně aplikovat změny. Projekt počítá se ZeroTier, WireGuardem
-a routerovým agentem.
+Cílovou aplikací je routerové WebApps rozhraní a agent na Turrisech. Routery se
+propojí jedinou VPN vrstvou NetBird, samy spravují své LAN a DNS zóny a sdílejí
+podepsanou topologii. Notebooky a telefony používají pouze oficiální NetBird
+klient; současná desktopová aplikace zůstává do dokončení bezpečné migrace jako
+legacy rollback. Rozhodnutí a podmínky odstranění popisuje
+[router-only architektura](docs/router-only-architecture.md).
 
 Podklady: požadavky v dosavadní konverzaci, [README](README.md), datový model
 a aktuální implementace. Samostatné podrobné zadání v repozitáři zatím není.
@@ -18,6 +20,20 @@ Budoucí etapy níže jsou návrhem rozpracování tohoto rozsahu; neznamenají,
 Implementace sama o sobě neznamená ověření na skutečném routeru.
 Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 **P2** navazující rozvoj. Etapy určují pořadí, zatím bez termínů.
+
+## Změna cílové architektury (9. 10. 2026)
+
+- [x] Rozhodnout, že trvalá aplikace poběží pouze na Turrisech a koncová zařízení
+  budou používat jen oficiální NetBird klient.
+- [ ] Zmrazit desktopovou aplikaci jako legacy a nepřidávat do ní nové funkce.
+- [ ] Přesunout správu členství, podepsané topologie a NetBirdu do PAM chráněného
+  routerového webu.
+- [ ] Připravit bezpečný import federační CA na jeden zvolený autoritativní
+  Turris, šifrovanou offline zálohu a skutečně ověřenou obnovu.
+- [ ] Nahradit notebookovou aplikaci jednorázovým instalačním a diagnostickým
+  skriptem pro oficiální NetBird klient.
+- [ ] Po routerové akceptaci odstranit Tauri UI/backend, notebookový sync,
+  systémovou notebookovou službu a vlastní notebookovou VPN orchestraci.
 
 ## Kontrola deploye a aktuální TODO (20. 9. 2026)
 
@@ -45,7 +61,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] Přidat tento notebook do přehledu jako místní řídicí uzel pouze pro kontrolu
   ZeroTier. V této původní etapě neměl WireGuard peery, tunelovou adresu ani
   routerový deploy; koncové VPN připojení doplňuje následující úkol.
-- [ ] **P1: Rozdělit notebooky na administrátorské a uživatelské síťové uzly.**
+- [~] **Legacy: rozdělení notebookové aplikace na administrátorskou a uživatelskou.**
+  Další vývoj je zastaven cílovou router-only architekturou. Následující položky
+  zachycují stav rollback implementace, ne plán nových funkcí.
   Oba typy budou plnohodnotné koncové uzly VPN, ale bez inzerovaných LAN prefixů,
   forwardingu nebo masquerade mezi VPN a fyzickou sítí. Administrátorský notebook
   navíc smí kontrolovat a nasazovat routery; uživatelský notebook získá pouze
@@ -501,15 +519,19 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
 
 ## Nejbližší postup
 
-1. V NetBird Cloud připravit oddělený PoC účet/skupiny, zapnout MFA a vytvořit
-   výslovné plné propojení přijatých federovaných sítí.
-2. Na jednom vybraném Turrisu read-only ověřit verzi systému, dostupný NetBird
+1. Na Cackém read-only ověřit verzi systému, dostupný NetBird
    balíček, architekturu, volné místo a kolize rozhraní/firewallu. Teprve potom
    připravit přesný instalační plán s rollbackem.
-3. Připojit jeden klient, publikovat celý LAN prefix Cackého a přidat první
+2. Doplnit do routerového agenta a WebApps lokální nastavení NetBirdu a generování
+   autoritativní zóny `cacke.internal` ze Zlatých stránek.
+3. V NetBird Cloud připravit PoC skupiny/Networks, zapnout MFA a připojit Cacké
+   jako routing peer celého jeho LAN prefixu.
+4. Připojit jeden běžný NetBird klient, publikovat celý LAN prefix Cackého a přidat první
    záznam do jeho autoritativní zóny. Ověřit stejné jméno z NetBird klienta i z
    jiné federované LAN a potvrdit, že aktivní datová cesta obsahuje jen NetBird podle
    [NetBird Cloud PoC](docs/netbird-cloud-poc.md).
+5. Teprve po úspěšném PoC doplnit import CA, zálohu a správu členství na zvoleném
+   autoritativním Turrisu; desktopovou aplikaci zatím zachovat jako rollback.
 4. Navrhnout transportní backend, který převede potvrzené členství a role
    Federation na NetBird groups, Networks a policies, ale DNS záznamy nechá ve
    správě autoritativního routeru jeho lokality. Před potvrzením pouze zobrazí

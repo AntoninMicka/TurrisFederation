@@ -1,5 +1,9 @@
 # Privilegovaná síťová služba notebooku
 
+> **Legacy dokument.** Tuto trvalou notebookovou službu cílová
+> [router-only architektura](router-only-architecture.md) odstraní. Dokument
+> popisuje pouze rollback implementaci během migrace.
+
 Stav: schválený návrh a první vývojová implementace pro Linux. Nasazení
 spravovaného profilu na notebook a následná dostupnost routeru `Palackeho` byly
 fyzicky potvrzené 8. 10. 2026. Úplná akceptace nftables, ZeroTier,

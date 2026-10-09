@@ -1,5 +1,9 @@
 # Instalace notebooku a rozhraní podle role
 
+> **Legacy dokument.** Tuto instalaci nahradí jednorázový skript pro oficiální
+> NetBird klient podle [router-only architektury](router-only-architecture.md).
+> Současný postup zůstává jen pro rollback během migrace.
+
 Stav: návrh k implementaci. Vývojový `run.sh` není produkční instalátor.
 
 ## Rozhraní podle pověření

@@ -1,10 +1,18 @@
 # Turris Federation
 
-Desktopový orchestrátor a routerový agent pro bezpečnou správu federace Turris Omnia.
+Routerová aplikace pro propojení a správu federace Turris Omnia přes NetBird.
+
+**Cílová architektura běží pouze na Turrisech.** Notebooky a telefony jsou běžné
+NetBird klienty; notebooková aplikace, tray backend a vlastní VPN orchestrace se
+po bezpečné migraci odstraní. Současná desktopová implementace zůstává dočasně
+v repozitáři jako migrační nástroj a rollback, nikoli jako cílový produkt.
+Podrobnosti a podmínky odstranění:
+[router-only architektura](docs/router-only-architecture.md).
 
 Stav implementace a další kroky: [roadmapa a TODO seznam](ROADMAP.md).
 
-Rozhraní je rozdělené do záložek **Routery**, **Notebooky**, **Síť**,
+Níže popsané desktopové rozhraní dokumentuje současnou legacy implementaci během
+migrace. Rozhraní je rozdělené do záložek **Routery**, **Notebooky**, **Síť**,
 **Synchronizace**, **Audity** a **Nastavení**. Zobrazuje se vždy obsah jedné
 záložky; rozpracované formuláře zůstávají při přepínání zachované. Routery
 a místní řídicí notebook mají samostatné přehledy.

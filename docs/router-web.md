@@ -1,4 +1,8 @@
-# Webový přehled na Turrisu
+# Webové řízení na Turrisu
+
+Cílově jde o jediné trvalé rozhraní Turris Federation. Vedle dnešního přehledu a
+Zlatých stránek převezme správu členství, NetBirdu, podepsané topologie a obnovy
+federační autority. Současný stav níže je užší a tyto správní funkce ještě nemá.
 
 Po novém LAN deployi nebo aktualizaci agenta se na úvodní obrazovce Turrisu
 objeví dlaždice **Turris Federation**. Přehled je dostupný na
@@ -41,9 +45,11 @@ určuje podepsaná aplikovaná konfigurace. Editor používá stejně chráněn�
 pod `/turris-federation/overview/services/`. Výsledky diagnostiky ukládá
 odděleně do `diagnostics.json`, takže
 nepřepisuje stav deploye. Změna konfigurace během měření výsledky zneplatní.
-Web nevystavuje klíče, surové soubory, synchronizační API ani instalaci nebo
-změnu konfigurace. Při poškozené konfiguraci vrací chybu bez interních podrobností.
-Změny sítě se nadále podepisují v notebooku; aktualizace softwaru vyžadují přímou LAN.
+Web nevystavuje klíče ani surové soubory. Při poškozené konfiguraci vrací chybu
+bez interních podrobností. V současné legacy implementaci se změny sítě ještě
+podepisují v notebooku a aktualizace softwaru vyžadují přímou LAN. Router-only
+migrace přesune podepisování na výslovně zvolený autoritativní Turris, aniž by
+zpřístupnila kořenový klíč webovému procesu nebo ostatním routerům.
 
 ## Instalované součásti
 
