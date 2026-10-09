@@ -444,9 +444,11 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
   - [ ] Z modelu Federation generovat/aktualizovat NetBird network routes a
     access policies: LAN prefix lokality musí být publikován přes správný Turris
     routing peer a pouze požadovaným členům/skupinám.
-  - [ ] Z katalogu služeb generovat NetBird Custom Zones a přesné DNS záznamy.
-    Zóna se distribuuje jen oprávněným skupinám a záznam musí mít odpovídající
-    `/32` resource a portovou policy; samotné DNS nikdy neuděluje přístup.
+  - [ ] Každému routeru přidělit stabilní DNS zónu v podepsané topologii a z jeho
+    lokálních Zlatých stránek generovat přesné záznamy přímo na routeru. NetBird
+    jednorázově deleguje wildcard domain resource správnému routing peeru; router
+    nemá management token a nemůže měnit cizí zóny. Místní firewall dynamicky
+    povolí jen katalogové cíle a porty; samotné DNS nikdy neuděluje přístup.
   - [ ] Před publikací do NetBirdu nadále validovat duplicity a překryvy LAN
     prefixů, konfliktní routy a neúplnou topologii; chybný model nesmí být
     automaticky propagován do transportní vrstvy.
@@ -508,8 +510,9 @@ ověří stav a přerušenou nebo chybnou změnu lze bezpečně vrátit.
    router, LuCI, SSH, ostatní porty a ostatní LAN adresy a potvrdit, že aktivní
    datová cesta obsahuje jen NetBird podle
    [NetBird Cloud PoC](docs/netbird-cloud-poc.md).
-4. Navrhnout transportní backend, který převede potvrzené členství, services a
-   role Federation na NetBird groups, Networks, resources, policies a DNS, ale
-   před potvrzením pouze zobrazí plán změn.
+4. Navrhnout transportní backend, který převede potvrzené členství a role
+   Federation na NetBird groups, Networks a policies, ale DNS záznamy nechá ve
+   správě autoritativního routeru jeho lokality. Před potvrzením pouze zobrazí
+   plán změn.
 5. Po akceptaci PoC převádět další uzly řízeným přepnutím na NetBird, s auditem a
    rollbackem, ale bez souběžné nebo vnořené VPN datové cesty.

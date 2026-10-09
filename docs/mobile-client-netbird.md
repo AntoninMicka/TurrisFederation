@@ -80,11 +80,14 @@ Mobilní uzel:
 - obdrží jen zdroje a protokoly povolené jeho skupině;
 - nemá SSH údaje, deploy, audit, root identitu ani administrační API.
 
-Služby za routing peerem dostanou plná jména z privátní NetBird Custom Zone.
-Zóna se distribuuje pouze skupinám, které ji potřebují, a DNS záznam musí mířit
-na stejný jednotlivý host jako odpovídající `/32` resource. Pro první PoC se
-nepoužije wildcard ani search domain. Překlad jména sám o sobě není oprávnění;
-provoz musí stále povolit samostatná resource policy s konkrétním portem.
+Každý router je autoritativní pro vlastní stabilní doménu z podepsané topologie,
+například `cacke.internal`. Z lokálních Zlatých stránek sám vytváří a odstraňuje
+přesné DNS záznamy; nemá proto NetBird API token ani oprávnění měnit zóny jiných
+routerů. NetBird pouze jednorázově deleguje odpovídající doménový resource na
+správný routing peer. Zápis `*.cacke.internal` označuje delegovaný jmenný prostor,
+nikoli univerzální DNS odpověď pro neexistující služby. Překlad jména sám o sobě
+není oprávnění; routerový firewall povolí jen cílové adresy a porty z platného
+katalogu.
 
 Pro nové nasazení se použije NetBird **Networks** a jejich povinné resource
 groups/policies, nikoli staré Network Routes bez ACL. Turris router je routing
@@ -118,8 +121,9 @@ cestu firewallu.
   uspání a restart a obnoví připojení bez nové dlouhodobé pozvánky.
 - Telefon vidí pouze povolené lokality, hosty a služby; zakázané zdroje nemají
   routu ani průchod firewallu.
-- Privátní DNS jméno se přeloží pouze oprávněné skupině a vede na stejný `/32`
-  resource; znalost nebo ruční zadání IP neobejde portovou policy.
+- Privátní DNS jméno obslouží autoritativní router pouze pro platnou položku jeho
+  Zlatých stránek; znalost nebo ruční zadání IP neobejde routerovou portovou
+  policy.
 - Zlaté stránky zobrazují pouze podepsaný katalog a HTTP(S) otevírají v
   systémovém prohlížeči; TCP endpoint pouze kopírují.
 - Telefon neinzeruje vlastní síť a nemůže se stát routing peerem ani správcem.

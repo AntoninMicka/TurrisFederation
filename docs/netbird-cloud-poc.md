@@ -36,24 +36,31 @@ PoC výslovně nezahrnuje:
 6. V NetBird **Networks** vytvořit jediný resource jako přesnou adresu hostu
    `/32`, nikoli celý LAN prefix. Policy povolí pouze potřebný protokol a port ze
    skupiny PoC klientů k tomuto resource.
-7. V NetBird **DNS → Zones** vytvořit privátní zónu distribuovanou pouze skupině
-   PoC klientů a routing peeru. Přidat jediný `A` záznam ukazující na stejnou IP
-   jako `/32` resource. Nezapínat wildcard ani search domain; klient používá
-   plné DNS jméno. Viditelnost DNS záznamu nenahrazuje resource policy. Na
-   OpenWrt nesmí NetBird soupeřit s `dnsmasq` o port 53; případný resolver se
-   připraví na `127.0.0.1:5053` a `dnsmasq` do něj předá jen zvolenou privátní
-   zónu, nikoli všechny DNS dotazy.
-8. Ponechat vypnuté lokální forwardování k samotnému routing peeru a nevytvářet
+7. Každému routeru přidělit stabilní doménu v podepsané topologii; pro první PoC
+   `cacke.internal`. Cacké je autoritativní pro tuto zónu a z vlastního
+   validovaného `services.json` atomicky vytváří přesné záznamy jako
+   `neurodiary.cacke.internal`. NetBird API token na routeru není potřeba.
+8. V NetBirdu jednorázově vytvořit doménový Network resource
+   `*.cacke.internal` s Cackým jako routing peerem a zapnout routing-peer DNS
+   resolution. Hvězdička zde deleguje jmenný prostor routeru; Cacké odpovídá jen
+   pro skutečné položky Zlatých stránek. NetBird DNS management na routing peeru
+   se vypne, aby jeho místní `dnsmasq` zůstal autoritou a nesoupeřil o port 53.
+9. Firewall Cackého přijme z rozhraní NetBird pouze DNS forwarder potřebný
+   klientům a přes forward chain jen cílové dvojice `hostAddress:port` z katalogu.
+   LuCI, SSH, backend Federation, samotná LAN adresa routeru i ostatní porty
+   zůstanou zakázané. DNS jméno není bezpečnostní hranice.
+10. Ponechat vypnuté lokální forwardování k samotnému routing peeru a nevytvářet
    policy, která by mobilnímu klientovi zpřístupnila router. Pro první PoC lze
    ponechat výchozí masquerade, aby nebyla nutná návratová routa v LAN.
-9. Před aktivací NetBirdu na testovaném uzlu odpojit jeho původní VPN transport.
+11. Před aktivací NetBirdu na testovaném uzlu odpojit jeho původní VPN transport.
    Návrat znamená NetBird vypnout a obnovit původní transport, ne provozovat oba
    tunely jako jednu vrstvenou nebo současně směrovanou cestu.
 
 ## Akceptace
 
-- Android přeloží plné privátní DNS jméno na vybraný `/32` cíl a otevře pouze
-  povolený port. Android `Private DNS` nesmí obcházet resolver VPN.
+- Android přeloží plné privátní DNS jméno přes autoritativní DNS Cackého na
+  vybraný cíl a otevře pouze povolený port. Android `Private DNS` nesmí obcházet
+  resolver VPN.
 - Jiný port stejného hostu, jiný LAN host, LAN adresa routeru, LuCI a SSH nejsou
   dosažitelné přes NetBird.
 - Android nemá routing-peer, forwarding, exit-node ani administrační roli.
@@ -72,5 +79,5 @@ PoC výslovně nezahrnuje:
 - [Instalace na OpenWrt](https://docs.netbird.io/get-started/install/openwrt)
 - [Networks a resource policies](https://docs.netbird.io/manage/networks)
 - [Chování routing peeru](https://docs.netbird.io/manage/networks/how-routing-peers-work)
-- [Privátní DNS zóny](https://docs.netbird.io/manage/dns/custom-zones)
-- [DNS aliasy pro routované resources](https://docs.netbird.io/manage/dns/dns-aliases-for-routed-networks)
+- [Interní DNS servery](https://docs.netbird.io/manage/dns/internal-dns-servers)
+- [Doménové Network resources](https://docs.netbird.io/manage/networks/use-cases/by-resource-type/accessing-entire-domains-within-networks)
