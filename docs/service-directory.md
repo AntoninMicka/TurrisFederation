@@ -90,7 +90,8 @@ federovaných sítí.
 
 Na Turris OS 9.1 agent používá podporovaný `hints` control socket běžícího Knot
 Resolveru. Zdrojový hosts soubor i seznam naposledy načtených jmen ukládá
-atomicky a každých 30 sekund je obnoví, takže přežijí restart resolveru. Spravuje
+atomicky; čitelnou běhovou kopii vytváří jen v `/tmp/kresd`. Každých 30 sekund
+záznamy obnoví, takže přežijí restart resolveru. Spravuje
 jen vlastní přesná jména; nevkládá wildcard a nemění UCI resolveru, DHCP ani
 firewall. Zapnutí, změna a vypnutí zóny je v PAM chráněném WebApps přehledu.
 Zóna musí končit `.internal` a ID služby použité jako DNS label smí obsahovat jen

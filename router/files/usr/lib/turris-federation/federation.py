@@ -47,6 +47,7 @@ SERVICE_DNS_HOSTS = 'service-dns.hosts'
 SERVICE_DNS_LOADED = 'service-dns.loaded'
 SERVICE_DNS_STATUS = 'service-dns-status.json'
 KRESD_CONTROL_DIR = Path('/tmp/kresd/control')
+KRESD_SERVICE_HOSTS = Path('/tmp/kresd/turris-federation.hosts')
 
 
 def encode(value):
@@ -61,11 +62,13 @@ def read(path, default=None):
     return json.loads(Path(path).read_text()) if Path(path).exists() else default
 
 
-def atomic(path, data):
+def atomic(path, data, mode=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(dir=path.parent)
     try:
+        if mode is not None:
+            os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data if isinstance(data, bytes) else encode(data))
             stream.flush()
@@ -1075,12 +1078,17 @@ def kresd_hint_command(command, control_dir=KRESD_CONTROL_DIR):
         client.connect(str(sockets[0]))
         client.sendall((command + '\n').encode())
         response = client.recv(4096)
+    if b"['result'] = true" in response:
+        return True
+    if b"['result'] = false" in response:
+        return False
     if not response:
         raise ValueError('Knot Resolver odmítl změnu lokálních jmen.')
-    return response
+    raise ValueError('Knot Resolver vrátil neznámou odpověď.')
 
 
-def reconcile_service_dns(root, node, hint_command=kresd_hint_command):
+def reconcile_service_dns(root, node, hint_command=kresd_hint_command,
+                          runtime_hosts=KRESD_SERVICE_HOSTS):
     """Replace only hints previously loaded by this agent, with retry-safe state."""
     root = Path(root)
     configuration = service_dns_configuration(root)
@@ -1090,17 +1098,24 @@ def reconcile_service_dns(root, node, hint_command=kresd_hint_command):
     loaded = loaded_path.read_bytes() if loaded_path.exists() else b''
     desired_path = root / SERVICE_DNS_HOSTS
     current = desired_path.read_bytes() if desired_path.exists() else b''
+    runtime_hosts = Path(runtime_hosts)
+    if desired:
+        if not runtime_hosts.parent.is_dir():
+            raise ValueError('Běhový adresář Knot Resolveru není dostupný.')
+        atomic(runtime_hosts, desired, mode=0o644)
     if current == desired and loaded == desired:
         # Hints live only in resolver memory; reload them after a kresd restart.
-        if desired:
-            hint_command('hints.add_hosts(%s)' % json.dumps(str(desired_path)))
+        if desired and not hint_command('hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))):
+            raise ValueError('Knot Resolver nenačetl místní DNS záznamy.')
         return {'zone': configuration['zone'] if configuration else None,
                 'records': len(service_dns_hostnames(desired))}
     atomic(desired_path, desired)
     for hostname in service_dns_hostnames(loaded):
         hint_command('hints.del(%s)' % json.dumps(hostname))
-    if desired:
-        hint_command('hints.add_hosts(%s)' % json.dumps(str(desired_path)))
+    if desired and not hint_command('hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))):
+        raise ValueError('Knot Resolver nenačetl místní DNS záznamy.')
+    if not desired:
+        runtime_hosts.unlink(missing_ok=True)
     atomic(loaded_path, desired)
     return {'zone': configuration['zone'] if configuration else None,
             'records': len(service_dns_hostnames(desired))}
