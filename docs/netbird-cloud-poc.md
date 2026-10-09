@@ -42,7 +42,9 @@ adresáře.
    položek Zlatých stránek.
    Routerové WebApps smí k jednorázovému vytvoření nebo reconcile použít token
    role Network Admin: nejdřív zobrazí read-only plán, při potvrzení token vyžádá
-   znovu a po požadavku jej zahodí. Trvalý PAT na routeru není dovolen.
+   znovu a po požadavku jej zahodí. Stejnojmennou existující policy převezme jen
+   po přesném ověření jediné aktivní obousměrné `all` rule mezi očekávanou
+   zdrojovou a cílovou skupinou. Trvalý PAT na routeru není dovolen.
 7. Každému routeru přidělit stabilní doménu v podepsané topologii; pro první PoC
    `cacke.internal`. Cacké je autoritativní pro tuto zónu a z vlastního
    validovaného `services.json` atomicky vytváří přesné záznamy jako

@@ -1196,6 +1196,39 @@ def unique_named(items, name, kind):
     return matches[0] if matches else None
 
 
+def netbird_group_ids(values):
+    """Normalize group references returned by NetBird as IDs or expanded objects."""
+    if not isinstance(values, list):
+        return None
+    result = []
+    for value in values:
+        group_id = value.get('id') if isinstance(value, dict) else value
+        if not isinstance(group_id, str) or not group_id:
+            return None
+        result.append(group_id)
+    return result
+
+
+def netbird_policy_matches(policy, source_group_id, destination_group_id):
+    """Accept only the exact unrestricted site policy managed by this workflow."""
+    if not isinstance(policy, dict) or policy.get('enabled') is not True:
+        return False
+    if policy.get('source_posture_checks') not in (None, []):
+        return False
+    rules = policy.get('rules')
+    if not isinstance(rules, list) or len(rules) != 1:
+        return False
+    rule = rules[0]
+    return (isinstance(rule, dict) and rule.get('enabled') is True
+            and rule.get('action') == 'accept' and rule.get('bidirectional') is True
+            and rule.get('protocol') == 'all'
+            and netbird_group_ids(rule.get('sources')) == [source_group_id]
+            and netbird_group_ids(rule.get('destinations')) == [destination_group_id]
+            and not rule.get('ports') and not rule.get('port_ranges')
+            and not rule.get('sourceResource') and not rule.get('destinationResource')
+            and not rule.get('authorized_groups'))
+
+
 def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_request):
     """Build an idempotent, secret-free plan. No cloud mutation happens here."""
     if (not isinstance(source_group_name, str) or source_group_name != source_group_name.strip()
@@ -1288,8 +1321,10 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
         raise ValueError('NetBird API vrátilo neplatný seznam policy.')
     existing_policy = unique_named(policies, policy_name, 'policy')
     if existing_policy:
-        # Never silently take over an existing policy with unknown semantics.
-        actions.append({'kind': 'verify-policy', 'name': policy_name})
+        if not destination or not netbird_policy_matches(
+                existing_policy, source.get('id'), destination.get('id')):
+            raise ValueError('Stejnojmenná NetBird policy má jiná pravidla; program ji nepřevezme.')
+        actions.append({'kind': 'adopt-policy', 'name': policy_name})
     else:
         actions.append({'kind': 'create-policy', 'name': policy_name})
     plan = {'version': 1, 'networkId': network.get('id') if network else None,
@@ -1362,8 +1397,8 @@ def apply_netbird_cloud_plan(root, node, token, source_group_name, expected_dige
                          'destinations': [destination_id]}]})
                 if created.get('id'):
                     rollback_operations.append(('DELETE', '/policies/' + quote(str(created['id']), safe=''), None))
-            elif action['kind'] == 'verify-policy':
-                raise ValueError('Stejnojmenná NetBird policy už existuje; program ji bez ověření nepřevezme.')
+            elif action['kind'] == 'adopt-policy':
+                pass
             results.append(action['kind'])
     except Exception as error:
         rollback_failed = False
@@ -2017,7 +2052,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
                      'create-resource': 'vytvořit resource',
                      'assign-resource': 'přiřadit existující resource do cílové skupiny',
                      'create-router': 'přiřadit tento router',
-                     'create-policy': 'vytvořit policy', 'verify-policy': 'ověřit existující policy'}
+                     'create-policy': 'vytvořit policy',
+                     'adopt-policy': 'převzít obsahově ověřenou existující policy'}
     plan_summary = ''
     if isinstance(cloud_plan, dict) and cloud_plan.get('digest') and cloud_plan.get('actions') is not None:
         plan_summary = '''<h3>Čekající potvrzení</h3><p>Zdrojová skupina: <strong>''' + esc(cloud_plan.get('sourceGroupName', '')) + '''</strong></p><ul>''' + ''.join(

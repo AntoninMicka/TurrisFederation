@@ -1313,6 +1313,39 @@ class FederationTests(unittest.TestCase):
                             for payload in payloads))
         self.assertNotIn('s' * 24, (self.root / f.NETBIRD_CLOUD_STATUS).read_text())
 
+    def test_netbird_cloud_adopts_only_exact_existing_policy(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        policy = {'id': 'policy-site', 'name': 'Turris Federation · Stanoviště 1 access',
+                  'enabled': True, 'source_posture_checks': [], 'rules': [{
+                      'enabled': True, 'action': 'accept', 'bidirectional': True,
+                      'protocol': 'all', 'sources': [{'id': 'group-all'}],
+                      'destinations': ['group-site']}]}
+        def api(_token, method, path, payload=None):
+            self.assertEqual('GET', method)
+            return {
+                '/peers?ip=100.81.156.128': [{'id': 'peer-cacke', 'ip': '100.81.156.128'}],
+                '/groups': [{'id': 'group-all', 'name': 'All'},
+                            {'id': 'group-site', 'name': 'tf-site-cacke-internal'}],
+                '/networks': [{'id': 'network-site', 'name': 'Turris Federation · Stanoviště 1'}],
+                '/networks/network-site/resources': [
+                    {'id': 'resource-lan', 'address': '192.168.1.0/24',
+                     'groups': [{'id': 'group-site'}]},
+                    {'id': 'resource-dns', 'address': '*.cacke.internal',
+                     'groups': [{'id': 'group-site'}]}],
+                '/networks/network-site/routers': [{'id': 'router-site', 'peer': 'peer-cacke'}],
+                '/policies': [policy],
+            }[path]
+        with patch.object(f, 'local_netbird_identity', return_value={
+                'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}):
+            plan = f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
+            self.assertEqual(['adopt-policy'], [action['kind'] for action in plan['actions']])
+            result = f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All',
+                                                 plan['digest'], api)
+            self.assertEqual(['adopt-policy'], result['actions'])
+            policy['rules'][0]['protocol'] = 'tcp'
+            with self.assertRaisesRegex(ValueError, 'jiná pravidla'):
+                f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
+
     def test_netbird_cloud_apply_refuses_drifted_preview(self):
         f.configure_service_dns(self.root, node(1), 'cacke.internal')
         def api(_token, method, path, payload=None):
