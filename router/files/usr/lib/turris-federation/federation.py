@@ -52,6 +52,8 @@ SERVICE_DNS_STATUS = 'service-dns-status.json'
 KRESD_CONTROL_DIR = Path('/tmp/kresd/control')
 KRESD_SERVICE_HOSTS = Path('/tmp/kresd/turris-federation.hosts')
 NETBIRD_API = 'https://api.netbird.io/api'
+NETBIRD_LOCAL_PLAN = 'netbird-local-plan.json'
+NETBIRD_LOCAL_STATUS = 'netbird-local-status.json'
 NETBIRD_CLOUD_PLAN = 'netbird-cloud-plan.json'
 NETBIRD_CLOUD_STATUS = 'netbird-cloud-status.json'
 
@@ -1186,6 +1188,260 @@ def validate_netbird_token(token):
     return token
 
 
+def probe_command(args, timeout=8):
+    """Return a bounded command result for read-only local status checks."""
+    try:
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=timeout)
+        return result.returncode, result.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, b''
+
+
+def parse_uci_sections(raw, package):
+    sections = {}
+    for line in raw.decode(errors='replace').splitlines():
+        if not line.startswith(package + '.') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        section, separator, option = key[len(package) + 1:].partition('.')
+        if not section:
+            continue
+        try:
+            values = shlex.split(value)
+        except ValueError as error:
+            raise ValueError('UCI konfigurace NetBirdu není čitelná.') from error
+        entry = sections.setdefault(section, {})
+        if separator:
+            entry.setdefault(option, []).extend(values)
+        elif len(values) == 1:
+            entry['__section_type__'] = values[0]
+    return sections
+
+
+def netbird_firewall_audit(network_raw, firewall_raw):
+    """Find a unique safe wt0 zone and full LAN forwarding without mutating UCI."""
+    networks = parse_uci_sections(network_raw, 'network')
+    firewall = parse_uci_sections(firewall_raw, 'firewall')
+    interfaces = [name for name, entry in networks.items()
+                  if 'wt0' in entry.get('device', []) or 'wt0' in entry.get('ifname', [])]
+    if len(interfaces) > 1:
+        raise ValueError('Rozhraní wt0 je v několika UCI sítích.')
+    interface = interfaces[0] if interfaces else None
+    zones = [(name, entry) for name, entry in firewall.items()
+             if entry.get('__section_type__') == 'zone'
+             and ('wt0' in entry.get('device', [])
+                  or interface and interface in entry.get('network', []))]
+    if len(zones) > 1:
+        raise ValueError('Rozhraní wt0 je ve více firewallových zónách.')
+    zone_section, zone = zones[0] if zones else (None, None)
+    zone_names = zone.get('name', []) if zone else []
+    zone_name = zone_names[0] if len(zone_names) == 1 else None
+    if zone and (not zone_name or zone.get('input') != ['ACCEPT']
+                 or zone.get('output') != ['ACCEPT'] or zone.get('forward') != ['ACCEPT']):
+        raise ValueError('Existující NetBird zóna neumožňuje plný provoz mezi vlastními sítěmi.')
+    forwarding = {(entry.get('src', [None])[0], entry.get('dest', [None])[0])
+                  for entry in firewall.values()
+                  if entry.get('__section_type__') == 'forwarding'}
+    ready = bool(interface and zone_name and ('lan', zone_name) in forwarding
+                 and (zone_name, 'lan') in forwarding)
+    return {'ready': ready, 'interface': interface, 'zone': zone_name,
+            'createInterface': interface is None, 'createZone': zone is None}
+
+
+def netbird_local_status(probe=probe_command, uci_reader=None):
+    """Inspect package, procd, identity and routing firewall without changing them."""
+    uci_reader = uci_reader or (lambda package: run(['uci', 'show', package]))
+    package_code, package_raw = probe(['opkg', 'status', 'netbird'])
+    package_text = package_raw.decode(errors='replace')
+    installed = package_code == 0 and re.search(r'^Status: .*\binstalled\b', package_text, re.M) is not None
+    version = re.search(r'^Version:\s*(\S+)', package_text, re.M)
+    enabled = probe(['/etc/init.d/netbird', 'enabled'])[0] == 0 if installed else False
+    running = probe(['/etc/init.d/netbird', 'status'])[0] == 0 if installed else False
+    registered, identity = False, None
+    if installed and running:
+        code, raw = probe(['netbird', 'status', '--json'])
+        if code == 0:
+            try:
+                value = json.loads(raw)
+                identity = {'ip': str(ipaddress.ip_interface(value['netbirdIp']).ip),
+                            'fqdn': value['fqdn']}
+                registered = isinstance(identity['fqdn'], str) and bool(identity['fqdn'])
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                identity = None
+    try:
+        firewall = netbird_firewall_audit(uci_reader('network'), uci_reader('firewall'))
+        firewall_error = None
+    except (OSError, ValueError) as error:
+        firewall = {'ready': False, 'interface': None, 'zone': None,
+                    'createInterface': True, 'createZone': True}
+        firewall_error = str(error)
+    return {'installed': installed, 'version': version.group(1) if version else None,
+            'enabled': enabled, 'running': running, 'registered': registered,
+            'identity': identity, 'firewall': firewall, 'firewallError': firewall_error}
+
+
+def validate_netbird_setup_key(value):
+    if (not isinstance(value, str) or not 20 <= len(value) <= 2048
+            or any(ord(character) < 33 or ord(character) > 126 for character in value)):
+        raise ValueError('Neplatný jednorázový NetBird setup key.')
+    return value
+
+
+def netbird_local_plan(root, node, status_fn=netbird_local_status):
+    """Create a secret-free installation and enrollment plan."""
+    configuration = service_dns_configuration(root)
+    if not configuration:
+        raise ValueError('Nejdřív zapněte místní DNS zónu lokality.')
+    state = status_fn()
+    if state.get('firewallError'):
+        raise ValueError(state['firewallError'])
+    actions = []
+    if not state.get('installed'):
+        if probe_command(['opkg', '--version'])[0] != 0:
+            raise ValueError('Tento router nemá podporovaný správce balíčků opkg.')
+        actions.append({'kind': 'install-package', 'name': 'netbird'})
+    if not state.get('enabled'):
+        actions.append({'kind': 'enable-service', 'name': 'netbird'})
+    if not state.get('running'):
+        actions.append({'kind': 'start-service', 'name': 'netbird'})
+    if not state.get('firewall', {}).get('ready'):
+        actions.append({'kind': 'configure-firewall',
+                        'interface': state.get('firewall', {}).get('interface'),
+                        'zone': state.get('firewall', {}).get('zone'),
+                        'createInterface': state.get('firewall', {}).get('createInterface', True),
+                        'createZone': state.get('firewall', {}).get('createZone', True)})
+    if not state.get('registered'):
+        actions.append({'kind': 'enroll-peer',
+                        'hostname': 'tf-' + configuration['zone'].split('.')[0]})
+    plan = {'version': 1, 'zone': configuration['zone'], 'actions': actions,
+            'initial': {key: state.get(key) for key in ['installed', 'enabled', 'running', 'registered']}}
+    return {**plan, 'digest': digest(plan)}
+
+
+def configure_netbird_firewall(action):
+    interface = action.get('interface') or 'tf_netbird'
+    zone = action.get('zone') or 'tf_netbird'
+    if action.get('createInterface'):
+        uci_section('network', 'tf_netbird', 'interface', {'proto': 'none', 'device': 'wt0'})
+        run(['uci', 'commit', 'network'])
+        interface = 'tf_netbird'
+    if action.get('createZone'):
+        uci_section('firewall', 'tf_netbird', 'zone', {
+            'name': 'tf_netbird', 'input': 'ACCEPT', 'output': 'ACCEPT',
+            'forward': 'ACCEPT', 'masq': '1', 'network': [interface]})
+        zone = 'tf_netbird'
+    uci_section('firewall', 'tf_netbird_lan_in', 'forwarding', {'src': 'lan', 'dest': zone})
+    uci_section('firewall', 'tf_netbird_lan_out', 'forwarding', {'src': zone, 'dest': 'lan'})
+    run(['uci', 'commit', 'firewall'])
+    run(['/etc/init.d/network', 'reload'])
+    run(['/etc/init.d/firewall', 'reload'])
+
+
+def rollback_netbird_firewall(action):
+    for section in ['firewall.tf_netbird_lan_in', 'firewall.tf_netbird_lan_out']:
+        with contextlib.suppress(ValueError):
+            run(['uci', '-q', 'delete', section])
+    if action.get('createZone'):
+        with contextlib.suppress(ValueError):
+            run(['uci', '-q', 'delete', 'firewall.tf_netbird'])
+    if action.get('createInterface'):
+        with contextlib.suppress(ValueError):
+            run(['uci', '-q', 'delete', 'network.tf_netbird'])
+    run(['uci', 'commit', 'network'])
+    run(['uci', 'commit', 'firewall'])
+    run(['/etc/init.d/network', 'reload'])
+    run(['/etc/init.d/firewall', 'reload'])
+
+
+def netbird_up_with_setup_key(setup_key, hostname, timeout=90):
+    """Pass the setup key through an inherited anonymous pipe, never argv or disk."""
+    validate_netbird_setup_key(setup_key)
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, setup_key.encode())
+        os.close(write_fd)
+        write_fd = None
+        result = subprocess.run(['netbird', 'up', '--hostname', hostname,
+                                 '--setup-key-file', '/proc/self/fd/%s' % read_fd],
+                                pass_fds=(read_fd,), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=timeout)
+        if result.returncode:
+            raise ValueError('Registrace NetBird klienta selhala (kód %s).' % result.returncode)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError('Registrace NetBird klienta selhala.') from error
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        os.close(read_fd)
+
+
+def apply_netbird_local_plan(root, node, setup_key, expected_digest,
+                             status_fn=netbird_local_status, command=run,
+                             enroll=netbird_up_with_setup_key,
+                             configure_firewall=configure_netbird_firewall,
+                             rollback_firewall=rollback_netbird_firewall):
+    plan = netbird_local_plan(root, node, status_fn)
+    if not isinstance(expected_digest, str) or not secrets.compare_digest(plan['digest'], expected_digest):
+        raise ValueError('Místní stav NetBirdu se od náhledu změnil; vytvořte nový plán.')
+    needs_key = any(action['kind'] == 'enroll-peer' for action in plan['actions'])
+    if needs_key:
+        validate_netbird_setup_key(setup_key)
+    elif setup_key:
+        raise ValueError('Router už je registrovaný; setup key se nesmí znovu použít.')
+    firewall_action = next((action for action in plan['actions']
+                            if action['kind'] == 'configure-firewall'), None)
+    configured, started, enabled = False, False, False
+    completed = []
+    try:
+        for action in plan['actions']:
+            kind = action['kind']
+            if kind == 'install-package':
+                command(['opkg', 'update'], timeout=180)
+                command(['opkg', 'install', 'netbird'], timeout=300)
+            elif kind == 'enable-service':
+                enabled = True
+                command(['/etc/init.d/netbird', 'enable'])
+            elif kind == 'start-service':
+                started = True
+                command(['/etc/init.d/netbird', 'start'])
+            elif kind == 'configure-firewall':
+                configured = True
+                configure_firewall(action)
+            elif kind == 'enroll-peer':
+                enroll(setup_key, action['hostname'])
+            completed.append(kind)
+        state = status_fn()
+        if not (state.get('installed') and state.get('enabled') and state.get('running')
+                and state.get('registered') and state.get('firewall', {}).get('ready')):
+            raise ValueError('NetBird po instalaci nemá očekávaný aktivní stav.')
+    except Exception as error:
+        rollback_errors = []
+        if not plan['initial']['registered']:
+            if configured and firewall_action:
+                try:
+                    rollback_firewall(firewall_action)
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+            if started:
+                try:
+                    command(['/etc/init.d/netbird', 'stop'])
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+            if enabled:
+                try:
+                    command(['/etc/init.d/netbird', 'disable'])
+                except Exception as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+        if rollback_errors:
+            raise ValueError('%s Místní rollback NetBirdu nebyl úplný.' % error) from None
+        raise
+    result = {'state': 'ready', 'version': state.get('version'),
+              'identity': state.get('identity'), 'actions': completed, 'checkedAt': time.time()}
+    atomic(Path(root) / NETBIRD_LOCAL_STATUS, result)
+    return result
+
+
 def netbird_api_request(token, method, path, payload=None, opener=urlopen):
     """Call the fixed NetBird Cloud API without ever persisting the credential."""
     validate_netbird_token(token)
@@ -2080,6 +2336,34 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <button class="button">Uložit DNS zónu</button></form>''' + (
         '''<form method="post" action="''' + WEB_OVERVIEW_PATH + '''dns/disable"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><button class="button danger">Vypnout DNS zónu</button></form>'''
         if dns_configuration else '') + '''</section>'''
+    local_netbird = netbird_local_status()
+    local_plan = read(root / NETBIRD_LOCAL_PLAN, {})
+    local_action_labels = {
+        'install-package': 'aktualizovat seznam balíčků a nainstalovat netbird',
+        'enable-service': 'povolit automatické spuštění služby',
+        'start-service': 'spustit službu',
+        'configure-firewall': 'povolit plný provoz NetBird ↔ LAN',
+        'enroll-peer': 'registrovat router jednorázovým setup key'}
+    local_plan_summary = ''
+    if isinstance(local_plan, dict) and local_plan.get('digest') and local_plan.get('actions') is not None:
+        needs_setup_key = any(action.get('kind') == 'enroll-peer'
+                              for action in local_plan.get('actions', []))
+        local_plan_summary = '''<h3>Čekající místní plán</h3><ul>''' + ''.join(
+            '<li>%s</li>' % esc(local_action_labels.get(action.get('kind'), action.get('kind')))
+            for action in local_plan.get('actions', [])) + ('' if local_plan.get('actions') else
+            '<li>Beze změn; pouze znovu ověřit stav.</li>') + '''</ul>
+<form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/local-apply"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><input type="hidden" name="digest" value="''' + esc(local_plan.get('digest', '')) + '''">
+<label>Setup key''' + (' (musí být typu one-off)' if needs_setup_key else ' (nevyžaduje se)') + '''<input type="password" name="setupKey" autocomplete="off"''' + (' required' if needs_setup_key else '') + '''></label><button class="button">Potvrdit místní plán</button></form>'''
+    local_identity = local_netbird.get('identity') or {}
+    local_state_text = ('Připraveno · %s · %s' % (
+        local_netbird.get('version') or 'neznámá verze', local_identity.get('fqdn') or 'bez identity')
+        if local_netbird.get('installed') and local_netbird.get('running')
+        and local_netbird.get('registered') and local_netbird.get('firewall', {}).get('ready')
+        else 'Vyžaduje instalaci nebo dokončení registrace')
+    netbird_local_section = '''<section><h2>Místní NetBird klient</h2>
+<p class="muted">Read-only plán ověří balíček, procd službu, registraci a průchod mezi <code>wt0</code> a LAN. Setup key se při potvrzení předá klientu pouze anonymní pipe, neukládá se a není v argumentech procesu.</p>
+<p>Stav: <strong>''' + esc(local_state_text) + '''</strong></p>
+<form method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/local-plan"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><button class="button">Načíst místní plán</button></form>''' + local_plan_summary + '''</section>'''
     cloud_plan = read(root / NETBIRD_CLOUD_PLAN, {})
     cloud_status = read(root / NETBIRD_CLOUD_STATUS, {})
     action_labels = {'create-network': 'vytvořit Network', 'create-group': 'vytvořit cílovou skupinu',
@@ -2159,7 +2443,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + netbird_cloud_section + local_services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + netbird_local_section + netbird_cloud_section + local_services_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -2218,6 +2502,8 @@ def web_handler(root):
                                  WEB_OVERVIEW_PATH + 'services/delete',
                                  WEB_OVERVIEW_PATH + 'dns/config',
                                  WEB_OVERVIEW_PATH + 'dns/disable',
+                                 WEB_OVERVIEW_PATH + 'netbird/local-plan',
+                                 WEB_OVERVIEW_PATH + 'netbird/local-apply',
                                  WEB_OVERVIEW_PATH + 'netbird/plan',
                                  WEB_OVERVIEW_PATH + 'netbird/apply']:
                 self.send_error(405)
@@ -2248,7 +2534,19 @@ def web_handler(root):
                     node = next((item for item in doc['config']['nodes'] if item['id'] == own_id), None) if doc else None
                     if not node or own_id not in doc['members']:
                         raise ValueError('Router nemá platné členství federace.')
-                    if self.path == WEB_OVERVIEW_PATH + 'netbird/plan':
+                    if self.path == WEB_OVERVIEW_PATH + 'netbird/local-plan':
+                        if set(fields) != {'token'} or fields['token'] != [token]:
+                            self.send_error(400)
+                            return
+                        atomic(Path(root) / NETBIRD_LOCAL_PLAN, netbird_local_plan(root, node))
+                    elif self.path == WEB_OVERVIEW_PATH + 'netbird/local-apply':
+                        expected = {'token', 'setupKey', 'digest'}
+                        if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
+                            self.send_error(400)
+                            return
+                        apply_netbird_local_plan(root, node, fields['setupKey'][0], fields['digest'][0])
+                        (Path(root) / NETBIRD_LOCAL_PLAN).unlink(missing_ok=True)
+                    elif self.path == WEB_OVERVIEW_PATH + 'netbird/plan':
                         expected = {'token', 'cloudToken', 'sourceGroup'}
                         if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)

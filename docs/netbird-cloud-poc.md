@@ -1,6 +1,6 @@
 # NetBird Cloud PoC
 
-Stav: **příprava, bez změny routeru nebo cloudového účtu z repozitáře**.
+Stav: **první PoC na Cackém ověřen; automatizace dalšího routeru v přípravě**.
 
 ## Rozsah
 
@@ -10,7 +10,9 @@ stránek.
 Na každém migrovaném uzlu je aktivní právě jedna VPN vrstva: NetBird. Provoz se
 nesmí tunelovat přes `ZeroTier → tf_wg → NetBird` ani jinou složenou cestu.
 Stávající `ZeroTier → tf_wg` zůstává po omezenou dobu pouze vypnutou rollback
-variantou a NetBird zatím není automaticky řízen aplikací Turris Federation.
+variantou. WebApps umí připravit místní instalaci a registraci jednorázovým
+setup key a samostatně vytvořit nebo ověřit cloudové Networks pomocí krátkodobého
+Network Admin PAT; žádné z těchto pověření neukládá.
 
 PoC výslovně nezahrnuje:
 

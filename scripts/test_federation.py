@@ -1289,6 +1289,95 @@ class FederationTests(unittest.TestCase):
                 f.socket, 'socket', return_value=FakeSocket(b"> { ['result'] = 6, }\n> ")):
             self.assertTrue(f.kresd_hint_command('test', control))
 
+    def test_netbird_firewall_audit_accepts_full_existing_zone(self):
+        network = (b"network.netbird=interface\nnetwork.netbird.proto='none'\n"
+                   b"network.netbird.device='wt0'\n")
+        firewall = (b"firewall.vpn_netbird=zone\nfirewall.vpn_netbird.name='vpn_netbird'\n"
+                    b"firewall.vpn_netbird.input='ACCEPT'\nfirewall.vpn_netbird.output='ACCEPT'\n"
+                    b"firewall.vpn_netbird.forward='ACCEPT'\n"
+                    b"firewall.vpn_netbird.network='netbird'\n"
+                    b"firewall.to_netbird=forwarding\nfirewall.to_netbird.src='lan'\n"
+                    b"firewall.to_netbird.dest='vpn_netbird'\n"
+                    b"firewall.from_netbird=forwarding\nfirewall.from_netbird.src='vpn_netbird'\n"
+                    b"firewall.from_netbird.dest='lan'\n")
+        self.assertEqual({'ready': True, 'interface': 'netbird', 'zone': 'vpn_netbird',
+                          'createInterface': False, 'createZone': False},
+                         f.netbird_firewall_audit(network, firewall))
+        with self.assertRaisesRegex(ValueError, 'plný provoz'):
+            f.netbird_firewall_audit(network, firewall.replace(b"input='ACCEPT'", b"input='REJECT'"))
+
+    def test_netbird_local_plan_apply_is_secret_free(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        initial = {'installed': False, 'version': None, 'enabled': False, 'running': False,
+                   'registered': False, 'identity': None, 'firewallError': None,
+                   'firewall': {'ready': False, 'interface': None, 'zone': None,
+                                'createInterface': True, 'createZone': True}}
+        ready = {'installed': True, 'version': '0.59.13-r1', 'enabled': True, 'running': True,
+                 'registered': True, 'identity': {'ip': '100.81.1.2', 'fqdn': 'tf-cacke.netbird.cloud'},
+                 'firewallError': None,
+                 'firewall': {'ready': True, 'interface': 'tf_netbird', 'zone': 'tf_netbird',
+                              'createInterface': False, 'createZone': False}}
+        with patch.object(f, 'probe_command', return_value=(0, b'')):
+            plan = f.netbird_local_plan(self.root, node(1), lambda: initial)
+        self.assertEqual(['install-package', 'enable-service', 'start-service',
+                          'configure-firewall', 'enroll-peer'],
+                         [action['kind'] for action in plan['actions']])
+        key, commands, configured, enrolled = 'K' * 32, [], [], []
+        states = iter([initial, ready])
+        def command(args, **kwargs):
+            commands.append((args, kwargs))
+            return b''
+        with patch.object(f, 'probe_command', return_value=(0, b'')):
+            result = f.apply_netbird_local_plan(
+                self.root, node(1), key, plan['digest'], lambda: next(states), command,
+                lambda secret, hostname: enrolled.append((secret, hostname)),
+                lambda action: configured.append(action), lambda _action: self.fail('rollback'))
+        self.assertEqual('ready', result['state'])
+        self.assertEqual([(key, 'tf-cacke')], enrolled)
+        self.assertEqual(1, len(configured))
+        self.assertTrue(any(args == ['opkg', 'install', 'netbird'] for args, _ in commands))
+        self.assertNotIn(key, json.dumps(plan))
+        self.assertNotIn(key, (self.root / f.NETBIRD_LOCAL_STATUS).read_text())
+
+    def test_netbird_local_apply_rolls_back_runtime_not_package(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        initial = {'installed': True, 'version': '0.59.13-r1', 'enabled': False,
+                   'running': False, 'registered': False, 'identity': None,
+                   'firewallError': None,
+                   'firewall': {'ready': False, 'interface': None, 'zone': None,
+                                'createInterface': True, 'createZone': True}}
+        with patch.object(f, 'probe_command', return_value=(0, b'')):
+            plan = f.netbird_local_plan(self.root, node(1), lambda: initial)
+        commands, rolled_back = [], []
+        def command(args, **_kwargs):
+            commands.append(args)
+            return b''
+        def failed_enroll(_secret, _hostname):
+            raise ValueError('registration failed')
+        with patch.object(f, 'probe_command', return_value=(0, b'')), \
+                self.assertRaisesRegex(ValueError, 'registration failed'):
+            f.apply_netbird_local_plan(
+                self.root, node(1), 'K' * 32, plan['digest'], lambda: initial, command,
+                failed_enroll, lambda _action: None,
+                lambda action: rolled_back.append(action))
+        self.assertEqual(1, len(rolled_back))
+        self.assertIn(['/etc/init.d/netbird', 'stop'], commands)
+        self.assertIn(['/etc/init.d/netbird', 'disable'], commands)
+        self.assertFalse(any(args[:2] == ['opkg', 'remove'] for args in commands))
+
+    def test_netbird_setup_key_uses_anonymous_pipe_not_argv(self):
+        secret, observed = 'S' * 32, []
+        class Result:
+            returncode = 0
+        def subprocess_run(args, **kwargs):
+            self.assertNotIn(secret, ' '.join(args))
+            fd = kwargs['pass_fds'][0]
+            observed.append(os.read(fd, 4096).decode())
+            return Result()
+        with patch.object(f.subprocess, 'run', side_effect=subprocess_run):
+            f.netbird_up_with_setup_key(secret, 'tf-cacke')
+        self.assertEqual([secret], observed)
+
     def test_netbird_cloud_plan_and_apply_are_idempotent_and_secret_free(self):
         f.configure_service_dns(self.root, node(1), 'cacke.internal')
         calls = []
@@ -1466,6 +1555,33 @@ class FederationTests(unittest.TestCase):
                                     urlencode({'token': token}), handler)
         self.assertIn(b'303', disabled)
         self.assertIsNone(f.service_dns_configuration(self.root))
+
+    def test_authenticated_web_plans_and_applies_local_netbird_without_storing_key(self):
+        self.prepare_diagnostics()
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        handler = f.web_handler(self.root)
+        page = self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler)
+        token = re.search(rb'name="token" value="([a-f0-9]+)"', page)[1].decode()
+        plan = {'version': 1, 'zone': 'cacke.internal',
+                'actions': [{'kind': 'enroll-peer', 'hostname': 'tf-cacke'}],
+                'initial': {'installed': True, 'enabled': True, 'running': True,
+                            'registered': False}}
+        plan['digest'] = f.digest(plan)
+        with patch.object(f, 'netbird_local_plan', return_value=plan):
+            response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'netbird/local-plan',
+                                        urlencode({'token': token}), handler)
+        self.assertIn(b'303', response)
+        self.assertEqual(plan, f.read(self.root / f.NETBIRD_LOCAL_PLAN))
+        secret, applied = 'S' * 32, []
+        with patch.object(f, 'apply_netbird_local_plan', side_effect=lambda *args: applied.append(args)):
+            response = self.web_request(
+                'POST', f.WEB_OVERVIEW_PATH + 'netbird/local-apply',
+                urlencode({'token': token, 'setupKey': secret, 'digest': plan['digest']}), handler)
+        self.assertIn(b'303', response)
+        self.assertEqual(secret, applied[0][2])
+        self.assertFalse((self.root / f.NETBIRD_LOCAL_PLAN).exists())
+        self.assertNotIn(secret, ''.join(path.read_text(errors='replace') for path in self.root.iterdir()
+                                        if path.is_file()))
 
     def test_legacy_router_port_is_dropped_locally_and_rejected_in_reports(self):
         service = {'id': 'home-assistant', 'name': 'Home Assistant',

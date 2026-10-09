@@ -25,6 +25,16 @@ se přepočtený plán shoduje s náhledem. Použitý token se neukládá do sou
 HTML ani logu. Při dílčí chybě se mažou v opačném pořadí pouze objekty vytvořené
 daným pokusem; existující cloudová konfigurace zůstává nedotčená.
 
+Před cloudovým krokem část **Místní NetBird klient** vytvoří read-only plán
+instalace balíčku z oficiálního OpenWrt feedu, povolení a spuštění procd služby,
+UCI rozhraní `wt0` a plného forwardingu mezi NetBird zónou a `lan`. Aplikování
+registrace vyžaduje jednorázový setup key. Web jej neukládá ani nevkládá do
+argumentů procesu; klient jej přečte z anonymní děděné pipe přes
+`--setup-key-file`. Při chybě se vrátí nově přidané UCI sekce a původně vypnutá
+služba, ale již stažený balíček zůstane pro diagnostiku a bezpečné opakování.
+Setup key a Network Admin PAT jsou oddělená pověření: užší PAT spravuje cloudové
+Networks až po úspěšné místní registraci a neumí vytvářet setup keys.
+
 Web zobrazuje místní přijatou a aplikovanou revizi, poslední výsledek agenta,
 čas jeho kontroly, čekající protějšky a uzly s LAN/ZeroTier/WireGuard adresami.
 U každého routeru uvádí otisk verze agenta a čas vytvoření instalované kopie.
@@ -85,7 +95,7 @@ Obsah webu, konfigurace a ikony je zahrnutý do otisku deploy artefaktu.
 Implementace registrace a proxy vychází z
 [oficiální specifikace Turris WebApps](https://gitlab.nic.cz/turris/webapps/-/blob/master/README.md).
 Lokální testy pokrývají vykreslení, escapování, veřejnou a chráněnou HTTP cestu,
-omezení zápisů na diagnostiku a editor,
+omezení zápisů na diagnostiku, editor a místní NetBird plán,
 validaci podepsaného katalogu, opravení oprávnění nových souborů a návrat při chybě aktualizace.
 Zobrazení dlaždice, PAM přihlášení a souběh s ostatními webovými aplikacemi
 je ještě potřeba ověřit na skutečném Turrisu.

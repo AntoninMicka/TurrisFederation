@@ -28,6 +28,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [ ] Zmrazit desktopovou aplikaci jako legacy a nepřidávat do ní nové funkce.
 - [ ] Přesunout správu členství, podepsané topologie a NetBirdu do PAM chráněného
   routerového webu.
+  Místní instalace klienta, registrace one-off setup key a jednorázové vytvoření
+  Networks/resources/policy jsou implementované; zbývá fyzická akceptace na
+  druhém routeru a přesun členství a podepisování.
 - [ ] Připravit bezpečný import federační CA na jeden zvolený autoritativní
   Turris, šifrovanou offline zálohu a skutečně ověřenou obnovu.
 - [ ] Nahradit notebookovou aplikaci jednorázovým instalačním a diagnostickým

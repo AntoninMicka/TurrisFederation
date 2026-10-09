@@ -46,7 +46,10 @@ lokalit ani čtení poslední platné topologie; pouze dočasně znemožní změ
 
 Lokální instalace, přihlášení klienta, stav routing peeru a DNS konfigurace se
 spravují na příslušném Turrisu. Setup key je jednorázový a po registraci se
-neukládá do reportu, konfigurace Federation ani logů.
+neukládá do reportu, konfigurace Federation ani logů. WebApps jej předá
+oficiálnímu klientu přes anonymní pipe, nikoli argument procesu nebo dočasný
+soubor. Instalace používá výhradně balíček `netbird` z feedu daného Turris
+OS/OpenWrt; vzdálený instalační shell skript se nespouští.
 
 Změny celého NetBird účtu, například vytvoření Networks a skupin, vyžadují
 oddělenou account-level autoritu. Pro první PoC mohou být potvrzené ručně v
