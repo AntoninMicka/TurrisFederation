@@ -44,6 +44,7 @@ HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 SERVICE_LIMIT = 128
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
+SERVICE_DIRECTORY_DNS_LABEL = 'zlate-stranky'
 SERVICE_DNS_CONFIG = 'service-dns.json'
 SERVICE_DNS_HOSTS = 'service-dns.hosts'
 SERVICE_DNS_LOADED = 'service-dns.loaded'
@@ -929,7 +930,8 @@ def validate_services(node, services):
         service_id, name = service['id'], service['name']
         protocol, port, path = service['protocol'], service['port'], service['path']
         if (not isinstance(service_id, str) or
-                not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', service_id) or service_id in seen):
+                not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', service_id) or service_id in seen
+                or service_id == SERVICE_DIRECTORY_DNS_LABEL):
             raise ValueError('Neplatné nebo duplicitní ID služby.')
         if (not isinstance(name, str) or not 1 <= len(name) <= 80 or name != name.strip()
                 or any(ord(character) < 32 or ord(character) == 127 for character in name)):
@@ -1029,12 +1031,39 @@ def service_dns_name(service_id, zone):
     return service_id + '.' + validate_service_dns_zone(zone)
 
 
-def render_service_dns_hosts(node, services, zone):
+def render_service_dns_hosts(node, services, zone, router_addresses=()):
     """Render an exact hosts projection; no wildcard or firewall side effect."""
     services = validate_services(node, services)
-    rows = ['%s %s' % (service['hostAddress'], service_dns_name(service['id'], zone))
-            for service in services]
+    zone = validate_service_dns_zone(zone)
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    directory_addresses = []
+    for value in router_addresses:
+        try:
+            host = ipaddress.ip_address(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError('Neplatná LAN adresa Zlatých stránek.') from error
+        if host.version != 4 or not any(host in network for network in networks):
+            raise ValueError('Adresa Zlatých stránek neleží v LAN sítích routeru.')
+        directory_addresses.append(str(host))
+    rows = ['%s %s' % (address, service_dns_name(SERVICE_DIRECTORY_DNS_LABEL, zone))
+            for address in sorted(set(directory_addresses), key=ipaddress.ip_address)]
+    rows += ['%s %s' % (service['hostAddress'], service_dns_name(service['id'], zone))
+             for service in services]
     return ('\n'.join(rows) + ('\n' if rows else '')).encode()
+
+
+def local_router_lan_addresses(node):
+    """Read this router's real addresses and retain only signed LAN prefixes."""
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    values = []
+    for match in re.finditer(rb'\binet\s+([0-9.]+)/[0-9]+\b', run(['ip', '-o', '-4', 'addr', 'show'])):
+        host = ipaddress.ip_address(match.group(1).decode())
+        if any(host in network for network in networks):
+            values.append(str(host))
+    values = sorted(set(values), key=ipaddress.ip_address)
+    if not values:
+        raise ValueError('Router nemá adresu v žádném podepsaném LAN prefixu.')
+    return values
 
 
 def service_dns_configuration(root):
@@ -1060,7 +1089,7 @@ def disable_service_dns(root):
 
 
 def service_dns_hostnames(raw):
-    names = []
+    names, seen = [], set()
     for line in raw.decode().splitlines():
         fields = line.split()
         if len(fields) != 2:
@@ -1070,7 +1099,9 @@ def service_dns_hostnames(raw):
         if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
                for label in labels):
             raise ValueError('Neplatný uložený DNS záznam služby.')
-        names.append(fields[1])
+        if fields[1] not in seen:
+            names.append(fields[1])
+            seen.add(fields[1])
     return names
 
 
@@ -1094,11 +1125,14 @@ def kresd_hint_command(command, control_dir=KRESD_CONTROL_DIR):
 
 
 def reconcile_service_dns(root, node, hint_command=kresd_hint_command,
-                          runtime_hosts=KRESD_SERVICE_HOSTS):
+                          runtime_hosts=KRESD_SERVICE_HOSTS, router_addresses=None):
     """Replace only hints previously loaded by this agent, with retry-safe state."""
     root = Path(root)
     configuration = service_dns_configuration(root)
-    desired = (render_service_dns_hosts(node, local_services(root, node), configuration['zone'])
+    if configuration and router_addresses is None:
+        router_addresses = local_router_lan_addresses(node)
+    desired = (render_service_dns_hosts(node, local_services(root, node), configuration['zone'],
+                                        router_addresses or [])
                if configuration else b'')
     loaded_path = root / SERVICE_DNS_LOADED
     loaded = loaded_path.read_bytes() if loaded_path.exists() else b''
@@ -2092,8 +2126,12 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
             'Zastaralé' if service['stale'] else 'Aktuální', esc(service['endpoint']),
             (' <a class="button" href="%s" target="_blank" rel="noopener noreferrer">Otevřít v prohlížeči</a>' % esc(service['endpoint']))
             if service['protocol'] in {'http', 'https'} else '') for service in directory)
+    directory_dns_url = ('https://%s.%s%s' % (
+        SERVICE_DIRECTORY_DNS_LABEL, dns_configuration['zone'], WEB_PATH)) if dns_configuration else None
     directory_section = '''<section><h2>Zlaté stránky služeb</h2>
-<p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>
+<p class="muted">Ověřené definice přijatých routerů. Položka nepotvrzuje, že služba právě odpovídá.</p>''' + (
+        '<p>Stálá adresa tohoto katalogu: <a href="%s"><code>%s</code></a></p>' % (
+            esc(directory_dns_url), esc(directory_dns_url)) if directory_dns_url else '') + '''
 <form class="service-form" method="get" action="''' + WEB_PATH + '''">
 <label>Služba<input name="service" value="''' + esc(filters['service']) + '''"></label>
 <label>Protokol<select name="protocol"><option value="">všechny</option>''' + ''.join(

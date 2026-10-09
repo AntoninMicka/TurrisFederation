@@ -1186,9 +1186,10 @@ class FederationTests(unittest.TestCase):
              'protocol': 'tcp', 'port': 11434, 'path': None},
         ]
         self.assertEqual(
+            b'192.168.1.1 zlate-stranky.cacke.internal\n'
             b'192.168.1.20 home-assistant.cacke.internal\n'
             b'192.168.1.30 ollama.cacke.internal\n',
-            f.render_service_dns_hosts(node(1), services, 'cacke.internal'))
+            f.render_service_dns_hosts(node(1), services, 'cacke.internal', ['192.168.1.1']))
         for zone in ['cacke.local', '*.cacke.internal', 'Cacke.internal',
                      'cacke.internal.', 'internal']:
             with self.subTest(zone=zone), self.assertRaises(ValueError):
@@ -1196,6 +1197,12 @@ class FederationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'DNS jméno'):
             f.render_service_dns_hosts(node(1), [dict(services[0], id='nested.name')],
                                        'cacke.internal')
+        with self.assertRaisesRegex(ValueError, 'ID služby'):
+            f.validate_services(node(1), [dict(services[0], id='zlate-stranky')])
+        with patch.object(f, 'run', return_value=(
+                b'2: br-lan inet 192.168.1.1/24 brd 192.168.1.255 scope global br-lan\n'
+                b'3: wt0 inet 100.81.156.128/16 scope global wt0\n')):
+            self.assertEqual(['192.168.1.1'], f.local_router_lan_addresses(node(1)))
 
     def test_service_dns_reconcile_is_owned_retryable_and_disableable(self):
         service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
@@ -1208,32 +1215,38 @@ class FederationTests(unittest.TestCase):
         def command(value):
             commands.append(value)
             return True
-        result = f.reconcile_service_dns(self.root, node(1), command, runtime_hosts)
-        self.assertEqual({'zone': 'cacke.internal', 'records': 1}, result)
+        result = f.reconcile_service_dns(self.root, node(1), command, runtime_hosts,
+                                         ['192.168.1.1'])
+        self.assertEqual({'zone': 'cacke.internal', 'records': 2}, result)
         hosts_path = self.root / f.SERVICE_DNS_HOSTS
-        self.assertEqual(b'192.168.1.20 ollama.cacke.internal\n', hosts_path.read_bytes())
+        self.assertEqual(b'192.168.1.1 zlate-stranky.cacke.internal\n'
+                         b'192.168.1.20 ollama.cacke.internal\n', hosts_path.read_bytes())
         self.assertEqual(hosts_path.read_bytes(), runtime_hosts.read_bytes())
         self.assertEqual(0o644, runtime_hosts.stat().st_mode & 0o777)
         self.assertEqual(['hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))], commands)
 
         # Reconciliation reloads memory-only hints after a resolver restart.
         commands.clear()
-        f.reconcile_service_dns(self.root, node(1), command, runtime_hosts)
+        f.reconcile_service_dns(self.root, node(1), command, runtime_hosts,
+                                ['192.168.1.1'])
         self.assertEqual(['hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))], commands)
 
         f.delete_local_service(self.root, node(1), 'ollama')
         f.save_local_service(self.root, node(1), dict(service, id='ollama-new'))
         commands.clear()
-        f.reconcile_service_dns(self.root, node(1), command, runtime_hosts)
-        self.assertEqual('hints.del("ollama.cacke.internal")', commands[0])
-        self.assertEqual('hints.add_hosts(%s)' % json.dumps(str(runtime_hosts)), commands[1])
+        f.reconcile_service_dns(self.root, node(1), command, runtime_hosts,
+                                ['192.168.1.1'])
+        self.assertEqual(['hints.del("zlate-stranky.cacke.internal")',
+                          'hints.del("ollama.cacke.internal")',
+                          'hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))], commands)
         self.assertIn(b'ollama-new.cacke.internal', hosts_path.read_bytes())
 
         f.disable_service_dns(self.root)
         commands.clear()
         result = f.reconcile_service_dns(self.root, node(1), command, runtime_hosts)
         self.assertEqual({'zone': None, 'records': 0}, result)
-        self.assertEqual(['hints.del("ollama-new.cacke.internal")'], commands)
+        self.assertEqual(['hints.del("zlate-stranky.cacke.internal")',
+                          'hints.del("ollama-new.cacke.internal")'], commands)
         self.assertEqual(b'', hosts_path.read_bytes())
         self.assertFalse(runtime_hosts.exists())
 
@@ -1245,7 +1258,8 @@ class FederationTests(unittest.TestCase):
         runtime_hosts = self.root / 'kresd' / 'turris-federation.hosts'
         runtime_hosts.parent.mkdir()
         with self.assertRaisesRegex(ValueError, 'nenačetl'):
-            f.reconcile_service_dns(self.root, node(1), lambda _: False, runtime_hosts)
+            f.reconcile_service_dns(self.root, node(1), lambda _: False, runtime_hosts,
+                                    ['192.168.1.1'])
         self.assertFalse((self.root / f.SERVICE_DNS_LOADED).exists())
 
     def test_kresd_response_parser_rejects_false_and_accepts_record_count(self):
@@ -1445,6 +1459,8 @@ class FederationTests(unittest.TestCase):
         self.assertEqual({'zone': 'cacke.internal'}, f.service_dns_configuration(self.root))
         self.assertIn(b'value="cacke.internal"',
                       self.web_request('GET', f.WEB_OVERVIEW_PATH, handler=handler))
+        self.assertIn(b'https://zlate-stranky.cacke.internal/turris-federation/',
+                      self.web_request('GET', f.WEB_PATH, handler=handler))
 
         disabled = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'dns/disable',
                                     urlencode({'token': token}), handler)

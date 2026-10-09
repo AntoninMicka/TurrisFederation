@@ -81,6 +81,10 @@ zóny uložené v podepsané topologii, například `cacke.internal`. Místní a
 validovaného `services.json` atomicky složí přesné `A` záznamy podle ID
 služby. Změna nebo odstranění položky se projeví jen v této zóně. Router nedostane
 trvalý NetBird management token a nebude moci průběžně měnit DNS jiného uzlu.
+Agent navíc rezervuje přesné jméno `zlate-stranky.<zóna>` pro veřejný read-only
+katalog. Míří na skutečné IPv4 adresy routeru ležící v jeho podepsaných LAN
+prefixech; při více LAN publikuje více A záznamů a název nelze přepsat položkou
+služby. PAM chráněná cesta přehledu zůstává oddělená.
 Jednorázové zprovoznění z PAM chráněného WebApps smí použít krátce platný token
 Network Admin pouze v paměti: nejdřív zobrazí plán a po potvrzení vytvoří nebo
 doplní cloudové objekty lokality. Centrální
