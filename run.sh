@@ -23,7 +23,7 @@ if [[ $snap_environment == true ]]; then
     if [[ $inherited_data_home == *'/snap/'* ]]; then
         inherited_app_data=$inherited_data_home/cz.turris.federation
         stable_app_data=$stable_data_home/cz.turris.federation
-        if [[ -d $inherited_app_data && ! -e $stable_app_data ]]; then
+        if [[ ${1:-} != uninstall && -d $inherited_app_data && ! -e $stable_app_data ]]; then
             mkdir -p -- "$stable_data_home"
             cp -a -- "$inherited_app_data" "$stable_app_data"
             printf 'Přenáším data Turris Federation ze Snap cesty do %s.\n' "$stable_app_data"
@@ -55,13 +55,93 @@ unset snap_environment variable stable_user_home inherited_data_home stable_data
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+confirm() {
+    local prompt=$1 answer
+    [[ -t 0 ]] || fail 'Odinstalace vyžaduje interaktivní terminál pro potvrzení.'
+    read -r -p "$prompt [a/N] " answer
+    [[ $answer == a || $answer == A || $answer == ano || $answer == ANO ]]
+}
+
+uninstall_notebook() {
+    local config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+    local data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    local app_data=$data_home/cz.turris.federation
+    local unit=$config_home/systemd/user/turris-federation-backend.service
+    local autostart=$config_home/autostart/cz.turris.federation-tray.desktop
+    local dev_client=$app_data/dev-client
+
+    printf '%s\n' \
+        'Odinstalace notebookových komponent Turris Federation:' \
+        '  - zastaví a odstraní vlastní uživatelský backend a tray autostart;' \
+        '  - odstraní vlastní systémovou síťovou službu, spravovaný WireGuard profil' \
+        '    a nftables tabulku turris_federation_notebook;' \
+        '  - odstraní vývojový tray klient.' \
+        "Uživatelská identita a data v $app_data zůstanou zachované." \
+        'Odvolání členství ve federaci je samostatná operace u administrátora.'
+    confirm 'Pokračovat v odinstalaci vlastních komponent?' || {
+        printf 'Odinstalace zrušena; nic se nezměnilo.\n'
+        return 0
+    }
+
+    command -v sudo >/dev/null 2>&1 || fail 'Odstranění systémové síťové služby vyžaduje sudo.'
+    # Ověř oprávnění dřív, než odstraníme první soubor. Zrušené nebo neúspěšné
+    # sudo tak ponechá celou instalaci beze změny.
+    sudo -v
+    systemctl --user disable --now turris-federation-backend.service >/dev/null 2>&1 || true
+    if systemctl --user is-active --quiet turris-federation-backend.service; then
+        fail 'Uživatelský backend se nepodařilo zastavit; instalační soubory zůstaly zachované.'
+    fi
+    sudo python3 scripts/install_notebook_network_service.py --uninstall
+
+    systemctl --user stop 'app-cz.turris.federation\x2dtray@autostart.service' >/dev/null 2>&1 || true
+    local process executable pid
+    for process in /proc/[0-9]*/exe; do
+        executable=$(readlink -- "$process" 2>/dev/null || true)
+        if [[ $executable == "$dev_client/turris-federation" ]]; then
+            pid=${process#/proc/}
+            kill "${pid%/exe}" 2>/dev/null || true
+        fi
+    done
+    rm -f -- "$unit" "$autostart"
+    rm -rf -- "$dev_client"
+    if ! systemctl --user daemon-reload; then
+        printf 'Varování: uživatelský systemd manager není dostupný; soubory byly odstraněny.\n' >&2
+    fi
+    systemctl --user reset-failed turris-federation-backend.service >/dev/null 2>&1 || true
+    printf 'Vlastní notebookové komponenty Turris Federation byly odstraněny.\n'
+
+    if dpkg-query -W -f='${Status}' zerotier-one 2>/dev/null | grep -qx 'install ok installed'; then
+        printf '%s\n' \
+            '' \
+            'ZeroTier One je externí aplikace a může sloužit i jiným sítím.' \
+            'Jeho odebrání zruší místní ZeroTier klient i jeho systémovou službu.'
+        if confirm 'Odinstalovat také balíček zerotier-one?'; then
+            sudo apt-get purge -y -- zerotier-one
+            printf 'Externí klient ZeroTier One byl odinstalován.\n'
+        else
+            printf 'Externí klient ZeroTier One zůstává nainstalovaný.\n'
+        fi
+    elif command -v zerotier-cli >/dev/null 2>&1; then
+        printf '%s\n' \
+            'ZeroTier klient nebyl nainstalován jako balíček zerotier-one.' \
+            'Kvůli neznámému způsobu instalace nebyl automaticky odstraněn.'
+    fi
+}
+
 if [[ ${1:-} == --help ]]; then
     printf 'Použití: ./run.sh [argumenty pro tauri dev]\n'
+    printf '         ./run.sh uninstall\n'
     printf 'Na Ubuntu/Debianu doinstaluje závislosti a spustí aplikaci.\n'
+    printf 'Příkaz uninstall po potvrzení odstraní notebookové komponenty.\n'
     exit 0
 fi
 
 [[ $EUID -ne 0 ]] || fail 'Spusť skript jako běžný uživatel, bez sudo. O sudo si řekne instalace balíčků.'
+if [[ ${1:-} == uninstall ]]; then
+    (($# == 1)) || fail 'Příkaz uninstall nepřijímá další argumenty.'
+    uninstall_notebook
+    exit 0
+fi
 [[ -r /etc/os-release ]] || fail 'Automatická instalace podporuje Ubuntu/Debian.'
 # shellcheck disable=SC1091
 source /etc/os-release

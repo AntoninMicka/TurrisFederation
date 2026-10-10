@@ -15,6 +15,10 @@ SOURCES = {
     ROOT / 'packaging/turris-federation-network.service': Path('/etc/systemd/system/turris-federation-network.service'),
 }
 CONFIG = Path('/etc/turris-federation/notebook-network.json')
+STATE_DIRECTORY = Path('/var/lib/turris-federation-notebook-network')
+UNIT = 'turris-federation-network.service'
+VPN_CONNECTIONS = ('turris-federation-rollback', 'turris-federation')
+NFT_TABLE = 'turris_federation_notebook'
 
 
 def same_file(source, target):
@@ -63,16 +67,77 @@ def install(uid):
     finally:
         Path(temporary).unlink(missing_ok=True)
     subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
-    subprocess.run(['/usr/bin/systemctl', 'enable', '--now', 'turris-federation-network.service'], check=True)
-    subprocess.run(['/usr/bin/systemctl', 'restart', 'turris-federation-network.service'], check=True)
+    subprocess.run(['/usr/bin/systemctl', 'enable', '--now', UNIT], check=True)
+    subprocess.run(['/usr/bin/systemctl', 'restart', UNIT], check=True)
+
+
+def executable(candidates):
+    return next((path for path in candidates if Path(path).is_file() and os.access(path, os.X_OK)), None)
+
+
+def remove_managed_vpn_profiles():
+    nmcli = executable(['/usr/bin/nmcli', '/bin/nmcli'])
+    if not nmcli:
+        return
+    result = subprocess.run(
+        [nmcli, '-t', '-f', 'UUID,NAME,TYPE', 'connection', 'show'],
+        check=True, stdout=subprocess.PIPE, text=True)
+    managed = []
+    for line in result.stdout.splitlines():
+        fields = line.split(':', 2)
+        if len(fields) == 3 and fields[1] in VPN_CONNECTIONS and fields[2] == 'wireguard':
+            managed.append((VPN_CONNECTIONS.index(fields[1]), fields[0]))
+    for _order, profile_uuid in sorted(managed):
+        subprocess.run([nmcli, 'connection', 'delete', 'uuid', profile_uuid], check=True)
+
+
+def remove_managed_nft_table():
+    nft = executable(['/usr/sbin/nft', '/usr/bin/nft'])
+    if not nft:
+        return
+    present = subprocess.run(
+        [nft, 'list', 'table', 'inet', NFT_TABLE],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    if present:
+        subprocess.run([nft, 'delete', 'table', 'inet', NFT_TABLE], check=True)
+
+
+def uninstall():
+    if os.geteuid() != 0:
+        raise SystemExit('Odinstalace systémové služby vyžaduje sudo.')
+    subprocess.run(['/usr/bin/systemctl', 'disable', '--now', UNIT], check=False)
+    if subprocess.run(['/usr/bin/systemctl', 'is-active', '--quiet', UNIT], check=False).returncode == 0:
+        raise SystemExit('Systémovou síťovou službu se nepodařilo zastavit.')
+    # Keep the service artifacts and its root-only desired state until both
+    # network cleanup operations succeed. A failed cleanup can then be retried
+    # without losing the exact managed-state boundary.
+    remove_managed_vpn_profiles()
+    remove_managed_nft_table()
+    for target in [*SOURCES.values(), CONFIG]:
+        target.unlink(missing_ok=True)
+    if STATE_DIRECTORY.exists():
+        shutil.rmtree(STATE_DIRECTORY)
+    for directory in [Path('/usr/lib/turris-federation'), CONFIG.parent]:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
+    subprocess.run(['/usr/bin/systemctl', 'reset-failed', UNIT], check=False)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--uid', type=int, required=True)
+    parser.add_argument('--uid', type=int)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--uninstall', action='store_true')
     args = parser.parse_args()
-    if args.uid < 1:
+    if args.check and args.uninstall:
+        parser.error('--check a --uninstall nelze použít současně')
+    if args.uninstall:
+        uninstall()
+        return
+    if args.uid is None or args.uid < 1:
         raise SystemExit('Neplatné UID uživatele.')
     if args.check:
         raise SystemExit(0 if check(args.uid) else 1)

@@ -53,6 +53,19 @@ Vyžaduje připojení k internetu při instalaci a prvním sestavení.
 Pokud repozitář systému neposkytuje dostatečně nový Node.js (20.19+ nebo 22.12+),
 skript skončí s pokyny k aktualizaci. Argumenty předává příkazu `tauri dev`.
 
+Vývojovou instalaci z notebooku odebere interaktivní příkaz:
+
+```bash
+./run.sh uninstall
+```
+
+Po prvním potvrzení zastaví a odstraní vlastní uživatelské i systémové služby,
+tray autostart, vývojový klient, spravovaný WireGuard profil a vlastní nftables
+tabulku. Uživatelskou identitu a data ponechá pro obnovu; odvolání členství je
+samostatná administrátorská operace. Pokud najde externí balíček ZeroTier One,
+zeptá se na jeho odebrání samostatně podruhé, protože jej mohou používat i jiné
+sítě.
+
 Při detekci ovladače NVIDIA skript nastaví `WEBKIT_DISABLE_DMABUF_RENDERER=1`
 kvůli známým problémům vykreslování WebKitGTK. Nastavení platí jen pro spuštěnou
 aplikaci a lze ho přepsat: `WEBKIT_DISABLE_DMABUF_RENDERER=0 ./run.sh`.

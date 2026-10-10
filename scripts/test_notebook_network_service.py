@@ -192,6 +192,39 @@ class NotebookNetworkServiceTests(unittest.TestCase):
         self.assertIn('install_notebook_network_service.py --check --uid "$UID"', runner)
         self.assertIn('sudo python3 scripts/install_notebook_network_service.py --uid "$UID"', runner)
 
+    def test_uninstall_removes_only_named_managed_network_state(self):
+        installer_spec = importlib.util.spec_from_file_location(
+            'install_notebook_network_service',
+            ROOT / 'scripts/install_notebook_network_service.py')
+        installer = importlib.util.module_from_spec(installer_spec)
+        installer_spec.loader.exec_module(installer)
+        calls = []
+
+        def installer_command(args, **kwargs):
+            calls.append(args)
+            if args[-3:] == ['UUID,NAME,TYPE', 'connection', 'show']:
+                return type('TextResult', (), {'returncode': 0, 'stdout': (
+                    'rollback:turris-federation-rollback:wireguard\n'
+                    'active:turris-federation:wireguard\n'
+                    'foreign:personal-wireguard:wireguard\n')})()
+            return type('TextResult', (), {'returncode': 0, 'stdout': ''})()
+
+        with patch.object(installer, 'executable', return_value='/usr/bin/nmcli'), \
+                patch.object(installer.subprocess, 'run', side_effect=installer_command):
+            installer.remove_managed_vpn_profiles()
+        deletes = [call for call in calls if 'delete' in call]
+        self.assertEqual([
+            ['/usr/bin/nmcli', 'connection', 'delete', 'uuid', 'rollback'],
+            ['/usr/bin/nmcli', 'connection', 'delete', 'uuid', 'active'],
+        ], deletes)
+
+    def test_run_script_exposes_two_stage_uninstall(self):
+        runner = (ROOT / 'run.sh').read_text()
+        self.assertIn("[[ ${1:-} == uninstall ]]", runner)
+        self.assertIn("confirm 'Pokračovat v odinstalaci vlastních komponent?'", runner)
+        self.assertIn('install_notebook_network_service.py --uninstall', runner)
+        self.assertIn("confirm 'Odinstalovat také balíček zerotier-one?'", runner)
+
 
 if __name__ == '__main__':
     unittest.main()
