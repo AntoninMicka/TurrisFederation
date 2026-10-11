@@ -3338,22 +3338,50 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
               'command="python3 %s proxy-manifest %s" %s' %
               (PROGRAM, REMOTE, proxy_public))
     public_material = proxy_public.split()[1]
-    ssh(node, credentials,
-        'set -eu; mkdir -p /etc/dropbear; chmod 0700 /etc/dropbear; touch /etc/dropbear/authorized_keys; '
-        'chmod 0600 /etc/dropbear/authorized_keys; '
-        'awk -v key=%s %s /etc/dropbear/authorized_keys > /etc/dropbear/authorized_keys.new; '
-        'printf "%%s\\n" %s >> /etc/dropbear/authorized_keys.new; '
-        'chmod 0600 /etc/dropbear/authorized_keys.new; '
-        'mv /etc/dropbear/authorized_keys.new /etc/dropbear/authorized_keys' %
-        (shell_quote(public_material), shell_quote(
-            '{ keep=1; for (i=1; i<=NF; i++) if ($i==key) keep=0; if (keep) print }'),
-         shell_quote(forced)))
+    key_filter = shell_quote(
+        '{ keep=1; for (i=1; i<=NF; i++) if ($i==key) keep=0; if (keep) print }')
+    authorization = '''set -eu
+server="$(basename "$(readlink /proc/$PPID/exe 2>/dev/null || true)")"
+case "$server" in
+  sshd) directory=/root/.ssh ;;
+  dropbear) directory=/etc/dropbear ;;
+  *) echo "Nelze urcit SSH server obsluhujici instalaci proxy." >&2; exit 1 ;;
+esac
+active="$directory/authorized_keys"
+for requested in /root/.ssh/authorized_keys /etc/dropbear/authorized_keys; do
+  file="$(readlink -f "$requested" 2>/dev/null || printf '%%s' "$requested")"
+  test -f "$file" || continue
+  awk -v key=%s %s "$file" > "$file.new"
+  chmod 0600 "$file.new"
+  mv "$file.new" "$file"
+done
+mkdir -p "$directory"
+chmod 0700 "$directory"
+file="$(readlink -f "$active" 2>/dev/null || printf '%%s' "$active")"
+touch "$file"
+awk -v key=%s %s "$file" > "$file.new"
+printf '%%s\n' %s >> "$file.new"
+chmod 0600 "$file.new"
+mv "$file.new" "$file"
+''' % (shell_quote(public_material), key_filter,
+       shell_quote(public_material), key_filter, shell_quote(forced))
+    ssh(node, credentials, authorization)
     router_public = ssh(node, credentials, 'openssl pkey -in %s/identity.pem -pubout' % REMOTE)
     lan = direct_lan(node)
     known_hosts = proxy_known_hosts(lan['host'], node['sshPort'], credentials['hostKey'])
     for path, data in [('router-identity.pub', router_public), ('known_hosts', known_hosts.encode())]:
         ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
             'umask 077; cat > /etc/turris-federation-proxy/' + path)), input_data=data)
+    target_address = '%s@%s' % (node['sshUser'], lan['host'])
+    probe = ('set -eu; if ! ssh -F /dev/null -T -o BatchMode=yes -o IdentitiesOnly=yes '
+             '-o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s -i %s -p %s %s '
+             '>/dev/null; then echo "Novy omezeny SSH klic proxy nebyl routerem prijat." >&2; '
+             'exit 1; fi' %
+             (shell_quote('/etc/turris-federation-proxy/known_hosts'),
+              shell_quote('/etc/turris-federation-proxy/id_ed25519'),
+              shell_quote(str(node['sshPort'])), shell_quote(target_address)))
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(probe)))
     tls = '''set -eu
 cd /etc/turris-federation-proxy/tls
 if test ! -s ca-key.pem; then

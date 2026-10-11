@@ -41,8 +41,8 @@ printf '["neurodiary","chatbot"]' |
 ```
 
 `tcp` sluzby ani cizi/federovane katalogy vybrat nelze. LXC pouziva vlastni SSH
-klic, pripina host key a na routeru ma klic v `authorized_keys` s vynucenym
-prikazem:
+klic, pripina host key a na routeru ma klic v `authorized_keys` právě aktivního
+SSH serveru (OpenSSH nebo Dropbear) s vynucenym prikazem:
 
 ```text
 no-port-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
@@ -50,6 +50,9 @@ no-port-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation
 
 Použité minimum restrikcí je kompatibilní i se staršími sestaveními Dropbearu,
 která odmítnou celý klíč při uvedení volby pro funkci vypnutou při kompilaci.
+Instalátor server odvodí z procesu obsluhujícího jeho vlastní SSH relaci, odstraní
+starou kopii stejného klíče z obou obvyklých úložišť a ještě před startem služby
+ověří přihlášení tímto klíčem přímo z LXC.
 
 Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze
 vybrané endpointy, případný verifier pro nginx a platí 120 sekund. Proxy navíc připíná veřejnou identitu a
