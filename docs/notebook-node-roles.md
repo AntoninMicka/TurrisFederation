@@ -1,8 +1,10 @@
 # Role notebooků jako síťových uzlů
 
 > **Legacy dokument.** Tento návrh nahrazuje
-> [router-only architektura](router-only-architecture.md). Notebooková aplikace
-> se dále nerozvíjí; dokument zůstává jako popis rollback implementace.
+> [router-only architektura](router-only-architecture.md). Desktop už neinstaluje
+> `systemd --user`, systémovou síťovou službu ani login autostart. Backend běží
+> pouze jako dítě otevřené aplikace; níže zůstává historický popis rollback
+> implementace.
 
 Stav: schválený směr návrhu. Základ trvalé uživatelské služby, lokálního
 stavového socketu a ovládání ze stavové lišty je implementovaný na feature

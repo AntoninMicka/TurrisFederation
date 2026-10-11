@@ -26,6 +26,11 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] Rozhodnout, že trvalá aplikace poběží pouze na Turrisech a koncová zařízení
   budou používat jen oficiální NetBird klient.
 - [ ] Zmrazit desktopovou aplikaci jako legacy a nepřidávat do ní nové funkce.
+- [x] Ukončit instalaci desktopových/notebookových systemd služeb: `run.sh`,
+  konfigurace ani přijetí pozvánky už nevytvářejí uživatelskou jednotku,
+  privilegovanou síťovou službu nebo login autostart. Legacy backend běží jen
+  po dobu desktopové relace; zůstala pouze explicitní odinstalace starších
+  artefaktů.
 - [~] Připravit aplikační LXC HTTPS gateway pro jednotlivé lokální služby.
   Podepsaný lokální manifest, nginx reconciler a oddělená desktop-only
   odinstalace jsou implementované; fyzicky zbývá LAN LXC, certifikáty,

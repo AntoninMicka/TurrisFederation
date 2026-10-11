@@ -1,8 +1,9 @@
 # Instalace notebooku a rozhraní podle role
 
-> **Legacy dokument.** Tuto instalaci nahradí jednorázový skript pro oficiální
-> NetBird klient podle [router-only architektury](router-only-architecture.md).
-> Současný postup zůstává jen pro rollback během migrace.
+> **Legacy dokument.** Desktop ani `run.sh` už neinstalují uživatelské nebo
+> systémové systemd služby ani login autostart. Následující balíčkový návrh je
+> historický; cílem je jednorázový skript pro oficiální NetBird klient podle
+> [router-only architektury](router-only-architecture.md).
 
 Stav: návrh k implementaci. Vývojový `run.sh` není produkční instalátor.
 
@@ -74,8 +75,8 @@ uživatelských XDG adresářů a balíček je při aktualizaci nesmí přepisov
 Současná feature implementace generuje jednotku pod `~/.config/systemd/user`;
 před produkčním balíčkem se migruje na dodanou jednotku v `/usr/lib/systemd/user`,
 aby aktualizace kódu nezanechávala zastaralou cestu ke skriptu.
-Vývojový `run.sh` už systémovou síťovou službu verzovaně instaluje a
-aktualizuje. Její kontrakt a fyzickou akceptaci popisuje
+Vývojový `run.sh` systémovou síťovou službu neinstaluje ani neaktualizuje.
+Zachovaný historický kontrakt a dřívější fyzickou akceptaci popisuje
 [privilegovaná síťová služba notebooku](notebook-network-service.md).
 
 ### Kontrola shody místní instalace

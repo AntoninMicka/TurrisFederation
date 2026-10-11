@@ -259,14 +259,6 @@ done
 pkg-config --exists 'webkit2gtk-4.1 >= 2.40' gtk+-3.0 openssl librsvg-2.0 ||
     fail 'Systémové knihovny nejsou dostupné přes pkg-config nebo je WebKitGTK starší než 2.40.'
 
-# The privileged service owns only local network enforcement and sanitized
-# ZeroTier control. Install/update it before starting any unprivileged backend.
-if ! python3 scripts/install_notebook_network_service.py --check --uid "$UID"; then
-    command -v sudo >/dev/null 2>&1 || fail 'Instalace síťové služby vyžaduje sudo.'
-    printf 'Instaluji nebo aktualizuji systémovou síťovou službu notebooku…\n'
-    sudo python3 scripts/install_notebook_network_service.py --uid "$UID"
-fi
-
 if [[ ! -x node_modules/.bin/tauri || ! -x node_modules/.bin/vite ]] || ! npm ls --depth=0 >/dev/null 2>&1; then
     printf 'Instaluji npm závislosti…\n'
     npm install
@@ -279,24 +271,5 @@ if [[ -r /proc/driver/nvidia/version && ! -v WEBKIT_DISABLE_DMABUF_RENDERER ]]; 
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
     printf 'NVIDIA: zapínám workaround WebKitGTK (WEBKIT_DISABLE_DMABUF_RENDERER=1).\n'
 fi
-
-# `tauri dev` points its webview at Vite on localhost. That executable cannot
-# be used by XDG autostart after login, when no Vite server exists. Build and
-# atomically install a separate non-bundled test client with embedded frontend;
-# the application uses this path only for the persistent tray entry.
-dev_client_dir=${XDG_DATA_HOME:-$HOME/.local/share}/cz.turris.federation/dev-client
-dev_client=$dev_client_dir/turris-federation
-printf 'Sestavuji testovací klient pro automatické spuštění…\n'
-npm run tauri -- build --debug --no-bundle
-mkdir -p -- "$dev_client_dir"
-temporary_client=$(mktemp --tmpdir="$dev_client_dir" .turris-federation.XXXXXX)
-trap 'rm -f -- "$temporary_client"' EXIT
-install -m 755 -- src-tauri/target/debug/turris-federation "$temporary_client"
-mv -f -- "$temporary_client" "$dev_client"
-trap - EXIT
-export TF_TRAY_EXECUTABLE=$dev_client
-read -r TF_TRAY_ARTIFACT_HASH _ < <(sha256sum -- "$dev_client")
-export TF_TRAY_ARTIFACT_HASH
-unset dev_client_dir dev_client temporary_client
 
 exec npm run tauri -- dev "$@"

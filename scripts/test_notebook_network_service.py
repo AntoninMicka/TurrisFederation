@@ -180,17 +180,23 @@ class NotebookNetworkServiceTests(unittest.TestCase):
             self.assertFalse(repeated['changed'])
             self.assertIn(['/usr/bin/nmcli', 'connection', 'up', 'uuid', 'new-uuid'], calls)
 
-    def test_unit_is_hardened_and_run_script_installs_versioned_service(self):
+    def test_legacy_unit_is_hardened_but_desktop_never_installs_it(self):
         unit = (ROOT / 'packaging/turris-federation-network.service').read_text()
         runner = (ROOT / 'run.sh').read_text()
+        notebooks = (ROOT / 'src-tauri/src/notebooks.rs').read_text()
         self.assertIn('ProtectSystem=strict', unit)
         self.assertIn('ProtectHome=true', unit)
         self.assertIn('NoNewPrivileges=true', unit)
         self.assertIn('CAP_NET_ADMIN', unit)
         self.assertIn('CAP_CHOWN', unit)
         self.assertNotIn('WorkingDirectory=', unit)
-        self.assertIn('install_notebook_network_service.py --check --uid "$UID"', runner)
-        self.assertIn('sudo python3 scripts/install_notebook_network_service.py --uid "$UID"', runner)
+        self.assertNotIn('install_notebook_network_service.py --check', runner)
+        self.assertNotIn('install_notebook_network_service.py --uid', runner)
+        self.assertNotIn('TF_TRAY_EXECUTABLE', runner)
+        self.assertNotIn('"service_install"', notebooks)
+        self.assertNotIn('fn install_service(', notebooks)
+        self.assertNotIn('fn install_tray_autostart(', notebooks)
+        self.assertIn('"service_remove"', notebooks)
 
     def test_uninstall_removes_only_named_managed_network_state(self):
         installer_spec = importlib.util.spec_from_file_location(

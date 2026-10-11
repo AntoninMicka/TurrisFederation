@@ -20,9 +20,10 @@ a místní řídicí notebook mají samostatné přehledy.
 Plánovaný model rozlišuje **administrátorské notebooky** pro správu, audit a
 deploy routerů a **uživatelské notebooky** určené jen k síťovému připojení.
 Oba jsou koncové VPN uzly bez routování mezi VPN a fyzickou sítí a svou
-dostupnost kontrolují pouze lokálně. Notebookový backend má běžet trvale jako
-uživatelská služba nezávislá na okně aplikace; stavová lišta zobrazí připojení
-a umožní otevřít UI. Návrh, bezpečnostní hranice a stav implementace popisují
+dostupnost kontrolují pouze lokálně. Legacy notebookový backend nyní běží jen
+jako proces aktuální desktopové relace a skončí při úplném ukončení aplikace;
+desktop neinstaluje systemd jednotku ani autostart. Historický návrh,
+bezpečnostní hranice a stav implementace popisují
 [role notebooků](docs/notebook-node-roles.md).
 Uživatelská role má zobrazit read-only přehled odpovídající stránce na routeru,
 zatímco administrátorská zachová dnešní plné UI. Produkční balíček a onboarding
@@ -43,12 +44,10 @@ Spuštění na Ubuntu/Debianu:
 
 Skript zkontroluje systémové knihovny a nástroje, chybějící balíčky
 nainstaluje přes `sudo apt-get` a chybějící Rust přes oficiální `rustup`
-do uživatelského účtu. Potom doplní npm závislosti, sestaví samostatný testovací
-klient s vloženým frontendem pro automatický start po přihlášení, nainstaluje
-nebo aktualizuje úzce omezenou systémovou
-[síťovou službu notebooku](docs/notebook-network-service.md) a spustí
-vývojovou desktopovou aplikaci. Skript spouštěj bez `sudo`; při instalaci
-balíčků nebo změně systémové služby může požádat o heslo.
+do uživatelského účtu. Potom doplní npm závislosti a spustí vývojovou
+desktopovou aplikaci. Nevytváří ani nepovoluje uživatelskou či systémovou
+systemd jednotku a nepřidává automatický start po přihlášení. Skript spouštěj
+bez `sudo`; o heslo může požádat pouze instalace systémových závislostí.
 Vyžaduje připojení k internetu při instalaci a prvním sestavení.
 Pokud repozitář systému neposkytuje dostatečně nový Node.js (20.19+ nebo 22.12+),
 skript skončí s pokyny k aktualizaci. Argumenty předává příkazu `tauri dev`.
@@ -66,7 +65,8 @@ klient, ale zachovat systémová síťová služba, VPN profily i identita, pou�
 ./run.sh uninstall-desktop
 ```
 
-Po prvním potvrzení zastaví a odstraní vlastní uživatelské i systémové služby,
+Příkaz `uninstall-desktop` slouží pouze k úklidu pozůstatků starší instalace.
+Po prvním potvrzení příkazu `uninstall` zastaví a odstraní vlastní uživatelské i systémové služby,
 tray autostart, vývojový klient, spravovaný WireGuard profil a vlastní nftables
 tabulku. Uživatelskou identitu a data ponechá pro obnovu; odvolání členství je
 samostatná administrátorská operace. Pokud najde externí balíček ZeroTier One,
@@ -98,14 +98,12 @@ ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
 uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
 autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).
 
-Notebooky jsou v podepsané topologii samostatné koncové WireGuard uzly s rolí
-administrátora nebo uživatele. Neinzerují fyzickou LAN a router pro každý z nich
-přijímá pouze jeho tunelovou `/32`. Po jednorázové instalaci úzce omezené
-systémové služby uživatelský backend průběžně odvozuje požadovaný VPN profil z
-ověřené podepsané topologie. Služba jej vytvoří, aktivuje a obnovuje při změně
-Wi-Fi, hotspotu nebo restartu; nevytváří výchozí trasu ani forwarding. Ruční
-polkit instalační tok dočasně zůstává jako nouzová cesta do fyzické akceptace
-automatického reconcile.
+Notebookové WireGuard uzly a jejich privilegovaná síťová služba jsou nyní pouze
+legacy rollback implementace. Desktop ji už neinstaluje ani neaktualizuje;
+historický kontrakt zůstává popsaný v dokumentu
+[síťové služby notebooku](docs/notebook-network-service.md). Cílová architektura
+používá na koncových zařízeních oficiální NetBird klient bez routování fyzické
+LAN.
 
 **Známá závada:** nasazení ZeroTier podle posledního hlášení nefunguje;
 oprava je zatím v [TODO](ROADMAP.md). Implementovaný deploy byl zkontrolován

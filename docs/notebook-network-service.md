@@ -1,8 +1,9 @@
 # Privilegovaná síťová služba notebooku
 
-> **Legacy dokument.** Tuto trvalou notebookovou službu cílová
-> [router-only architektura](router-only-architecture.md) odstraní. Dokument
-> popisuje pouze rollback implementaci během migrace.
+> **Legacy dokument.** Desktop ani `run.sh` už tuto službu neinstalují,
+> neaktualizují ani nespouštějí. Zachovaný instalátor slouží jen jako rollback
+> artefakt a pro bezpečné odebrání starších instalací. Cílová
+> [router-only architektura](router-only-architecture.md) službu nepoužívá.
 
 Stav: schválený návrh a první vývojová implementace pro Linux. Nasazení
 spravovaného profilu na notebook a následná dostupnost routeru `Palackeho` byly
@@ -66,10 +67,10 @@ výslovně spustilo `run.sh` a potvrdilo `sudo`. Produkční balíček má stejn
 oprávnění vyjádřit polkit politikou a systémovou skupinou; nesmí rozšířit API na
 obecné root operace.
 
-## Instalace a aktualizace
+## Historická ruční instalace
 
-`run.sh` nejprve ověří obsah instalovaného skriptu, systemd jednotky,
-konfiguraci UID a aktivní stav. Jen při rozdílu vyvolá:
+Následující příkaz dokumentuje původní rollback artefakt; desktop jej nikdy
+nevolá automaticky:
 
 ```bash
 sudo python3 scripts/install_notebook_network_service.py --uid "$UID"

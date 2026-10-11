@@ -118,7 +118,7 @@ export async function notebookVpnAction<T>(request: Record<string, unknown>): Pr
   return invoke("notebook_action", { request });
 }
 
-export async function manageNotebookService(action: "service_install" | "service_remove"): Promise<{ service: { installed: boolean; enabled: boolean; active: boolean; unit: string } }> {
+export async function manageNotebookService(action: "service_remove"): Promise<{ service: { installed: boolean; enabled: boolean; active: boolean; unit: string } }> {
   if (browserMode) throw new Error("Uživatelskou službu lze spravovat v desktopové aplikaci.");
   return invoke("notebook_action", { request: { action } });
 }

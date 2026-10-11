@@ -24,7 +24,7 @@ const props = defineProps<{
   topologyRefreshConfirmed: boolean;
 }>();
 
-defineEmits<{ refresh: []; diagnose: []; serviceInstall: []; serviceRemove: []; revokeNotebook: [id: string, name: string]; vpnPreview: []; vpnInstall: []; vpnRollback: []; topologyRefreshPreview: []; topologyRefreshApply: []; "update:vpnConfirmed": [value: boolean]; "update:topologyUpdate": [value: string]; "update:topologyRefreshConfirmed": [value: boolean] }>();
+defineEmits<{ refresh: []; diagnose: []; serviceRemove: []; revokeNotebook: [id: string, name: string]; vpnPreview: []; vpnInstall: []; vpnRollback: []; topologyRefreshPreview: []; topologyRefreshApply: []; "update:vpnConfirmed": [value: boolean]; "update:topologyUpdate": [value: string]; "update:topologyRefreshConfirmed": [value: boolean] }>();
 
 const deploymentLabels: Record<string, string> = {
   pending: "Čeká na aplikování",
@@ -37,11 +37,9 @@ const deploymentLabels: Record<string, string> = {
 };
 
 const notebookState = computed(() => {
-  if (props.notebook?.service?.active && props.notebook?.service?.enabled) return "Backend běží a má autostart";
-  if (props.notebook?.service?.active) return "Backend běží bez autostartu";
-  if (props.notebook?.service?.installed) return "Služba neběží";
-  if (props.notebook?.running) return "Dočasný backend běží pouze s UI";
-  if (props.notebook) return "Trvalá služba není nainstalovaná";
+  if (props.notebook?.running) return "Backend běží pouze s desktopem";
+  if (props.notebook?.service?.installed) return "Nalezena starší systemd služba";
+  if (props.notebook) return "Backend relace neběží";
   return "Stav není načtený";
 });
 
@@ -184,9 +182,7 @@ function presenceLabel(value: boolean | null, positive: string) {
       <div class="overview-section-heading">
         <h3>Backend tohoto notebooku</h3>
         <div class="node-actions">
-          <button v-if="!notebook?.service?.installed" type="button" :disabled="serviceBusy" @click="$emit('serviceInstall')">Nainstalovat službu</button>
-          <button v-else-if="!notebook.service.active || !notebook.service.enabled" type="button" :disabled="serviceBusy" @click="$emit('serviceInstall')">Opravit a spustit službu</button>
-          <button v-if="notebook?.service?.installed" type="button" class="secondary" :disabled="serviceBusy" @click="$emit('serviceRemove')">Zastavit a odstranit službu</button>
+          <button v-if="notebook?.service?.installed" type="button" class="secondary" :disabled="serviceBusy" @click="$emit('serviceRemove')">Odstranit starší systemd službu</button>
         </div>
       </div>
       <p v-if="serviceError || notebook?.serviceError" class="error">{{ serviceError || notebook?.serviceError }}</p>
@@ -208,7 +204,7 @@ function presenceLabel(value: boolean | null, positive: string) {
         </table>
       </div>
       <p v-else class="muted">Shoda místních komponent není v této verzi desktopu dostupná.</p>
-      <p class="muted">Desktop s frontendem je místní referenční sestavení. Tray, jeho autostart, běžící i nainstalovaný backend, federační knihovna a privilegovaná síťová služba se porovnávají s obsahem dodaným touto aplikací.</p>
+      <p class="muted">Desktop porovnává jen vlastní frontend, backend aktuální relace a federační knihovnu. Systemd jednotky, login autostart ani privilegovanou notebookovou službu neinstaluje.</p>
       <p class="muted">Uživatelský notebook nepotřebuje adresu místní LAN. Jeho stabilní ZeroTier a WireGuard adresy pocházejí z podepsané topologie; změna Wi‑Fi ani fyzické sítě jeho identitu nemění.</p>
     </section>
 

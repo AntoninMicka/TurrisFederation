@@ -117,8 +117,8 @@ async function resolveNotebook(peer: NotebookPeer, choice: "local" | "remote") {
     : "Převzít konfiguraci druhého notebooku? Místní návrh bude nahrazen; místní SSH důvěra a audity zůstanou zachované.")) return;
   await notebookOperation({ action: "resolve", peer: peer.id, choice, token: peer.conflictToken });
 }
-async function serviceOperation(action: "service_install" | "service_remove") {
-  if (action === "service_remove" && !window.confirm("Zastavit a odstranit uživatelskou službu notebooku? Síťový backend po zavření UI nebude běžet.")) return;
+async function serviceOperation(action: "service_remove") {
+  if (!window.confirm("Zastavit a odstranit starší uživatelskou systemd službu notebooku? Backend aktuální relace poběží jen do ukončení desktopové aplikace.")) return;
   syncBusy.value = true;
   syncError.value = "";
   try {
@@ -827,7 +827,7 @@ async function submitConnection() {
         @update:topology-refresh-confirmed="topologyRefreshConfirmed = $event"
         @topology-refresh-preview="previewTopologyRefresh" @topology-refresh-apply="applyTopologyRefresh"
         @refresh="refreshReadOnlyOverview" @diagnose="runNotebookDiagnostics"
-        @service-install="serviceOperation('service_install')" @service-remove="serviceOperation('service_remove')"
+        @service-remove="serviceOperation('service_remove')"
         @revoke-notebook="revokeUserNotebook"
         @vpn-preview="previewVpnInstall" @vpn-install="installVpn" @vpn-rollback="rollbackVpn" />
     </div>
@@ -1020,15 +1020,13 @@ async function submitConnection() {
       <button v-if="!notebookSync" :disabled="syncBusy" @click="notebookOperation()">{{ syncBusy ? 'Načítám…' : 'Načíst stav synchronizace' }}</button>
       <template v-if="notebookSync">
         <div class="setup-preview">
-          <strong>Trvalý backend notebooku</strong>
-          <p v-if="notebookSync.service?.installed">{{ notebookSync.service.active && notebookSync.service.enabled ? 'Uživatelská služba běží a spustí se po přihlášení.' : notebookSync.service.active ? 'Uživatelská služba běží, ale automatický start není povolený.' : 'Uživatelská služba je nainstalovaná, ale neběží.' }}</p>
-          <p v-else>{{ notebookSync.running ? 'Dočasný backend běží jen s otevřenou aplikací; trvalá služba není nainstalovaná.' : 'Trvalá služba není nainstalovaná.' }}</p>
+          <strong>Backend desktopové relace</strong>
+          <p>{{ notebookSync.running ? 'Backend běží pouze s otevřenou desktopovou aplikací.' : 'Backend této relace neběží.' }}</p>
+          <p v-if="notebookSync.service?.installed" class="warning">Byla nalezena starší uživatelská systemd služba. Aktuální desktop ji neinstaluje ani nepoužívá.</p>
           <div class="node-actions">
-            <button v-if="!notebookSync.service?.installed" :disabled="syncBusy" @click="serviceOperation('service_install')">Nainstalovat a spustit uživatelskou službu</button>
-            <button v-else-if="!notebookSync.service.active || !notebookSync.service.enabled" :disabled="syncBusy" @click="serviceOperation('service_install')">Opravit a spustit službu</button>
-            <button v-if="notebookSync.service?.installed" class="secondary" :disabled="syncBusy" @click="serviceOperation('service_remove')">Zastavit a odstranit službu</button>
+            <button v-if="notebookSync.service?.installed" class="secondary" :disabled="syncBusy" @click="serviceOperation('service_remove')">Odstranit starší systemd službu</button>
           </div>
-          <small>Služba se spouští po přihlášení uživatele. Zavření okna ji nezastaví; UI lze znovu otevřít ze stavové lišty.</small>
+          <small>Desktop ani notebook už žádnou systemd službu nebo login autostart nevytváří. Zavření okna aplikaci pouze skryje; úplné ukončení zastaví i backend relace.</small>
         </div>
         <p><strong>{{ notebookSync.running ? 'Synchronizace běží' : 'Synchronizace je vypnutá nebo služba neběží' }}</strong></p>
         <p v-if="notebookSync.error" class="error">{{ notebookSync.error }}</p>

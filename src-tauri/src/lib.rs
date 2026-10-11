@@ -602,8 +602,8 @@ pub fn run() {
         let tray_state = notebooks::tray_state();
         let status = MenuItem::with_id(app, "backend-status", tray_state.label(), false, None::<&str>)?;
         let open = MenuItem::with_id(app, "open-ui", "Otevřít Turris Federation", true, None::<&str>)?;
-        let disconnect = MenuItem::with_id(app, "disconnect-notebook", "Zastavit službu / odpojit tento notebook…", true, None::<&str>)?;
-        let quit = MenuItem::with_id(app, "quit-ui", "Ukončit UI (backend zůstane běžet)", true, None::<&str>)?;
+        let disconnect = MenuItem::with_id(app, "disconnect-notebook", "Zastavit synchronizaci / odpojit notebook…", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit-ui", "Ukončit aplikaci i backend relace", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&status, &open, &disconnect, &quit])?;
         let mut tray = TrayIconBuilder::with_id("main").menu(&menu).tooltip("Turris Federation");
         tray = tray.icon(tray_icon(tray_state));
