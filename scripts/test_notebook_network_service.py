@@ -225,6 +225,15 @@ class NotebookNetworkServiceTests(unittest.TestCase):
         self.assertIn('install_notebook_network_service.py --uninstall', runner)
         self.assertIn("confirm 'Odinstalovat také balíček zerotier-one?'", runner)
 
+    def test_run_script_can_remove_only_desktop_components(self):
+        runner = (ROOT / 'run.sh').read_text()
+        self.assertIn("[[ ${1:-} == uninstall-desktop ]]", runner)
+        desktop = runner.split('uninstall_desktop() {', 1)[1].split('\nuninstall_notebook() {', 1)[0]
+        self.assertIn('turris-federation-backend.service', desktop)
+        self.assertIn('cz.turris.federation-tray.desktop', desktop)
+        self.assertNotIn('install_notebook_network_service.py', desktop)
+        self.assertNotIn('zerotier-one', desktop)
+
 
 if __name__ == '__main__':
     unittest.main()

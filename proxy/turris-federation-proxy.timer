@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Turris Federation HTTPS proxy allowlist
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
+Unit=turris-federation-proxy.service
+
+[Install]
+WantedBy=timers.target

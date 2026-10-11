@@ -1,0 +1,15 @@
+{
+  "routerHost": "10.89.0.1",
+  "routerUser": "root",
+  "routerNodeId": "00000000-0000-0000-0000-000000000001",
+  "routerPublicKey": "/etc/turris-federation-proxy/router-identity.pub",
+  "knownHostsFile": "/etc/turris-federation-proxy/known_hosts",
+  "identityFile": "/etc/turris-federation-proxy/id_ed25519",
+  "domain": "proxy.cacke.internal",
+  "listenAddress": "100.81.1.4",
+  "certificate": "/etc/turris-federation-proxy/tls/fullchain.pem",
+  "certificateKey": "/etc/turris-federation-proxy/tls/key.pem",
+  "upstreamCa": "/etc/ssl/certs/ca-certificates.crt",
+  "nginxConfig": "/etc/nginx/conf.d/turris-federation.conf",
+  "stateFile": "/var/lib/turris-federation-proxy/state.json"
+}

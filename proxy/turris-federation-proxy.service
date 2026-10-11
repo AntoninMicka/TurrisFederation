@@ -1,0 +1,18 @@
+[Unit]
+Description=Reconcile Turris Federation HTTPS proxy allowlist
+After=network-online.target nginx.service netbird.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/turris-federation-proxy/tf_proxy.py
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/nginx/conf.d
+StateDirectory=turris-federation-proxy
+StateDirectoryMode=0700

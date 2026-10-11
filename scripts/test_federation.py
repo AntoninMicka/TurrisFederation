@@ -1167,6 +1167,28 @@ class FederationTests(unittest.TestCase):
                 f.validate_services(node(1), [dict(service, protocol='https', path=path)])
         self.assertEqual([service], f.local_services(self.root, node(1)))
 
+    def test_proxy_manifest_contains_only_explicit_local_http_services(self):
+        https = {'id': 'diary', 'name': 'Diary', 'hostAddress': '192.168.1.20',
+                 'protocol': 'https', 'port': 443, 'path': '/app'}
+        tcp = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.21',
+               'protocol': 'tcp', 'port': 11434, 'path': None}
+        f.store_local_services(self.root, f.validate_services(node(1), [https, tcp]))
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
+        shutil.copy(self.root / 'root.pem', self.root / 'identity.pem')
+
+        self.assertEqual([], f.proxy_service_ids(self.root, [https, tcp]))
+        self.assertEqual(['diary'], f.store_proxy_service_ids(self.root, node(1), ['diary']))
+        payload = f.verify(self.public, f.proxy_manifest(self.root, now=1000))
+        self.assertEqual((1, node(1)['id'], 1000, 1120),
+                         (payload['schema'], payload['nodeId'], payload['issuedAt'], payload['expiresAt']))
+        self.assertEqual([{'id': 'diary', 'name': 'Diary', 'scheme': 'https',
+                           'host': '192.168.1.20', 'port': 443, 'basePath': '/app',
+                           'serverName': '192.168.1.20'}], payload['services'])
+        with self.assertRaisesRegex(ValueError, 'chybejici|nepodporovanou'):
+            f.store_proxy_service_ids(self.root, node(1), ['ollama'])
+        self.assertEqual(['diary'], f.read(self.root / f.PROXY_SERVICES))
+
     def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
         first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
                  'protocol': 'tcp', 'port': 11434, 'path': None}

@@ -45,6 +45,7 @@ HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 SERVICE_LIMIT = 128
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
 SERVICE_DIRECTORY_DNS_LABEL = 'zlate-stranky'
+PROXY_SERVICES = 'proxy-services.json'
 SERVICE_DNS_CONFIG = 'service-dns.json'
 SERVICE_DNS_HOSTS = 'service-dns.hosts'
 SERVICE_DNS_LOADED = 'service-dns.loaded'
@@ -1011,6 +1012,69 @@ def delete_local_service(root, node, service_id):
         services = [item for item in services if item['id'] != service_id]
         store_local_services(root, services)
         return services
+
+
+def proxy_service_ids(root, services):
+    """Return an explicitly selected, still valid HTTP(S) subset of local services."""
+    selected = read(Path(root) / PROXY_SERVICES, [])
+    if (not isinstance(selected, list) or len(selected) > SERVICE_LIMIT
+            or any(not isinstance(value, str) for value in selected)
+            or len(set(selected)) != len(selected)):
+        raise ValueError('Neplatny vyber sluzeb pro HTTPS proxy.')
+    available = {service['id']: service for service in services
+                 if service['protocol'] in {'http', 'https'} and re.fullmatch(
+                     r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', service['id'])}
+    missing = sorted(set(selected) - set(available))
+    if missing:
+        raise ValueError('Proxy odkazuje na chybejici nebo nepodporovanou sluzbu: %s.' %
+                         ', '.join(missing))
+    return sorted(selected)
+
+
+def store_proxy_service_ids(root, node, selected):
+    """Atomically select services; this never changes routing or the service catalog."""
+    services = local_services(root, node)
+    if not isinstance(selected, list):
+        raise ValueError('Vyber sluzeb pro HTTPS proxy musi byt seznam ID.')
+    path = Path(root) / PROXY_SERVICES
+    previous = read(path, None)
+    atomic(path, selected)
+    try:
+        return proxy_service_ids(root, services)
+    except Exception:
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic(path, previous)
+        raise
+
+
+def proxy_manifest(root, now=None):
+    """Create a short-lived router-signed manifest for one local LXC proxy."""
+    root = Path(root)
+    now = time.time() if now is None else now
+    doc = validate_document(verify((root / 'root.pub').read_text(), read(root / 'accepted.json')))
+    node = self_node(root, doc)
+    if not node or node['id'] not in doc['members']:
+        raise ValueError('Router nema platne clenstvi federace.')
+    services = local_services(root, node)
+    selected = proxy_service_ids(root, services)
+    zone = service_dns_configuration(root)
+    zone = zone['zone'] if zone else None
+    by_id = {service['id']: service for service in services}
+    published = []
+    for service_id in selected:
+        service = by_id[service_id]
+        published.append({
+            'id': service['id'], 'name': service['name'],
+            'scheme': service['protocol'], 'host': service['hostAddress'],
+            'port': service['port'], 'basePath': service['path'] or '/',
+            'serverName': service_dns_name(service['id'], zone) if zone else service['hostAddress'],
+        })
+    return sign(root / 'identity.pem', {
+        'schema': 1, 'nodeId': node['id'], 'issuedAt': now,
+        'expiresAt': now + 120, 'services': published,
+    })
 
 
 def validate_service_dns_zone(zone):
@@ -3351,6 +3415,18 @@ def main():
     elif mode == 'dns-disable':
         disable_service_dns(root)
         print('{}')
+    elif mode == 'proxy-select':
+        doc = validate_document(verify((Path(root) / 'root.pub').read_text(),
+                                       read(Path(root) / 'accepted.json')))
+        node = self_node(root, doc)
+        if not node or node['id'] not in doc['members']:
+            raise ValueError('Router nema platne clenstvi federace.')
+        selected = json.loads(sys.stdin.buffer.read(LIMIT + 1))
+        with locked(root):
+            print(json.dumps(store_proxy_service_ids(root, node, selected)))
+    elif mode == 'proxy-manifest':
+        with locked(root):
+            print(json.dumps(proxy_manifest(root)))
     elif mode == 'watchdog':
         watchdog(root, sys.argv[3])
     else:

@@ -62,6 +62,40 @@ confirm() {
     [[ $answer == a || $answer == A || $answer == ano || $answer == ANO ]]
 }
 
+uninstall_desktop() {
+    local config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+    local data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    local app_data=$data_home/cz.turris.federation
+    local unit=$config_home/systemd/user/turris-federation-backend.service
+    local autostart=$config_home/autostart/cz.turris.federation-tray.desktop
+    local dev_client=$app_data/dev-client
+
+    printf '%s\n' \
+        'Odebrani pouze desktopovych komponent Turris Federation:' \
+        '  - zastavi a odstrani uzivatelsky backend systemd;' \
+        '  - odstrani tray autostart a vyvojovy desktopovy klient.' \
+        'Sitova sluzba, VPN klienti, profily a uzivatelska identita zustanou zachovane.'
+    confirm 'Pokracovat v odebrani desktopovych komponent?' || {
+        printf 'Odebrani zruseno; nic se nezmenilo.\n'
+        return 0
+    }
+    systemctl --user disable --now turris-federation-backend.service >/dev/null 2>&1 || true
+    systemctl --user stop 'app-cz.turris.federation\x2dtray@autostart.service' >/dev/null 2>&1 || true
+    local process executable pid
+    for process in /proc/[0-9]*/exe; do
+        executable=$(readlink -- "$process" 2>/dev/null || true)
+        if [[ $executable == "$dev_client/turris-federation" ]]; then
+            pid=${process#/proc/}
+            kill "${pid%/exe}" 2>/dev/null || true
+        fi
+    done
+    rm -f -- "$unit" "$autostart"
+    rm -rf -- "$dev_client"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    systemctl --user reset-failed turris-federation-backend.service >/dev/null 2>&1 || true
+    printf 'Desktopove komponenty byly odebrany; sitova cast a identita zustaly beze zmeny.\n'
+}
+
 uninstall_notebook() {
     local config_home=${XDG_CONFIG_HOME:-$HOME/.config}
     local data_home=${XDG_DATA_HOME:-$HOME/.local/share}
@@ -131,6 +165,7 @@ uninstall_notebook() {
 if [[ ${1:-} == --help ]]; then
     printf 'Použití: ./run.sh [argumenty pro tauri dev]\n'
     printf '         ./run.sh uninstall\n'
+    printf '         ./run.sh uninstall-desktop\n'
     printf 'Na Ubuntu/Debianu doinstaluje závislosti a spustí aplikaci.\n'
     printf 'Příkaz uninstall po potvrzení odstraní notebookové komponenty.\n'
     exit 0
@@ -140,6 +175,11 @@ fi
 if [[ ${1:-} == uninstall ]]; then
     (($# == 1)) || fail 'Příkaz uninstall nepřijímá další argumenty.'
     uninstall_notebook
+    exit 0
+fi
+if [[ ${1:-} == uninstall-desktop ]]; then
+    (($# == 1)) || fail 'Příkaz uninstall-desktop nepřijímá další argumenty.'
+    uninstall_desktop
     exit 0
 fi
 [[ -r /etc/os-release ]] || fail 'Automatická instalace podporuje Ubuntu/Debian.'

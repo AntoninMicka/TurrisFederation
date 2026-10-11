@@ -59,6 +59,13 @@ Vývojovou instalaci z notebooku odebere interaktivní příkaz:
 ./run.sh uninstall
 ```
 
+Pokud se má odstranit jen legacy desktopový backend, tray autostart a vývojový
+klient, ale zachovat systémová síťová služba, VPN profily i identita, použijte:
+
+```bash
+./run.sh uninstall-desktop
+```
+
 Po prvním potvrzení zastaví a odstraní vlastní uživatelské i systémové služby,
 tray autostart, vývojový klient, spravovaný WireGuard profil a vlastní nftables
 tabulku. Uživatelskou identitu a data ponechá pro obnovu; odvolání členství je
@@ -113,3 +120,8 @@ LAN deploy a aktualizace instalují také **webový přehled na routeru** a dla�
 **Turris Federation** na jeho úvodní obrazovku. Adresa je
 `https://<router>/turris-federation/`, s přihlášením přes systémové heslo routeru.
 Podrobnosti: [webový přehled](docs/router-web.md).
+
+Pro uzce rizene zverejneni vybranych lokalnich HTTP(S) sluzeb je pripraven
+[navrh izolovane LXC HTTPS proxy](docs/lxc-https-proxy.md). Proxy ma vlastni
+NetBird peer, prebira kratce platny podepsany seznam jen z lokalniho Turrisu a
+nesmi mit obecny pristup do LAN.
