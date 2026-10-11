@@ -18,7 +18,6 @@ import shlex
 import signal
 import shutil
 import socket
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -1079,68 +1078,65 @@ def validate_proxy_upstream_name(value):
         return value.lower()
 
 
-def proxy_tls_identity(service, certificate=None):
-    """Validate the peer chain and return one SAN identity from that peer."""
+def proxy_tls_probe(service, server_name, certificate=None):
+    """Verify one exact upstream TLS identity using system or explicit trust."""
     if service['protocol'] != 'https':
         raise ValueError('Automatické načtení certifikátu lze použít jen pro HTTPS upstream.')
+    server_name = validate_proxy_upstream_name(server_name)
+    temporary = None
     try:
-        context = ssl.create_default_context(cadata=certificate) if certificate \
-            else ssl.create_default_context()
-        context.check_hostname = False
-        with socket.create_connection(
-                (service['hostAddress'], service['port']), timeout=10) as connection:
-            with context.wrap_socket(connection) as tls:
-                peer = tls.getpeercert()
-    except (OSError, ssl.SSLError):
+        command = [
+            'openssl', 's_client', '-connect', '%s:%d' % (
+                service['hostAddress'], service['port']),
+            '-verify_return_error', '-verify_hostname', server_name,
+            '-servername', server_name,
+        ]
+        try:
+            ipaddress.ip_address(server_name)
+            hostname_index = command.index('-verify_hostname')
+            command[hostname_index] = '-verify_ip'
+        except ValueError:
+            pass
+        if certificate is not None:
+            temporary = tempfile.TemporaryDirectory()
+            path = Path(temporary.name) / 'trust.pem'
+            path.write_text(certificate)
+            command += ['-CAfile', str(path)]
+        result = subprocess.run(
+            command, input=b'', stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=10)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+
+
+def automatic_proxy_upstream_ca(service, server_name,
+                                candidates=PROXY_AUTOMATIC_TRUST_FILES):
+    """Select only local trust that validates the expected upstream identity."""
+    if proxy_tls_probe(service, server_name):
         return None
-    identities = []
-    for kind, value in peer.get('subjectAltName', ()):
-        if kind not in {'DNS', 'IP Address'}:
-            continue
-        try:
-            identities.append(validate_proxy_upstream_name(value))
-        except ValueError:
-            continue
-    host = service['hostAddress']
-    if host in identities:
-        return host
-    dns_names, non_loopback_ips = [], []
-    for value in identities:
-        try:
-            address = ipaddress.ip_address(value)
-            if not address.is_loopback:
-                non_loopback_ips.append(value)
-        except ValueError:
-            dns_names.append(value)
-    return (dns_names[0] if dns_names else non_loopback_ips[0]
-            if non_loopback_ips else identities[0] if identities else None)
-
-
-def automatic_proxy_upstream_trust(service, candidates=PROXY_AUTOMATIC_TRUST_FILES):
-    """Select only a locally provisioned certificate that validates the real endpoint."""
-    identity = proxy_tls_identity(service)
-    if identity:
-        return None, identity
     for candidate in candidates:
         try:
             certificate = validate_proxy_upstream_ca(Path(candidate).read_text())
         except (OSError, ValueError):
             continue
-        identity = proxy_tls_identity(service, certificate)
-        if identity:
-            return certificate, identity
+        if proxy_tls_probe(service, server_name, certificate):
+            return certificate
     raise ValueError(
         'Automaticky nebyl nalezen důvěryhodný certifikát odpovídající HTTPS upstreamu.')
 
 
-def resolve_proxy_upstream_trust(service, mode, value):
+def resolve_proxy_upstream_trust(service, server_name, mode, value):
     if mode not in PROXY_TRUST_MODES:
         raise ValueError('Neplatný režim důvěry HTTPS upstreamu.')
     if mode == 'system':
-        return None, service['hostAddress']
+        return None, server_name
     if mode == 'automatic':
-        return automatic_proxy_upstream_trust(service)
-    return validate_proxy_upstream_ca(value), service['hostAddress']
+        return automatic_proxy_upstream_ca(service, server_name), server_name
+    return validate_proxy_upstream_ca(value), server_name
 
 
 def proxy_access(root, services, require_current_ca=False):
@@ -1246,8 +1242,12 @@ def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
             raise ValueError('Neplatna volba pristupu proxy.')
         access = proxy_access(root, services)
         username = username.strip() if isinstance(username, str) else None
+        dns = service_dns_configuration(root)
+        upstream_name = (service_dns_name(validated['id'], dns['zone'])
+                         if dns else validated['hostAddress'])
         upstream_ca, upstream_name = resolve_proxy_upstream_trust(
-            validated, trust_mode, upstream_ca) if enabled else (None, None)
+            validated, upstream_name, trust_mode, upstream_ca) \
+            if enabled else (None, None)
         if not enabled:
             access.pop(validated['id'], None)
         elif validated['protocol'] not in {'http', 'https'}:

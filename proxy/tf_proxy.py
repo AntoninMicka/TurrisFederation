@@ -165,6 +165,9 @@ server {
     for service in services:
         upstream = '%s://%s:%d%s' % (service['scheme'], service['host'], service['port'],
                                      service['basePath'].rstrip('/') + '/')
+        default_port = 443 if service['scheme'] == 'https' else 80
+        upstream_authority = service['serverName'] + (
+            '' if service['port'] == default_port else ':' + str(service['port']))
         tls = ''
         if service['scheme'] == 'https':
             trusted_ca = service.get('upstreamCaFile') or upstream_ca
@@ -196,7 +199,7 @@ server {
     }
 }
 ''' % (service_listens, service['id'], domain, certificate, certificate_key, tls, auth, upstream,
-       service['serverName'], service['serverName'], service['id'], domain))
+       upstream_authority, service['serverName'], service['id'], domain))
     return header + ''.join(blocks)
 
 

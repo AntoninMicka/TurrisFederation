@@ -87,6 +87,8 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('proxy_ssl_verify on;', config)
         self.assertIn('proxy_ssl_name diary.cacke.internal;', config)
         self.assertIn('proxy_ssl_trusted_certificate /managed/diary.ca.pem;', config)
+        self.assertIn('proxy_set_header Host diary.cacke.internal;', config)
+        self.assertIn('proxy_set_header Host 192.168.1.21:8080;', config)
         self.assertIn('auth_basic "Turris Federation";', config)
         self.assertIn('/diary.htpasswd;', config)
         self.assertEqual(1, config.count('auth_basic_user_file'))
