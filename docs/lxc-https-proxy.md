@@ -88,9 +88,10 @@ akceptaci musí ověřit proti konkrétnímu NetBird účtu.
 
 V místní LAN agent automaticky přidá do Knot Resolveru přesné záznamy pouze pro
 služby povolené ve Zlatých stránkách. Stejné jméno `<id>.<doména>` tam ukazuje
-na LAN IP LXC. Doména proxy musí být podzónou zapnuté místní `.internal` zóny,
-například `proxy.cacke.internal` pod `cacke.internal`. Zakázaná nebo odstraněná
-služba se z místního DNS při dalším reconcile odstraní; wildcard nevzniká.
+na LAN IP LXC. Doména proxy musí být platná `.internal` zóna. Pokud se shoduje
+s místní zónou služeb, proxy alias povolené služby nahradí její přímý LAN záznam,
+aby jedno jméno nikdy neukazovalo současně na upstream i LXC. Zakázaná nebo
+odstraněná služba se při dalším reconcile odstraní; wildcard nevzniká.
 
 Každá služba je dostupná jako `https://<id>.<zadaná-doména>/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,

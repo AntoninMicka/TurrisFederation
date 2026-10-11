@@ -1232,8 +1232,19 @@ class FederationTests(unittest.TestCase):
                  {'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'})
         self.assertEqual(b'192.168.1.10 workspace.proxy.cacke.internal\n',
                          f.render_proxy_lan_dns_hosts(self.root, node(1), 'cacke.internal'))
-        with self.assertRaisesRegex(ValueError, 'podzonou'):
-            f.render_proxy_lan_dns_hosts(self.root, node(1), 'other.internal')
+        self.assertEqual(b'192.168.1.10 workspace.proxy.cacke.internal\n',
+                         f.render_proxy_lan_dns_hosts(self.root, node(1), 'other.internal'))
+
+        # If both namespaces are identical, the proxy endpoint replaces the
+        # direct upstream record instead of publishing two addresses.
+        f.atomic(self.root / f.PROXY_LAN_CONFIG,
+                 {'domain': 'cacke.internal', 'address': '192.168.1.10'})
+        direct = f.render_service_dns_hosts(node(1), [enabled, disabled], 'cacke.internal')
+        proxied = f.render_proxy_lan_dns_hosts(self.root, node(1), 'cacke.internal')
+        merged = f.merge_exact_dns_hosts(direct, proxied)
+        self.assertIn(b'192.168.1.10 workspace.cacke.internal\n', merged)
+        self.assertNotIn(b'192.168.1.20 workspace.cacke.internal\n', merged)
+        self.assertIn(b'192.168.1.20 private.cacke.internal\n', merged)
 
     def test_proxy_lxc_update_preserves_private_configuration(self):
         names = ['tf_proxy.py', 'turris-federation-proxy.service',
