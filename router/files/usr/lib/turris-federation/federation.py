@@ -18,6 +18,7 @@ import shlex
 import signal
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -1065,56 +1066,81 @@ def validate_proxy_upstream_ca(value, require_current=True):
     return value
 
 
-def proxy_tls_probe(service, certificate=None):
-    """Verify one HTTPS endpoint by IP using system trust or an explicit certificate."""
+def validate_proxy_upstream_name(value):
+    if not isinstance(value, str) or len(value) > 253:
+        raise ValueError('Neplatná TLS identita HTTPS upstreamu.')
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        if not re.fullmatch(
+                r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+'
+                r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', value):
+            raise ValueError('Neplatná TLS identita HTTPS upstreamu.')
+        return value.lower()
+
+
+def proxy_tls_identity(service, certificate=None):
+    """Validate the peer chain and return one SAN identity from that peer."""
     if service['protocol'] != 'https':
         raise ValueError('Automatické načtení certifikátu lze použít jen pro HTTPS upstream.')
-    temporary = None
     try:
-        command = [
-            'openssl', 's_client', '-connect', '%s:%d' % (
-                service['hostAddress'], service['port']),
-            '-verify_return_error', '-verify_ip', service['hostAddress'],
-        ]
-        if certificate is not None:
-            temporary = tempfile.TemporaryDirectory()
-            path = Path(temporary.name) / 'trust.pem'
-            path.write_text(certificate)
-            command += ['-CAfile', str(path)]
-        result = subprocess.run(
-            command, input=b'', stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            timeout=10)
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-    finally:
-        if temporary is not None:
-            temporary.cleanup()
-
-
-def automatic_proxy_upstream_ca(service, candidates=PROXY_AUTOMATIC_TRUST_FILES):
-    """Select only a locally provisioned certificate that validates the real endpoint."""
-    if proxy_tls_probe(service):
+        context = ssl.create_default_context(cadata=certificate) if certificate \
+            else ssl.create_default_context()
+        context.check_hostname = False
+        with socket.create_connection(
+                (service['hostAddress'], service['port']), timeout=10) as connection:
+            with context.wrap_socket(connection) as tls:
+                peer = tls.getpeercert()
+    except (OSError, ssl.SSLError):
         return None
+    identities = []
+    for kind, value in peer.get('subjectAltName', ()):
+        if kind not in {'DNS', 'IP Address'}:
+            continue
+        try:
+            identities.append(validate_proxy_upstream_name(value))
+        except ValueError:
+            continue
+    host = service['hostAddress']
+    if host in identities:
+        return host
+    dns_names, non_loopback_ips = [], []
+    for value in identities:
+        try:
+            address = ipaddress.ip_address(value)
+            if not address.is_loopback:
+                non_loopback_ips.append(value)
+        except ValueError:
+            dns_names.append(value)
+    return (dns_names[0] if dns_names else non_loopback_ips[0]
+            if non_loopback_ips else identities[0] if identities else None)
+
+
+def automatic_proxy_upstream_trust(service, candidates=PROXY_AUTOMATIC_TRUST_FILES):
+    """Select only a locally provisioned certificate that validates the real endpoint."""
+    identity = proxy_tls_identity(service)
+    if identity:
+        return None, identity
     for candidate in candidates:
         try:
             certificate = validate_proxy_upstream_ca(Path(candidate).read_text())
         except (OSError, ValueError):
             continue
-        if proxy_tls_probe(service, certificate):
-            return certificate
+        identity = proxy_tls_identity(service, certificate)
+        if identity:
+            return certificate, identity
     raise ValueError(
         'Automaticky nebyl nalezen důvěryhodný certifikát odpovídající HTTPS upstreamu.')
 
 
-def resolve_proxy_upstream_ca(service, mode, value):
+def resolve_proxy_upstream_trust(service, mode, value):
     if mode not in PROXY_TRUST_MODES:
         raise ValueError('Neplatný režim důvěry HTTPS upstreamu.')
     if mode == 'system':
-        return None
+        return None, service['hostAddress']
     if mode == 'automatic':
-        return automatic_proxy_upstream_ca(service)
-    return validate_proxy_upstream_ca(value)
+        return automatic_proxy_upstream_trust(service)
+    return validate_proxy_upstream_ca(value), service['hostAddress']
 
 
 def proxy_access(root, services, require_current_ca=False):
@@ -1129,7 +1155,7 @@ def proxy_access(root, services, require_current_ca=False):
     for service_id, access in value.items():
         if (service_id not in available or not isinstance(access, dict)
                 or not set(access).issubset(
-                    {'username', 'passwordHash', 'upstreamCa', 'trustMode'})
+                    {'username', 'passwordHash', 'upstreamCa', 'upstreamName', 'trustMode'})
                 or not {'username', 'passwordHash'}.issubset(access)):
             raise ValueError('Proxy odkazuje na chybejici nebo nepodporovanou sluzbu.')
         username, password_hash = access['username'], access['passwordHash']
@@ -1147,8 +1173,11 @@ def proxy_access(root, services, require_current_ca=False):
             raise ValueError('Neplatný režim důvěry HTTPS upstreamu.')
         if available[service_id]['protocol'] != 'https' and upstream_ca is not None:
             raise ValueError('Vlastní certifikát lze použít jen pro HTTPS upstream.')
+        upstream_name = validate_proxy_upstream_name(
+            access.get('upstreamName', available[service_id]['hostAddress']))
         result[service_id] = {'username': username, 'passwordHash': password_hash,
-                              'upstreamCa': upstream_ca, 'trustMode': trust_mode}
+                              'upstreamCa': upstream_ca, 'upstreamName': upstream_name,
+                              'trustMode': trust_mode}
     if sum(len(value['upstreamCa'].encode()) for value in result.values()
            if value['upstreamCa']) > PROXY_CA_TOTAL_LIMIT:
         raise ValueError('Součet certifikátů proxy je příliš velký.')
@@ -1156,7 +1185,9 @@ def proxy_access(root, services, require_current_ca=False):
     if not result and not (Path(root) / PROXY_ACCESS).exists():
         for service_id in proxy_service_ids(root, services):
             result[service_id] = {'username': None, 'passwordHash': None,
-                                  'upstreamCa': None, 'trustMode': 'automatic'}
+                                  'upstreamCa': None,
+                                  'upstreamName': available[service_id]['hostAddress'],
+                                  'trustMode': 'automatic'}
     return result
 
 
@@ -1182,6 +1213,7 @@ def configure_proxy_access(root, node, service_id, enabled, username='', passwor
                 raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
             access[service_id] = {'username': None, 'passwordHash': None,
                                   'upstreamCa': upstream_ca,
+                                  'upstreamName': service['hostAddress'],
                                   'trustMode': 'manual' if upstream_ca else 'system'}
         else:
             previous = access.get(service_id, {})
@@ -1190,6 +1222,7 @@ def configure_proxy_access(root, node, service_id, enabled, username='', passwor
                 raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
             access[service_id] = {'username': username, 'passwordHash': password_hash,
                                   'upstreamCa': upstream_ca,
+                                  'upstreamName': service['hostAddress'],
                                   'trustMode': 'manual' if upstream_ca else 'system'}
         atomic(Path(root) / PROXY_ACCESS, access)
         return {key: {'enabled': key in access, 'username': value['username']}
@@ -1213,8 +1246,8 @@ def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
             raise ValueError('Neplatna volba pristupu proxy.')
         access = proxy_access(root, services)
         username = username.strip() if isinstance(username, str) else None
-        upstream_ca = resolve_proxy_upstream_ca(
-            validated, trust_mode, upstream_ca) if enabled else None
+        upstream_ca, upstream_name = resolve_proxy_upstream_trust(
+            validated, trust_mode, upstream_ca) if enabled else (None, None)
         if not enabled:
             access.pop(validated['id'], None)
         elif validated['protocol'] not in {'http', 'https'}:
@@ -1227,14 +1260,18 @@ def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
             if password:
                 raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
             access[validated['id']] = {'username': None, 'passwordHash': None,
-                                       'upstreamCa': upstream_ca, 'trustMode': trust_mode}
+                                       'upstreamCa': upstream_ca,
+                                       'upstreamName': upstream_name,
+                                       'trustMode': trust_mode}
         else:
             previous = access.get(validated['id'], {})
             password_hash = proxy_password_hash(password) if password else previous.get('passwordHash')
             if not password_hash or previous.get('username') not in {None, username} and not password:
                 raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
             access[validated['id']] = {'username': username, 'passwordHash': password_hash,
-                                       'upstreamCa': upstream_ca, 'trustMode': trust_mode}
+                                       'upstreamCa': upstream_ca,
+                                       'upstreamName': upstream_name,
+                                       'trustMode': trust_mode}
         services = validate_services(node, [item for item in services
                                             if item['id'] != validated['id']] + [validated])
         configuration = service_dns_configuration(root)
@@ -1298,7 +1335,7 @@ def proxy_manifest(root, now=None):
             'id': service['id'], 'name': service['name'],
             'scheme': service['protocol'], 'host': service['hostAddress'],
             'port': service['port'], 'basePath': service['path'] or '/',
-            'serverName': service['hostAddress'],
+            'serverName': access[service_id]['upstreamName'],
             'auth': {key: access[service_id][key] for key in ['username', 'passwordHash']},
             'upstreamCa': access[service_id]['upstreamCa'],
         })
@@ -2645,6 +2682,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
                                            'path': None}
         form_proxy = private_proxy_access.get(
             form_service['id'], {'username': None, 'upstreamCa': None,
+                                 'upstreamName': form_service.get('hostAddress', editor_host),
                                  'trustMode': 'automatic'})
         trust_mode = form_proxy.get('trustMode', 'automatic')
         protocol_options = ''.join('<option value="%s"%s>%s</option>' % (
@@ -2664,6 +2702,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <label>Nové heslo proxy (prázdné zachová stávající)<input name="proxyPassword" type="password" maxlength="256" autocomplete="new-password"></label>
 <small>Bez uživatele bude služba dostupná bez Basic Auth. Heslo se ukládá jen jako salted hash a nevstupuje do veřejných Zlatých stránek.</small>
 <label>Důvěra HTTPS upstreamu<select name="proxyTrustMode"><option value="automatic"''' + (' selected' if trust_mode == 'automatic' else '') + '''>Automaticky z routeru</option><option value="manual"''' + (' selected' if trust_mode == 'manual' else '') + '''>Vlastní certifikát níže</option><option value="system"''' + (' selected' if trust_mode == 'system' else '') + '''>Systémová důvěra</option></select></label>
+<small>Aktuální TLS identita upstreamu: <code>''' + esc(form_proxy.get('upstreamName') or editor_host) + '''</code></small>
 <label>Důvěryhodný certifikát HTTPS upstreamu (PEM)<textarea name="proxyUpstreamCa" maxlength="16384" rows="8" placeholder="-----BEGIN CERTIFICATE-----">''' + esc(form_proxy.get('upstreamCa') or '') + '''</textarea></label>
 <small>Automatický režim použije jen lokálně známý certifikát, který ověří skutečný endpoint; certifikátu nabídnutému samotnou sítí slepě nedůvěřuje. Ručně lze vložit jednu veřejnou CA nebo samopodepsaný serverový certifikát, nikdy soukromý klíč.</small>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>

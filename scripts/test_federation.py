@@ -1289,18 +1289,24 @@ class FederationTests(unittest.TestCase):
         certificate = self.public_ca()
         candidate = self.root / 'workspace-ca.pem'
         candidate.write_text(certificate)
-        with patch.object(f, 'proxy_tls_probe', side_effect=[False, True]) as probe:
+        with patch.object(
+                f, 'proxy_tls_identity',
+                side_effect=[None, 'workspace-old.internal']) as probe:
             self.assertEqual(
-                certificate, f.automatic_proxy_upstream_ca(service, [candidate]))
+                (certificate, 'workspace-old.internal'),
+                f.automatic_proxy_upstream_trust(service, [candidate]))
         self.assertEqual([(service,), (service, certificate)],
                          [call.args for call in probe.call_args_list])
-        with patch.object(f, 'automatic_proxy_upstream_ca', return_value=certificate):
+        with patch.object(
+                f, 'automatic_proxy_upstream_trust',
+                return_value=(certificate, 'workspace-old.internal')):
             f.store_local_services(self.root, [service])
             f.save_local_service_with_proxy(
                 self.root, node(1), service, False, True, '', '', '', 'automatic')
         access = f.read(self.root / f.PROXY_ACCESS)['workspace']
         self.assertEqual('automatic', access['trustMode'])
         self.assertEqual(certificate, access['upstreamCa'])
+        self.assertEqual('workspace-old.internal', access['upstreamName'])
 
     def test_proxy_lan_dns_contains_only_enabled_exact_aliases(self):
         enabled = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',

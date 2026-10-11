@@ -44,10 +44,11 @@ systémovému trust store. Vypnutí ověřování certifikátu není podporován
 Režim „Automaticky z routeru“ nejprve zkusí systémovou důvěru a potom pouze
 lokálně provisionované veřejné certifikáty. Pro Federated Workspace používá
 `/etc/federated-workspace-ca.pem`, ale jen pokud tímto certifikátem projde
-ověření skutečného endpointu včetně jeho IP SAN. Certifikátu právě nabídnutému
-po síti bez předchozí lokální důvěry automaticky nevěří. Veřejné jméno proxy
-`workspace.proxy.<zóna>` je oddělené od jména ověřovaného upstreamu; výchozí
-upstream TLS identita je jeho deklarovaná LAN IP.
+ověření řetězce skutečného endpointu. Z takto ověřeného serverového certifikátu
+vybere jeho SAN jako TLS identitu nginx; tím bezpečně zvládne i zachovaný
+certifikát vystavený před změnou LAN adresy. Certifikátu právě nabídnutému po
+síti bez předchozí lokální důvěry automaticky nevěří. Veřejné jméno proxy
+`workspace.proxy.<zóna>` je oddělené od jména ověřovaného upstreamu.
 
 Starší výběr pouze podle ID lze jednorázově migrovat příkazem:
 
