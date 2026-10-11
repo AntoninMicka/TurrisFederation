@@ -1230,13 +1230,37 @@ class FederationTests(unittest.TestCase):
         self.assertTrue(any('opkg install lxc-create' in command for command in commands))
         create = next(command for command in commands if 'lxc-create' in command and 'opkg' not in command)
         self.assertIn("-n 'tf-proxy'", create)
-        self.assertIn('for wanted_arch in armv7l armhf', create)
+        self.assertIn('compatible_arches="armv7l armhf"', create)
+        self.assertIn('"debian bookworm"', create)
+        self.assertIn('"ubuntu noble" "ubuntu jammy" "ubuntu focal"', create)
         self.assertIn('-r "$release" -a "$image_arch"', create)
         self.assertIn('.failed-', create)
         self.assertIn('lxc-auto.tf_proxy', create)
         syntax = subprocess.run(['sh', '-n'], input=create.encode(), capture_output=True)
         self.assertEqual(b'', syntax.stderr)
         self.assertEqual(0, syntax.returncode)
+
+        fake_bin = self.root / 'bin'
+        fake_bin.mkdir()
+        create_log = self.root / 'lxc-create.log'
+        (fake_bin / 'lxc-create').write_text(
+            '#!/bin/sh\ncase " $* " in *" --list "*) '
+            'printf "DIST RELEASE ARCH VARIANT BUILD\\nubuntu jammy armhf default today\\n";; '
+            '*) printf "%s\\n" "$*" > "$LXC_CREATE_LOG";; esac\n')
+        for executable, body in [('uci', '#!/bin/sh\nexit 0\n'),
+                                 ('lxc-start', '#!/bin/sh\nexit 0\n'),
+                                 ('lxc-info', '#!/bin/sh\nprintf "RUNNING\\n"\n')]:
+            (fake_bin / executable).write_text(body)
+        for executable in fake_bin.iterdir():
+            executable.chmod(0o755)
+        local_create = create.replace('/srv/lxc', str(self.root / 'lxc'))
+        environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'],
+                           LXC_CREATE_LOG=str(create_log))
+        selected = subprocess.run(['sh', '-c', local_create], env=environment,
+                                  capture_output=True)
+        self.assertEqual(b'', selected.stderr)
+        self.assertEqual(0, selected.returncode)
+        self.assertIn('-d ubuntu -r jammy -a armhf', create_log.read_text())
 
         internal = dict(missing, storageReady=False)
         with patch.object(f, 'proxy_lxc_status', return_value=internal), \

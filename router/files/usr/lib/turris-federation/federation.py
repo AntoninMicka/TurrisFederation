@@ -3212,13 +3212,21 @@ def ensure_proxy_container(node, credentials):
         if not architecture_candidates:
             raise ValueError('Architektura Turrisu nema podporovanou automatickou LXC sablonu.')
         command = ('set -eu; image_index="$(lxc-create -n %s-index-probe -t download -- --list 2>/dev/null)"; '
-                   'distribution=; release=; image_arch=; '
-                   'for wanted_release in bookworm bullseye trixie; do for wanted_arch in %s; do '
-                   'if printf "%%s\\n" "$image_index" | awk -v r="$wanted_release" -v a="$wanted_arch" '
-                   "'$1 == \"debian\" && $2 == r && $3 == a { found=1 } END { exit !found }'; then "
-                   'distribution=debian; release="$wanted_release"; image_arch="$wanted_arch"; break 2; fi; done; done; '
-                   'if test -z "$distribution"; then echo "Katalog LXC neobsahuje podporovany Debian pro %s." >&2; '
-                   "printf \"%%s\\\\n\" \"$image_index\" | awk '$1 == \"debian\" { print }' >&2; exit 1; fi; "
+                   'distribution=; release=; image_arch=; compatible_arches="%s"; '
+                   'for image in "debian bookworm" "debian bullseye" "debian trixie" '
+                   '"ubuntu noble" "ubuntu jammy" "ubuntu focal"; do '
+                   'wanted_distribution="${image%%%% *}"; wanted_release="${image#* }"; '
+                   'for wanted_arch in $compatible_arches; do '
+                   'if printf "%%s\\n" "$image_index" | awk -v d="$wanted_distribution" '
+                   '-v r="$wanted_release" -v a="$wanted_arch" '
+                   "'$1 == d && $2 == r && $3 == a { found=1 } END { exit !found }'; then "
+                   'distribution="$wanted_distribution"; release="$wanted_release"; '
+                   'image_arch="$wanted_arch"; break 2; fi; done; done; '
+                   'if test -z "$distribution"; then '
+                   'echo "Katalog LXC neobsahuje podporovany Debian ani Ubuntu pro %s. Dostupne kompatibilni obrazy:" >&2; '
+                   "printf \"%%s\\\\n\" \"$image_index\" | awk -v arches=\"$compatible_arches\" "
+                   "'($1 == \"debian\" || $1 == \"ubuntu\") && "
+                   "index(\" \" arches \" \", \" \" $3 \" \") { print }' >&2; exit 1; fi; "
                    'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
                    'mv /srv/lxc/%s "$failed"; echo "Nedokonceny predchozi pokus byl zachovan v $failed." >&2; fi; '
                    'cleanup_failed() { code=$?; if test "$code" != 0 && test -e /srv/lxc/%s; then '
