@@ -1215,6 +1215,78 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('/etc/turris-federation-proxy/config.json', command.split('test -f', 1)[0])
         self.assertTrue(payload.startswith(b'\x1f\x8b'))
 
+    def test_proxy_lxc_creation_requires_external_storage_and_is_idempotent(self):
+        unavailable = {'state': 'unavailable', 'container': None, 'storageReady': True,
+                       'architecture': 'armv7l'}
+        missing = {'state': 'missing', 'container': 'tf-proxy', 'storageReady': True,
+                   'architecture': 'armv7l'}
+        running = {'state': 'running', 'container': 'tf-proxy', 'storageReady': True,
+                   'architecture': 'armv7l'}
+        with patch.object(f, 'proxy_lxc_status', side_effect=[unavailable, missing, running]), \
+                patch.object(f, 'ssh', return_value=b'') as remote:
+            self.assertEqual('running', f.ensure_proxy_container(
+                node(1), {'password': 'x', 'hostKey': 'key'})['state'])
+        commands = [call.args[2] for call in remote.call_args_list]
+        self.assertTrue(any('opkg install lxc-create' in command for command in commands))
+        create = next(command for command in commands if 'lxc-create' in command and 'opkg' not in command)
+        self.assertIn("-n 'tf-proxy'", create)
+        self.assertIn("-r bookworm -a 'armhf'", create)
+        self.assertIn('lxc-auto.tf_proxy', create)
+
+        internal = dict(missing, storageReady=False)
+        with patch.object(f, 'proxy_lxc_status', return_value=internal), \
+                patch.object(f, 'ssh') as remote, self.assertRaisesRegex(ValueError, 'externi uloziste'):
+            f.ensure_proxy_container(node(1), {'password': 'x', 'hostKey': 'key'})
+        remote.assert_not_called()
+
+        with patch.object(f, 'proxy_lxc_status', side_effect=[running, running]), \
+                patch.object(f, 'ssh') as remote:
+            f.ensure_proxy_container(node(1), {'password': 'x', 'hostKey': 'key'})
+        remote.assert_not_called()
+
+    def test_proxy_known_hosts_retargets_only_confirmed_key_material(self):
+        trusted = 'router.example ssh-ed25519 ' + 'A' * 48 + '\n'
+        rendered = f.proxy_known_hosts('192.168.1.1', 2222, trusted)
+        self.assertEqual('[192.168.1.1]:2222 ssh-ed25519 ' + 'A' * 48 + '\n', rendered)
+        with self.assertRaises(ValueError):
+            f.proxy_known_hosts('192.168.1.1', 22, 'malformed')
+
+    def test_proxy_bootstrap_passes_setup_key_only_over_stdin(self):
+        status = {'state': 'running', 'container': 'tf-proxy', 'storageReady': True,
+                  'architecture': 'armv7l', 'needsBootstrap': False}
+        secret = 'ONE-OFF-SECRET-KEY'
+        calls = []
+
+        def remote(_node, _credentials, command, input_data=None, timeout=300):
+            calls.append((command, input_data, timeout))
+            if 'netbird status' in command and 'grep -qi' in command:
+                return b'disconnected\n'
+            if 'ip -4 -o addr' in command:
+                return b'100.81.1.4\n'
+            if 'cat /etc/turris-federation-proxy/id_ed25519.pub' in command:
+                return ('ssh-ed25519 ' + 'A' * 48 + ' tf-proxy\n').encode()
+            if 'openssl pkey -in' in command:
+                return b'-----BEGIN PUBLIC KEY-----\nTEST\n-----END PUBLIC KEY-----\n'
+            if 'cat /etc/turris-federation-proxy/tls/ca.pem' in command:
+                return b'-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n'
+            return b''
+
+        router_node = dict(node(1), sshPort=22, sshUser='root')
+        credentials = {'password': 'x', 'hostKey': 'router ssh-ed25519 ' + 'B' * 48}
+        with patch.object(f, 'ensure_proxy_container', return_value=status), \
+                patch.object(f, 'update_proxy_lxc', return_value=status), \
+                patch.object(f, 'proxy_lxc_status', return_value=status), \
+                patch.object(f, 'direct_lan', return_value={'host': '192.168.1.1', 'device': 'eth0', 'source': '192.168.1.2'}), \
+                patch.object(f, 'ssh', side_effect=remote):
+            f.bootstrap_proxy_lxc(router_node, node(1), credentials,
+                                  {'domain': 'proxy.example.internal', 'setupKey': secret})
+        self.assertFalse(any(secret in command for command, _, _ in calls))
+        secret_inputs = [data for _, data, _ in calls if data and secret.encode() in data]
+        self.assertEqual([secret.encode() + b'\n'], secret_inputs)
+        config_inputs = [data for command, data, _ in calls if 'config.json' in command]
+        self.assertEqual(1, len(config_inputs))
+        self.assertNotIn(secret.encode(), config_inputs[0])
+
     def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
         first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
                  'protocol': 'tcp', 'port': 11434, 'path': None}

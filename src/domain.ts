@@ -38,6 +38,11 @@ export interface SshCredentials {
   trustHostKey: boolean;
 }
 
+export interface ProxyBootstrap {
+  domain: string;
+  setupKey: string;
+}
+
 export interface ZeroTierSettings {
   networkId: string | null;
   central: "new" | "legacy";
@@ -244,6 +249,9 @@ export interface DeploymentPlan {
     artifactHash: string | null;
     installedArtifactHash: string | null;
     updateRequired: boolean;
+    storageReady: boolean;
+    needsBootstrap: boolean;
+    creationRequired: boolean;
   };
   availableModes: DeploymentMode[];
   recommendedMode: DeploymentMode;

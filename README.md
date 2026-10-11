@@ -122,7 +122,8 @@ Podrobnosti: [webový přehled](docs/router-web.md).
 Pro úzce řízené zpřístupnění vybraných lokálních HTTP(S) služeb je připravena
 [aplikační LXC HTTPS gateway](docs/lxc-https-proxy.md). Kontejner může být běžný
 LAN host; přístup ke konkrétní HTTP(S) službě a volitelný Basic Auth se spravují
-přímo v editoru Zlatých stránek. Deploy Turrisu kontroluje a aktualizuje již
-existující běžící `tf-proxy`, ale nepřepisuje jeho certifikáty, klíče ani VPN identitu.
+přímo v editoru Zlatých stránek. Deploy Turrisu na externím `/srv` automaticky
+vytvoří, připojí do NetBirdu a následně aktualizuje `tf-proxy`; další aktualizace
+nepřepisují jeho certifikáty, klíče ani VPN identitu.
 Kontejner má vlastní NetBird peer, neroutuje LAN a přebírá krátce platný
 podepsaný seznam pouze z lokálního Turrisu.

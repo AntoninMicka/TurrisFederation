@@ -1,6 +1,7 @@
 {
   "routerHost": "192.168.100.1",
   "routerUser": "root",
+  "routerPort": 22,
   "routerNodeId": "00000000-0000-0000-0000-000000000001",
   "routerPublicKey": "/etc/turris-federation-proxy/router-identity.pub",
   "knownHostsFile": "/etc/turris-federation-proxy/known_hosts",

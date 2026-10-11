@@ -2522,6 +2522,10 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
         '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
     local_services_section = '''<section><h2>Editor služeb · tento router</h2>
 <p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Definice nemění síť, firewall ani cílového hosta. Je-li zapnutá místní DNS zóna, změna atomicky upraví jen její přesný záznam. Ostatní routery katalog převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
+    proxy_ca_section = ('''<section><h2>Důvěra HTTPS proxy</h2>
+<p>Veřejný certifikát místní proxy CA lze nainstalovat jen do klientů, které mají proxy používat.</p>
+<a class="button" href="''' + WEB_OVERVIEW_PATH + '''proxy-ca.crt" download>Stáhnout veřejnou CA</a></section>'''
+        if (root / 'proxy-ca.crt').is_file() else '')
     dns_configuration = service_dns_configuration(root)
     dns_status = read(root / SERVICE_DNS_STATUS, {})
     if not isinstance(dns_status, dict):
@@ -2645,7 +2649,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <article class="card"><span>Aplikovaná revize</span><strong>''' + esc(report.get('appliedRevision') or '—') + '''</strong></article></div>
 <p class="muted">Poslední kontrola agenta: ''' + esc(checked_text) + '''</p>
 <section><h2>Uzly federace</h2>''' + diagnostic_form + '''<div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Verze agenta</th><th>ZeroTier</th><th>WireGuard</th><th>LAN sítě</th><th>Dostupní hosté</th><th>Stav / členství</th><th>Ping ZeroTier</th><th>Ping WireGuard</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + netbird_local_section + netbird_cloud_section + local_services_section + '''
+<p class="muted">Katalog obsahuje pasivně známé sousedy v LAN prefixech oznamujícího uzlu; neprovádí aktivní skenování a nesdílí MAC adresy. Členství vychází z konfigurace, nikoli aktuální dostupnosti. Ping se spouští pouze tlačítkem: 5 paketů z tohoto routeru ke každému přijatému protějšku přes ZeroTier i WireGuard. Zobrazen je výsledek posledního měření. Zelená ≥ 95 %, žlutá ≥ 80 %, červená &lt; 80 %. Výsledek starší než 120 s je šedý. Obnovit stav načte nové výsledky.</p></section>''' + dns_section + netbird_local_section + netbird_cloud_section + local_services_section + proxy_ca_section + '''
 <section><h2>Síť a správa</h2><p>ZeroTier Network ID: <code>''' + esc(doc['config']['networkId'] if doc else '—') + '''</code></p>
 <p>Notebook je řídicí uzel pouze v ZeroTier, bez WireGuard spojů. Jeho dostupnost tento router nekontroluje.</p>
 <p>Nastavení sítě spravujte v desktopové aplikaci. Instalace a aktualizace softwaru vyžadují přímé LAN spojení z notebooku.</p></section>
@@ -2662,6 +2666,16 @@ def web_handler(root):
             target = urlsplit(self.path)
             if target.path == WEB_PATH + 'app.js' and not target.query:
                 body, status, content_type = WEB_SCRIPT, 200, 'application/javascript; charset=utf-8'
+            elif target.path == WEB_OVERVIEW_PATH + 'proxy-ca.crt' and not target.query:
+                path = Path(root) / 'proxy-ca.crt'
+                try:
+                    body = path.read_bytes()
+                    if len(body) > 16384 or not body.startswith(b'-----BEGIN CERTIFICATE-----'):
+                        raise ValueError
+                    status, content_type = 200, 'application/x-x509-ca-cert'
+                except (OSError, ValueError):
+                    self.send_error(404)
+                    return
             elif target.path in [WEB_PATH, WEB_PATH.rstrip('/')]:
                 try:
                     filters = parse_service_filters(target.query, allow_editor=False)
@@ -3143,26 +3157,185 @@ def proxy_lxc_status(node, credentials):
     desired = proxy_artifact_hash()
     if desired is None:
         return {'state': 'unavailable', 'container': None, 'artifactHash': None,
-                'installedArtifactHash': None, 'updateRequired': False}
+                'installedArtifactHash': None, 'updateRequired': False,
+                'storageReady': False, 'needsBootstrap': False, 'creationRequired': False}
     command = '''set -eu
 name=tf-proxy
 test ! -s /etc/turris-federation/proxy-lxc-name || name="$(cat /etc/turris-federation/proxy-lxc-name)"
-case "$name" in (*[!A-Za-z0-9_.-]*|'') echo invalid; exit;; esac
-if ! command -v lxc-info >/dev/null; then echo unavailable; exit; fi
-if ! lxc-info -n "$name" >/dev/null 2>&1; then echo "missing $name"; exit; fi
+root_device="$(df -P / | awk 'END {print $1}')"
+srv_device="$(df -P /srv | awk 'END {print $1}')"
+storage=0; test "$root_device" = "$srv_device" || storage=1
+architecture="$(uname -m)"
+finish() { echo "$1"; echo "__meta__ $storage $architecture"; exit 0; }
+case "$name" in (*[!A-Za-z0-9_.-]*|'') finish invalid;; esac
+if ! command -v lxc-info >/dev/null; then finish unavailable; fi
+if ! lxc-info -n "$name" >/dev/null 2>&1; then finish "missing $name"; fi
 state="$(lxc-info -n "$name" -sH)"
-if test "$state" != RUNNING; then echo "stopped $name"; exit; fi
+if test "$state" != RUNNING; then finish "stopped $name"; fi
 echo "running $name"
-lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; exit; }; done; cat "$@" | sha256sum' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; cat "$@" | sha256sum; if test -s /etc/turris-federation-proxy/config.json && command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+echo "__meta__ $storage $architecture"
 '''
     lines = ssh(node, credentials, command).decode().splitlines()
     state, name = (lines[0].split(' ', 1) + [None])[:2]
     installed = lines[1].split()[0] if state == 'running' and len(lines) > 1 else None
     if installed is not None and not re.fullmatch(r'[0-9a-f]{64}', installed):
         installed = None
+    metadata = next((line.split() for line in lines if line.startswith('__meta__ ')), [])
+    storage_ready = len(metadata) == 3 and metadata[1] == '1'
+    bootstrap_ready = 'bootstrap-ready' in lines
     return {'state': state, 'container': name, 'artifactHash': desired,
             'installedArtifactHash': installed,
-            'updateRequired': state == 'running' and desired is not None and installed != desired}
+            'updateRequired': state == 'running' and desired is not None and installed != desired,
+            'storageReady': storage_ready, 'needsBootstrap': not bootstrap_ready,
+            'creationRequired': state in {'unavailable', 'missing'},
+            'architecture': metadata[2] if len(metadata) == 3 else None}
+
+
+def ensure_proxy_container(node, credentials):
+    """Create/start only the dedicated proxy guest, never an unrelated LXC."""
+    current = proxy_lxc_status(node, credentials)
+    if current['state'] == 'invalid':
+        raise ValueError('Jmeno LXC proxy na routeru neni platne.')
+    if current['state'] == 'unavailable':
+        ssh(node, credentials,
+            'set -eu; opkg update >&2; opkg install lxc-create lxc-start lxc-info lxc-attach lxc-templates >&2',
+            timeout=600)
+        current = proxy_lxc_status(node, credentials)
+    name = current.get('container') or 'tf-proxy'
+    if current['state'] == 'missing':
+        if not current.get('storageReady'):
+            raise ValueError('Automaticke vytvoreni LXC vyzaduje externi uloziste pripojene pod /srv.')
+        architecture = {'armv7l': 'armhf', 'aarch64': 'arm64',
+                        'x86_64': 'amd64'}.get(current.get('architecture'))
+        if not architecture:
+            raise ValueError('Architektura Turrisu nema podporovanou automatickou LXC sablonu.')
+        values = [name, name, architecture, name, name, name]
+        command = ('set -eu; test ! -e /srv/lxc/%s; '
+                   'lxc-create -n %s -t download -- -d debian -r bookworm -a %s >&2; '
+                   'uci -q delete lxc-auto.tf_proxy || true; uci set lxc-auto.tf_proxy=container; '
+                   'uci set lxc-auto.tf_proxy.name=%s; uci set lxc-auto.tf_proxy.timeout=120; '
+                   'uci commit lxc-auto; lxc-start -n %s; '
+                   'i=0; while test "$(lxc-info -n %s -sH)" != RUNNING; do i=$((i+1)); '
+                   'test "$i" -lt 60; sleep 2; done' % tuple(shell_quote(value) for value in values))
+        ssh(node, credentials, command, timeout=600)
+    elif current['state'] == 'stopped':
+        ssh(node, credentials, 'lxc-start -n %s' % shell_quote(name))
+    elif current['state'] != 'running':
+        raise ValueError('LXC proxy nelze automaticky pripravit: %s.' % current['state'])
+    ready = proxy_lxc_status(node, credentials)
+    if ready['state'] != 'running':
+        raise ValueError('LXC proxy se nepodarilo spustit.')
+    return ready
+
+
+def proxy_known_hosts(host, port, trusted):
+    marker = host if port == 22 else '[%s]:%s' % (host, port)
+    result = []
+    for line in trusted.splitlines():
+        fields = line.split()
+        for index, field in enumerate(fields[:-1]):
+            if (field.startswith(('ssh-', 'ecdsa-', 'sk-'))
+                    and re.fullmatch(r'[A-Za-z0-9+/=]{20,4096}', fields[index + 1])):
+                result.append('%s %s %s' % (marker, field, fields[index + 1]))
+                break
+    if not result:
+        raise ValueError('Potvrzeny SSH host key routeru nelze pouzit pro proxy.')
+    return '\n'.join(sorted(set(result))) + '\n'
+
+
+def bootstrap_proxy_lxc(node, target, credentials, bootstrap):
+    """One-shot, secret-minimising bootstrap of LXC, NetBird, SSH and local TLS."""
+    if not isinstance(bootstrap, dict) or set(bootstrap) != {'domain', 'setupKey'}:
+        raise ValueError('Chybi nastaveni pro automatickou instalaci LXC proxy.')
+    domain, setup_key = bootstrap['domain'], bootstrap['setupKey']
+    domain_pattern = r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+    if not isinstance(domain, str) or not re.fullmatch(domain_pattern, domain):
+        raise ValueError('Domena HTTPS proxy neni platna.')
+    if (not isinstance(setup_key, str) or not 8 <= len(setup_key) <= 4096
+            or any(value in setup_key for value in '\r\n\0')):
+        raise ValueError('Jednorazovy NetBird setup key neni platny.')
+    current = ensure_proxy_container(node, credentials)
+    current = update_proxy_lxc(node, credentials, current)
+    name = current['container']
+    install_netbird = '''set -eu
+apt-get update >&2
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg >&2
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --yes --output /usr/share/keyrings/netbird-archive-keyring.gpg
+printf '%s\n' 'deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main' > /etc/apt/sources.list.d/netbird.list
+apt-get update >&2
+DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
+'''
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(install_netbird)), timeout=600)
+    connected = ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(
+            "if netbird status 2>/dev/null | grep -qi 'Management: Connected'; then echo connected; else echo disconnected; fi"))).decode().strip()
+    if connected != 'connected':
+        enroll = ('IFS= read -r setup_key; test -n "$setup_key"; printf "%%s\\n" "$setup_key" | '
+                  'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+                      'IFS= read -r setup_key; netbird up --setup-key "$setup_key" >/dev/null')))
+        ssh(node, credentials, enroll, input_data=(setup_key + '\n').encode(), timeout=300)
+    vpn_address = ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(
+            "ip -4 -o addr show dev wt0 | awk 'NR==1 {sub(/\\/.*/, \"\", $4); print $4}'"))).decode().strip()
+    try:
+        vpn_address = str(ipaddress.ip_address(vpn_address))
+    except ValueError as error:
+        raise ValueError('NetBird nepridelil LXC proxy IPv4 adresu.') from error
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+        'set -eu; install -d -m 0700 /etc/turris-federation-proxy/tls; '
+        'test -s /etc/turris-federation-proxy/id_ed25519 || ssh-keygen -q -t ed25519 -N "" -f /etc/turris-federation-proxy/id_ed25519')))
+    proxy_public = ssh(node, credentials,
+        'lxc-attach -n %s -- cat /etc/turris-federation-proxy/id_ed25519.pub' % shell_quote(name)).decode().strip()
+    if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{40,4096}(?: .*)?', proxy_public):
+        raise ValueError('LXC proxy nevytvorila platny SSH verejny klic.')
+    forced = 'restrict,command="python3 %s proxy-manifest %s" %s' % (PROGRAM, REMOTE, proxy_public)
+    ssh(node, credentials,
+        'set -eu; install -d -m 0700 /etc/dropbear; touch /etc/dropbear/authorized_keys; '
+        'chmod 0600 /etc/dropbear/authorized_keys; grep -Fqx %s /etc/dropbear/authorized_keys || '
+        'printf "%%s\\n" %s >> /etc/dropbear/authorized_keys' %
+        (shell_quote(forced), shell_quote(forced)))
+    router_public = ssh(node, credentials, 'openssl pkey -in %s/identity.pem -pubout' % REMOTE)
+    lan = direct_lan(node)
+    known_hosts = proxy_known_hosts(lan['host'], node['sshPort'], credentials['hostKey'])
+    for path, data in [('router-identity.pub', router_public), ('known_hosts', known_hosts.encode())]:
+        ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+            'umask 077; cat > /etc/turris-federation-proxy/' + path)), input_data=data)
+    tls = '''set -eu
+cd /etc/turris-federation-proxy/tls
+if test ! -s ca-key.pem; then
+  umask 077; openssl rand -base64 36 > ca-passphrase
+  openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -passout file:ca-passphrase -keyout ca-key.pem -out ca.pem -subj '/CN=Turris Federation Proxy CA'
+fi
+openssl req -new -newkey rsa:2048 -nodes -sha256 -keyout key.pem -out server.csr -subj %s -addext %s
+printf 'subjectAltName=DNS:*.%s\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -passin file:ca-passphrase -CAcreateserial -out fullchain.pem -days 825 -sha256 -extfile server.ext
+cat ca.pem >> fullchain.pem
+chmod 0600 ca-key.pem ca-passphrase key.pem
+rm -f server.csr server.ext
+''' % (shell_quote('/CN=*.' + domain), shell_quote('subjectAltName=DNS:*.' + domain), domain)
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(tls)))
+    config = {'routerHost': lan['host'], 'routerPort': node['sshPort'], 'routerUser': node['sshUser'],
+              'routerNodeId': target['id'], 'routerPublicKey': '/etc/turris-federation-proxy/router-identity.pub',
+              'knownHostsFile': '/etc/turris-federation-proxy/known_hosts',
+              'identityFile': '/etc/turris-federation-proxy/id_ed25519', 'domain': domain,
+              'listenAddress': vpn_address, 'certificate': '/etc/turris-federation-proxy/tls/fullchain.pem',
+              'certificateKey': '/etc/turris-federation-proxy/tls/key.pem',
+              'upstreamCa': '/etc/ssl/certs/ca-certificates.crt',
+              'nginxConfig': '/etc/nginx/conf.d/turris-federation.conf',
+              'authDirectory': '/etc/nginx/turris-federation-auth',
+              'stateFile': '/var/lib/turris-federation-proxy/state.json'}
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+        'umask 077; cat > /etc/turris-federation-proxy/config.json')), input_data=encode(config) + b'\n')
+    ca_public = ssh(node, credentials,
+        'lxc-attach -n %s -- cat /etc/turris-federation-proxy/tls/ca.pem' % shell_quote(name))
+    ssh(node, credentials, 'umask 077; cat > %s/proxy-ca.crt' % REMOTE, input_data=ca_public)
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+        'set -eu; nginx -t; systemctl enable --now nginx netbird turris-federation-proxy.timer; '
+        'systemctl start turris-federation-proxy.service')))
+    return proxy_lxc_status(node, credentials)
 
 
 def update_proxy_lxc(node, credentials, expected):
@@ -3255,7 +3428,7 @@ def software_backup_cleanup_command():
     return 'set -eu; python3 -c ' + shell_quote(script)
 
 
-def ssh(node, credentials, command, input_data=None):
+def ssh(node, credentials, command, input_data=None, timeout=300):
     # Credentials are passed through stdin to this controller and an inherited pipe to sshpass.
     host, user, port = node['sshHost'], node['sshUser'], node['sshPort']
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.:%_-]*', host) or not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]*', user) or not 0 < port < 65536:
@@ -3285,7 +3458,7 @@ def ssh(node, credentials, command, input_data=None):
                     '-B', lan['device'], '-b', lan['source'],
                     '-p', str(port), '-l', user, '--', lan['host'], command]
             result = subprocess.run(args, pass_fds=(read_fd,), input=input_data,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
             if result.returncode:
                 # Remote errors only contain our sanitised exception, never shell command or input.
                 detail = result.stderr.decode(errors='replace')[-1500:]
@@ -3471,7 +3644,7 @@ def controller(root, req):
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
                           ('Aktualizovat běžící LXC proxy %s bez změny její konfigurace, certifikátů a VPN identity.' % proxy_lxc['container']
                            if proxy_lxc['state'] == 'running' else
-                           'LXC proxy není běžící; ponechat ji beze změny a zobrazit stav v plánu.'),
+                           'Automaticky nainstalovat LXC utility, vytvořit a spustit tf-proxy na externím /srv.'),
                           'Pokusit se předat nové síťové nastavení dostupným legacy peerům; jejich nedostupnost instalaci neblokuje.'],
                 'config': config, 'validatedAt': time.time()}
         plan['stepsByMode'] = {'full': plan['steps'], 'settings': [
@@ -3511,8 +3684,13 @@ def controller(root, req):
         raise ValueError('Verze agenta na routeru se od validace změnila. Validujte znovu.')
     if installed_artifact_components(node, credentials) != plan.get('installedArtifactComponents'):
         raise ValueError('Verze komponent routeru se od validace změnily. Validujte znovu.')
-    if plan.get('proxyLxc', {}).get('state') == 'running':
-        update_proxy_lxc(node, credentials, plan['proxyLxc'])
+    proxy_plan = plan.get('proxyLxc', {})
+    if proxy_plan.get('needsBootstrap'):
+        if proxy_plan.get('creationRequired') and not proxy_plan.get('storageReady'):
+            raise ValueError('Automaticka instalace LXC proxy vyzaduje externi uloziste pod /srv.')
+        bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
+    elif proxy_plan.get('state') == 'running':
+        update_proxy_lxc(node, credentials, proxy_plan)
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))

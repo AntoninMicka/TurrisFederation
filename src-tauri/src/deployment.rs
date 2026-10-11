@@ -14,7 +14,7 @@ const PROXY_ARTIFACTS: &[(&str, &str)] = &[
 ];
 
 #[tauri::command]
-pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, proxy_bootstrap: Option<Value>, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
     if !["overview", "refresh", "validate", "deploy", "publish", "diagnostics", "diagnostics_overview", "read_only_overview"].contains(&action.as_str()) {
         return Err("Neznámá operace deploye.".into());
     }
@@ -58,6 +58,7 @@ pub async fn deployment_action(action: String, node_id: Option<String>, credenti
     let script = root.join(format!("controller-{}.py", uuid::Uuid::new_v4()));
     fs::write(&script, CONTROLLER).map_err(|e| e.to_string())?;
     let request = json!({"action": action, "nodeId": node_id, "planId": plan_id, "mode": mode, "credentials": auth,
+                        "proxyBootstrap": proxy_bootstrap,
                         "nodes": nodes, "networkId": settings.network_id});
     let result = async {
         let mut child = tokio::process::Command::new("python3").arg(&script).arg("controller").arg(&root)

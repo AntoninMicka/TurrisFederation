@@ -72,6 +72,16 @@ class ProxyTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 p.validate_manifest(manifest, 'router-1', now=1050)
 
+    def test_fetch_uses_configured_router_port(self):
+        result = type('Result', (), {'returncode': 0, 'stdout': b'{}', 'stderr': b''})()
+        config = {'routerUser': 'root', 'routerHost': '192.168.1.1', 'routerPort': 2222,
+                  'knownHostsFile': '/known', 'identityFile': '/identity'}
+        with patch.object(p.subprocess, 'run', return_value=result) as run:
+            self.assertEqual({}, p.fetch(config))
+        self.assertIn('2222', run.call_args.args[0])
+        with self.assertRaises(ValueError):
+            p.fetch({**config, 'routerPort': '2222'})
+
     def test_expired_cached_manifest_removes_all_upstreams(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

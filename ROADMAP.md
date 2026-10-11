@@ -274,9 +274,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] **P1: Svázat aplikační LXC proxy se Zlatými stránkami.** Editor místní
   HTTP(S) služby nyní řídí publikaci a volitelný Basic Auth; ukládá pouze salted
   verifier mimo veřejný katalog. Validace deploye kontroluje existující
-  `tf-proxy` a při instalaci/aktualizaci sjednotí jeho projektové artefakty bez
-  přepsání konfigurace, certifikátů, SSH klíčů nebo NetBird identity. První
-  vytvoření LXC a fyzická síťová/TLS akceptace zůstávají otevřené.
+  `tf-proxy`; pokud chybí, na ověřeném externím `/srv` jej vytvoří, přihlásí
+  jednorázovým NetBird setup key, vytvoří lokální TLS CA a dokončí systemd/nginx.
+  Další aktualizace zachovávají konfiguraci, certifikáty, SSH klíče i NetBird
+  identitu. Fyzická síťová/TLS akceptace zůstává otevřená.
 - [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také

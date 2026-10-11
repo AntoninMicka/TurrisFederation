@@ -1,9 +1,9 @@
 # Aplikační HTTPS gateway v LXC
 
 Stav: implementovaný podepsaný manifest, volba služby a volitelný Basic Auth
-přímo ve Zlatých stránkách, fail-closed reconciler nginx, systemd timer a
-automatická aktualizace již existujícího LXC při deployi routeru. Vytvoření LXC,
-certifikát a NetBird policy zatím nebyly fyzicky přijaty.
+přímo ve Zlatých stránkách, fail-closed reconciler nginx a automatické vytvoření,
+onboarding a aktualizace LXC při deployi routeru. Celý tok zatím nebyl fyzicky
+přijat na skutečném Turrisu, LXC a NetBird síti.
 
 ## Bezpecnostni hranice
 
@@ -54,48 +54,34 @@ routeru a podvrzeny seznam neprojde.
 
 ## LXC a proxy
 
-Na Turrisu ukládejte běžný linuxový LXC na externí SSD/HDD, ne na interní eMMC.
-Oficiální Turris postup používá LXC utilities a `lxc-create`; kontejner přidejte
-do `/etc/config/lxc-auto` až po ověření ručního startu. Výchozí připojení do LAN
-bridge tomuto návrhu vyhovuje. Přidělte kontejneru stabilní LAN adresu, zakažte
-v něm IPv4/IPv6 forwarding a nevytvářejte pro něj žádný LAN resource v NetBirdu.
+Turris musí mít `/srv` na externím SSD/HDD; automatika odmítne vytvořit LXC na
+interním eMMC. Při validaci routeru aplikace zjistí stav `tf-proxy`, LXC utilit,
+externího úložiště a nainstalované verze. Pokud proxy chybí, potvrzený deploy si
+vyžádá jen doménu proxy a jednorázový NetBird setup key a potom automaticky:
 
-Uvnitř Debian/Ubuntu LXC nainstalujte `nginx`, `openssh-client`, `openssl`,
-`ca-certificates`, Python 3 a oficialniho NetBird klienta. Potom:
+1. doinstaluje potřebné LXC utility z repozitáře Turrisu;
+2. stáhne Debian Bookworm pro architekturu routeru, vytvoří `tf-proxy`, spustí
+   jej a zapíše do `/etc/config/lxc-auto`;
+3. nainstaluje nginx, Python, OpenSSH, OpenSSL a oficiální NetBird CLI;
+4. předá setup key pouze přes stdin procesu, zaregistruje samostatný peer a klíč
+   neuloží do plánu, databáze, routeru ani konfigurace;
+5. vytvoří omezený SSH klíč s forced command pouze pro podepsaný manifest;
+6. vytvoří lokální CA s šifrovaným privátním klíčem a serverový wildcard
+   certifikát, přičemž veřejnou CA nabídne ke stažení na přihlášeném přehledu;
+7. zakáže IP forwarding, vygeneruje konfiguraci, ověří nginx a zapne timer.
 
-1. zkopirujte `proxy/tf_proxy.py` do
-   `/usr/local/lib/turris-federation-proxy/tf_proxy.py`;
-2. zkopirujte obe systemd jednotky z `proxy/` do `/etc/systemd/system/`;
-3. zkopírujte `proxy/90-turris-federation-proxy.conf` do `/etc/sysctl.d/`,
-   načtěte jej přes `sysctl --system` a ověřte obě hodnoty;
-4. vytvorte `/etc/turris-federation-proxy/config.json` podle
-   `proxy/config.example.json` a vsechny klice/certifikaty nastavte na `0600`;
-5. do systemoveho trust store pridejte CA HTTPS upstreamu; `proxy_ssl_verify`
-   se nikdy nevypina;
-6. vydejte certifikat pro `*.proxy.cacke.internal` a pripnete odpovidajici DNS
-   jmena na NetBird IP proxy;
-7. zaregistrujte LXC jako samostatny NetBird peer jednorazovym setup key a klic
-   potom neukladejte;
-8. spustte `systemctl enable --now nginx netbird turris-federation-proxy.timer`
-   a rucne `systemctl start turris-federation-proxy.service`.
+Opakovaný deploy kontejner ani identity nevytváří znovu. Aktualizuje jen
+projektové skripty, systemd jednotky, závislosti a sysctl profil; zachová
+`config.json`, SSH klíče, TLS CA, serverový klíč a NetBird identitu. Jiný název
+lze před prvním deployem uvést v `/etc/turris-federation/proxy-lxc-name`.
 
-Kontejner pojmenujte `tf-proxy`. Používáte-li jiné jméno, uložte na Turrisu
-pouze toto jméno do `/etc/turris-federation/proxy-lxc-name` (povolené jsou
-písmena, čísla, tečka, pomlčka a podtržítko). Každá následná validace deploye
-zobrazí stav a verzi proxy. Instalace nebo aktualizace routeru pak u běžícího
-kontejneru automaticky:
+Setup key má proxy automaticky zařadit do samostatné cílové skupiny. NetBird
+policy musí zdrojovým klientům povolit pouze tento peer a TCP/443; proxy nesmí
+být routing peer ani dostat LAN resource. DNS zóna domény musí směrovat názvy
+`<id>.<doména>` na NetBird IP proxy. Tato cloudová policy/DNS část se při fyzické
+akceptaci musí ověřit proti konkrétnímu NetBird účtu.
 
-- doinstaluje běžné Debian/Ubuntu závislosti a atomicky nahradí projektové
-  skripty, systemd jednotky a sysctl profil;
-- ověří Python a výsledný hash artefaktů;
-- zachová `config.json`, SSH klíče, certifikáty, CA a NetBird identitu;
-- nic neudělá, pokud LXC runtime, kontejner nebo jeho běh chybí.
-
-První vytvoření kontejneru zůstává výslovný bootstrap, protože vyžaduje volbu
-externího úložiště, distribuce, LAN adresy, TLS jmen a jednorázového NetBird
-setup key. Tento klíč se do aplikace ani na Turris neukládá.
-
-Kazda sluzba je dostupna jako `https://<id>.proxy.cacke.internal/`. Nginx mapuje
+Každá služba je dostupná jako `https://<id>.<zadaná-doména>/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,
 overuje TLS upstreamu a neznamy Host odmita kodem 421. Aplikace s pevnym
 kanonickym URL, Domain cookies nebo vlastni Host validaci potrebuje samostatnou

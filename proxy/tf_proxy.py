@@ -153,11 +153,14 @@ server {
 
 
 def fetch(config):
+    port = config.get('routerPort', 22)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError('Konfigurace obsahuje neplatny SSH port Turrisu.')
     target = '%s@%s' % (config.get('routerUser', 'root'), config['routerHost'])
     command = ['ssh', '-F', '/dev/null', '-T', '-o', 'BatchMode=yes',
                '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
                '-o', 'UserKnownHostsFile=' + config['knownHostsFile'],
-               '-i', config['identityFile'], target]
+               '-i', config['identityFile'], '-p', str(port), target]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=15, check=False)
     if result.returncode or len(result.stdout) > LIMIT:

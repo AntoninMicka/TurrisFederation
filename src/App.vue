@@ -378,6 +378,8 @@ const deployment = ref<DeploymentOverview | null>(null);
 const plans = ref<Record<string, DeploymentPlan>>({});
 const deployConfirmed = ref(false);
 const deployMode = ref<DeploymentMode>("full");
+const proxyDomain = ref("proxy.internal");
+const proxySetupKey = ref("");
 const publishing = ref(false);
 const deploymentError = ref("");
 const overviewLoading = ref(false);
@@ -668,6 +670,7 @@ async function openConnection(node: FederationNode, action: ConnectionAction) {
   connectionAction.value = action;
   deployConfirmed.value = false;
   deployMode.value = plans.value[node.id]?.recommendedMode ?? "full";
+  proxySetupKey.value = "";
   ztNetworkForOperation.value = ztSettings.value.networkId;
   openCentralAfterSetup.value = true;
   password.value = "";
@@ -709,7 +712,11 @@ async function submitConnection() {
       plans.value[node.id] = await deploymentAction<DeploymentPlan>("validate", node.id, credentials);
       message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut. ${plans.value[node.id].versionMismatch ? "Verze agenta se liší nebo chybí — nejdřív je doporučena aktualizace pouze softwaru bez zásahu do sítě." : "Verze agenta odpovídá, stačí aktualizovat nastavení."}`;
     } else if (connectionAction.value === "deploy") {
-      deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id, deployMode.value);
+      const proxyBootstrap = plans.value[node.id].proxyLxc.needsBootstrap
+        ? { domain: proxyDomain.value.trim(), setupKey: proxySetupKey.value }
+        : null;
+      deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id, deployMode.value, proxyBootstrap);
+      proxySetupKey.value = "";
       plans.value = {};
       const label = deployMode.value === "settings" ? "Aktualizace nastavení" : deployMode.value === "software" ? "Aktualizace softwaru" : "Kompletní deploy";
       message.value = `${label} ${node.name} dokončena. Stav spojení s protějšky je uveden u stanoviště.`;
@@ -735,6 +742,7 @@ async function submitConnection() {
     connectionError.value = String(error);
   } finally {
     credentials.password = "";
+    if (connectionAction.value === "deploy") proxySetupKey.value = "";
     submitting.value = false;
     busyNodeId.value = "";
     try { nodes.value = await listNodes(); await refreshZeroTierStatus(); await refreshDeployment(); }
@@ -1194,6 +1202,12 @@ async function submitConnection() {
           <label v-if="plans[connectionNode.id].availableModes.includes('software')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="software" :disabled="submitting" @change="deployConfirmed = false" /> Pouze software — neměnit síť ani firewall routeru</label>
           <label v-if="plans[connectionNode.id].availableModes.includes('settings')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="settings" :disabled="submitting" @change="deployConfirmed = false" /> Pouze nastavení — zachovat nainstalovaný software</label>
           <ol><li v-for="step in plans[connectionNode.id].stepsByMode[deployMode]" :key="step">{{ step }}</li></ol>
+          <div v-if="plans[connectionNode.id].proxyLxc.needsBootstrap" class="connection-form">
+            <p v-if="plans[connectionNode.id].proxyLxc.creationRequired && !plans[connectionNode.id].proxyLxc.storageReady" class="error">Pro automatické vytvoření LXC musí být /srv na externím úložišti.</p>
+            <label>Doména HTTPS proxy<input v-model="proxyDomain" required pattern="[a-z0-9.-]+\.[a-z0-9-]+" placeholder="proxy.example.internal" :disabled="submitting" /></label>
+            <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required :disabled="submitting" /></label>
+            <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
+          </div>
           <p v-if="deployMode === 'software'" class="muted">Níže uvedené nastavení zůstane v tomto režimu beze změny a nebude publikováno ani aplikováno.</p>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
           <label class="trust-check"><input v-model="deployConfirmed" type="checkbox" :disabled="submitting" />Potvrzuji {{ deployMode === 'settings' ? 'aktualizaci pouze nastavení včetně síťových změn' : deployMode === 'software' ? 'aktualizaci pouze softwaru bez změny sítě, firewallu a topologie' : 'kompletní instalaci / aktualizaci včetně síťových změn' }} přes přímou LAN.</label>
@@ -1209,7 +1223,7 @@ async function submitConnection() {
           <label v-if="identity.trust !== 'trusted'" class="trust-check"><input v-model="trustHostKey" type="checkbox" :disabled="submitting" />Ověřil(a) jsem otisky a důvěřuji tomuto routeru.</label>
           <label>SSH heslo<input v-model="password" type="password" autocomplete="off" required :disabled="submitting" /></label>
           <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ (connectionAction === 'zerotier-setup' || connectionAction === 'deploy') ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
-          <button :disabled="submitting || !password || (connectionAction === 'deploy' && !deployConfirmed) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
+          <button :disabled="submitting || !password || (connectionAction === 'deploy' && (!deployConfirmed || (plans[connectionNode.id]?.proxyLxc.needsBootstrap && ((plans[connectionNode.id]?.proxyLxc.creationRequired && !plans[connectionNode.id]?.proxyLxc.storageReady) || !proxyDomain || !proxySetupKey)))) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
         </form>
         <button class="secondary" :disabled="submitting || inspecting" @click="closeConnection">Zavřít</button>
       </section>
