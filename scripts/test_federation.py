@@ -1223,6 +1223,9 @@ class FederationTests(unittest.TestCase):
         self.assertIn('rollback=1', finish)
         self.assertIn('sha256sum -c -', finish)
         self.assertIn('systemctl daemon-reload', finish)
+        self.assertNotIn('sysctl --system', finish)
+        self.assertIn('ensure_forwarding_disabled net.ipv4.ip_forward', finish)
+        self.assertIn('ensure_forwarding_disabled net.ipv6.conf.all.forwarding', finish)
         self.assertNotIn('rm -f /etc/turris-federation-proxy/config.json', finish)
         finish_inner = shlex.split(finish)[6]
         install_root = self.root / 'installed-proxy'
@@ -1247,7 +1250,13 @@ class FederationTests(unittest.TestCase):
         fake_bin.mkdir()
         (fake_bin / 'systemctl').write_text('#!/bin/sh\nexit 0\n')
         (fake_bin / 'sysctl').write_text(
-            '#!/bin/sh\nif test -n "${FAIL_SYSCTL:-}"; then exit 9; fi\nexit 0\n')
+            '#!/bin/sh\n'
+            'if test "$1" = "-n"; then\n'
+            '  if test -n "${FORWARDING_ONE:-}"; then printf "1\\n"; else printf "0\\n"; fi\n'
+            '  exit 0\n'
+            'fi\n'
+            'if test "$1" = "-w" && test -n "${FAIL_SYSCTL:-}"; then exit 9; fi\n'
+            'exit 0\n')
         for path in fake_bin.iterdir():
             path.chmod(0o755)
         installed_paths = {
@@ -1262,7 +1271,7 @@ class FederationTests(unittest.TestCase):
             path.write_bytes(('old-' + name).encode())
         base_environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'])
         rolled_back = subprocess.run(['sh', '-c', finish_inner], capture_output=True,
-                                     env=dict(base_environment, FAIL_SYSCTL='1'))
+                                     env=dict(base_environment, FORWARDING_ONE='1', FAIL_SYSCTL='1'))
         self.assertEqual(9, rolled_back.returncode)
         for name, path in installed_paths.items():
             self.assertEqual(('old-' + name).encode(), path.read_bytes())
@@ -1271,7 +1280,7 @@ class FederationTests(unittest.TestCase):
         for name in names:
             shutil.copy2(directory / name, local_stage / name)
         installed = subprocess.run(['sh', '-c', finish_inner], capture_output=True,
-                                   env=base_environment)
+                                   env=dict(base_environment, FAIL_SYSCTL='1'))
         self.assertEqual(0, installed.returncode, installed.stderr.decode(errors='replace'))
         self.assertEqual(len(names), installed.stderr.count(b': OK'))
         self.assertEqual(expected, (install_root / 'state/artifact-hash').read_text().strip())

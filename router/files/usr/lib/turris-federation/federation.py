@@ -3405,7 +3405,15 @@ for spec in %s; do
   rest="${spec#*|}"; destination="${rest#*|}"; mv "$destination.new" "$destination"
 done
 systemctl daemon-reload
-sysctl --system >/dev/null
+ensure_forwarding_disabled() {
+  key="$1"
+  if test "$(sysctl -n "$key")" != 0; then
+    sysctl -w "$key=0" >/dev/null
+  fi
+  test "$(sysctl -n "$key")" = 0
+}
+ensure_forwarding_disabled net.ipv4.ip_forward
+ensure_forwarding_disabled net.ipv6.conf.all.forwarding
 if test -f /etc/turris-federation-proxy/config.json; then
   nginx -t
   systemctl enable --now nginx turris-federation-proxy.timer
