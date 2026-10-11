@@ -1241,6 +1241,7 @@ class FederationTests(unittest.TestCase):
         f.atomic(self.root / 'node.json', self.member(1))
         f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
         shutil.copy(self.root / 'root.pem', self.root / 'identity.pem')
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
 
         self.assertEqual([], f.proxy_service_ids(self.root, [https, tcp]))
         configured = f.configure_proxy_access(self.root, node(1), 'diary', True, 'alice', 'secret')
@@ -1281,6 +1282,25 @@ class FederationTests(unittest.TestCase):
         f.store_local_services(self.root, [{**service, 'protocol': 'http'}])
         with self.assertRaisesRegex(ValueError, 'jen pro HTTPS'):
             f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '', certificate)
+
+    def test_proxy_automatic_trust_uses_only_matching_local_certificate(self):
+        service = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 8443, 'path': '/'}
+        certificate = self.public_ca()
+        candidate = self.root / 'workspace-ca.pem'
+        candidate.write_text(certificate)
+        with patch.object(f, 'proxy_tls_probe', side_effect=[False, True]) as probe:
+            self.assertEqual(
+                certificate, f.automatic_proxy_upstream_ca(service, [candidate]))
+        self.assertEqual([(service,), (service, certificate)],
+                         [call.args for call in probe.call_args_list])
+        with patch.object(f, 'automatic_proxy_upstream_ca', return_value=certificate):
+            f.store_local_services(self.root, [service])
+            f.save_local_service_with_proxy(
+                self.root, node(1), service, False, True, '', '', '', 'automatic')
+        access = f.read(self.root / f.PROXY_ACCESS)['workspace']
+        self.assertEqual('automatic', access['trustMode'])
+        self.assertEqual(certificate, access['upstreamCa'])
 
     def test_proxy_lan_dns_contains_only_enabled_exact_aliases(self):
         enabled = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',
@@ -2067,7 +2087,8 @@ class FederationTests(unittest.TestCase):
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
                    'path': '/lovelace', 'proxyEnabled': '1', 'proxyUsername': 'alice',
-                   'proxyPassword': 'secret', 'proxyUpstreamCa': '', 'confirmDuplicate': '0'}
+                   'proxyPassword': 'secret', 'proxyTrustMode': 'manual',
+                   'proxyUpstreamCa': '', 'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
                                 ({'hostAddress': '192.168.1.21'}, b'409'),
                                 ({'hostAddress': '192.168.2.20'}, b'409')]:
@@ -2087,7 +2108,7 @@ class FederationTests(unittest.TestCase):
             'GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20&editorService=home-assistant', handler=handler)
         for expected in [b'Upravit slu', b'value="home-assistant" readonly', b'value="Home Assistant"',
                          b'value="8123"', b'value="/lovelace"', b'<option value="https" selected>',
-                         b'value="alice"', b'name="proxyUpstreamCa"']:
+                         b'value="alice"', b'name="proxyTrustMode"', b'name="proxyUpstreamCa"']:
             self.assertIn(expected, edit_page)
         self.assertNotIn(b'secret', edit_page)
         self.assertNotIn(b'{SSHA}', edit_page)

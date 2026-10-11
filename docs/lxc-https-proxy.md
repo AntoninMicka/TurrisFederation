@@ -41,6 +41,14 @@ jej uloží s právy pro nginx do samostatného generačního souboru pouze dan�
 `proxy_ssl_verify on`. Prázdné pole vlastní certifikát odstraní a vrátí službu k
 systémovému trust store. Vypnutí ověřování certifikátu není podporováno.
 
+Režim „Automaticky z routeru“ nejprve zkusí systémovou důvěru a potom pouze
+lokálně provisionované veřejné certifikáty. Pro Federated Workspace používá
+`/etc/federated-workspace-ca.pem`, ale jen pokud tímto certifikátem projde
+ověření skutečného endpointu včetně jeho IP SAN. Certifikátu právě nabídnutému
+po síti bez předchozí lokální důvěry automaticky nevěří. Veřejné jméno proxy
+`workspace.proxy.<zóna>` je oddělené od jména ověřovaného upstreamu; výchozí
+upstream TLS identita je jeho deklarovaná LAN IP.
+
 Starší výběr pouze podle ID lze jednorázově migrovat příkazem:
 
 ```sh
