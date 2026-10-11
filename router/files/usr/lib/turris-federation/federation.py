@@ -3404,6 +3404,7 @@ rm -f server.csr server.ext
               'upstreamCa': '/etc/ssl/certs/ca-certificates.crt',
               'nginxConfig': '/etc/nginx/conf.d/turris-federation.conf',
               'authDirectory': '/etc/nginx/turris-federation-auth',
+              'nginxGroup': 'www-data',
               'stateFile': '/var/lib/turris-federation-proxy/state.json'}
     ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
         'umask 077; cat > /etc/turris-federation-proxy/config.json')), input_data=encode(config) + b'\n')

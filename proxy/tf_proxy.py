@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed reconciler for a Turris Federation application gateway."""
 import base64
+import grp
 import ipaddress
 import json
 import os
@@ -217,11 +218,24 @@ def reconcile(config_path):
     auth_root = Path(config.get('authDirectory', '/etc/nginx/turris-federation-auth'))
     auth_generation = auth_root / str(int(time.time() * 1000000))
     auth_generation.mkdir(parents=True, exist_ok=False)
+    protected_auth = any(service['auth']['username'] is not None for service in services)
+    if protected_auth:
+        nginx_group = config.get('nginxGroup', 'www-data')
+        if not isinstance(nginx_group, str) or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', nginx_group):
+            raise ValueError('Konfigurace obsahuje neplatnou skupinu nginx.')
+        try:
+            nginx_gid = grp.getgrnam(nginx_group).gr_gid
+        except KeyError as error:
+            raise ValueError('Skupina nginx pro cteni autentizace neexistuje.') from error
+        for directory in [auth_root, auth_generation]:
+            os.chown(directory, -1, nginx_gid)
+            directory.chmod(0o750)
     for service in services:
         if service['auth']['username'] is not None:
             auth_file = auth_generation / (service['id'] + '.htpasswd')
             atomic(auth_file, '%s:%s\n' % (service['auth']['username'], service['auth']['passwordHash']))
-            auth_file.chmod(0o600)
+            os.chown(auth_file, -1, nginx_gid)
+            auth_file.chmod(0o640)
     rendered = nginx_config(services, config['domain'],
                             config.get('listenAddresses', config['listenAddress']),
                             config['certificate'], config['certificateKey'],

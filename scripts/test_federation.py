@@ -1486,6 +1486,7 @@ class FederationTests(unittest.TestCase):
         config_inputs = [data for command, data, _ in calls if 'config.json' in command]
         self.assertEqual(1, len(config_inputs))
         self.assertNotIn(secret.encode(), config_inputs[0])
+        self.assertEqual('www-data', json.loads(config_inputs[0])['nginxGroup'])
 
     def test_proxy_bootstrap_rejects_non_uuid_setup_key_before_secret_transmission(self):
         status = {'state': 'running', 'container': 'tf-proxy', 'storageReady': True,

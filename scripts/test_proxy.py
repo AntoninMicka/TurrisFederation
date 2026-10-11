@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -134,6 +135,34 @@ class ProxyTests(unittest.TestCase):
                 p.reconcile(root / 'config.json')
             self.assertEqual('previous valid configuration\n', destination.read_text())
             self.assertEqual([['nginx', '-t']], [call.args[0] for call in run.call_args_list])
+
+    def test_basic_auth_files_are_group_readable_only_by_nginx(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            auth_root = root / 'auth'
+            config = {
+                'routerPublicKey': str(root / 'router.pub'), 'routerNodeId': 'router-1',
+                'domain': 'proxy.internal', 'listenAddress': '100.81.1.4',
+                'certificate': '/cert.pem', 'certificateKey': '/key.pem',
+                'nginxConfig': str(root / 'proxy.conf'),
+                'authDirectory': str(auth_root), 'nginxGroup': 'nginx-test',
+                'stateFile': str(root / 'state.json'),
+            }
+            (root / 'config.json').write_text(json.dumps(config))
+            success = type('Result', (), {'returncode': 0, 'stderr': b''})()
+            group = type('Group', (), {'gr_gid': os.getgid()})()
+            with patch.object(p, 'fetch', return_value={}), \
+                    patch.object(p, 'verify', return_value=self.manifest()), \
+                    patch.object(p.grp, 'getgrnam', return_value=group), \
+                    patch.object(p.time, 'time', return_value=1050), \
+                    patch.object(p.subprocess, 'run', return_value=success):
+                p.reconcile(root / 'config.json')
+            generation = next(auth_root.iterdir())
+            auth_file = generation / 'diary.htpasswd'
+            self.assertEqual(0o750, auth_root.stat().st_mode & 0o777)
+            self.assertEqual(0o750, generation.stat().st_mode & 0o777)
+            self.assertEqual(0o640, auth_file.stat().st_mode & 0o777)
+            self.assertEqual(os.getgid(), auth_file.stat().st_gid)
 
     def test_failed_reload_restores_and_reloads_previous_configuration(self):
         with tempfile.TemporaryDirectory() as temporary:
