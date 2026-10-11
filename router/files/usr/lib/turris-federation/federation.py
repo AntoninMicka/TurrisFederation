@@ -1559,7 +1559,7 @@ def serve_service_dns(root):
 def validate_netbird_token(token):
     if (not isinstance(token, str) or not 20 <= len(token) <= 2048
             or any(ord(character) < 33 or ord(character) > 126 for character in token)):
-        raise ValueError('Neplatný jednorázový NetBird token.')
+        raise ValueError('Neplatný NetBird Personal Access Token (PAT); setup key sem nepatří.')
     return token
 
 
@@ -2797,15 +2797,15 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
              if action.get('address') or action.get('peer') or action.get('name') else '')
             for action in cloud_plan.get('actions', [])) + '''</ul>
 <form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/apply"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''"><input type="hidden" name="sourceGroup" value="''' + esc(cloud_plan.get('sourceGroupName', '')) + '''"><input type="hidden" name="digest" value="''' + esc(cloud_plan.get('digest', '')) + '''">
-<label>Jednorázový token znovu<input type="password" name="cloudToken" required autocomplete="off"></label><button class="button">Potvrdit a aplikovat shodný plán</button></form>'''
+<label>Stejný NetBird PAT znovu<input type="password" name="cloudToken" required autocomplete="off"></label><small>Použijte stejný krátkodobý Personal Access Token jako pro náhled; po aplikování jej můžete v NetBirdu zrušit.</small><button class="button">Potvrdit a aplikovat shodný plán</button></form>'''
     applied_summary = ('''<p>Poslední aplikování: <strong>hotovo</strong>, Network <code>''' +
                        esc(cloud_status.get('networkId', '')) + '''</code></p>''') \
         if isinstance(cloud_status, dict) and cloud_status.get('state') == 'applied' else ''
     netbird_cloud_section = '''<section><h2>NetBird Cloud · jednorázové zprovoznění</h2>
-<p class="muted">Program připraví Network, celý LAN prefix, <code>*.''' + esc(dns_configuration['zone'] if dns_configuration else 'site.internal') + '''</code>, routing peer a policy. Token se použije jen v paměti během požadavku a neukládá se. Nejdřív vznikne pouze náhled.</p>''' + applied_summary + '''
+<p class="muted">Program připraví Network, celý LAN prefix, <code>*.''' + esc(dns_configuration['zone'] if dns_configuration else 'site.internal') + '''</code>, routing peer a policy. Potřebuje krátkodobý Personal Access Token (PAT) uživatele s rolí Network Admin, nikoli setup key zařízení. PAT se použije jen v paměti během požadavku a neukládá se. Nejdřív vznikne pouze náhled.</p>''' + applied_summary + '''
 <form class="service-form" method="post" action="''' + WEB_OVERVIEW_PATH + '''netbird/plan"><input type="hidden" name="token" value="''' + esc(csrf_token) + '''">
 <label>Zdrojová skupina klientů<input name="sourceGroup" required maxlength="128" placeholder="All"></label>
-<label>Jednorázový Network Admin token<input type="password" name="cloudToken" required autocomplete="off"></label><button class="button">Načíst a zobrazit plán</button></form>''' + plan_summary + '''</section>'''
+<label>NetBird Personal Access Token (PAT)<input type="password" name="cloudToken" required autocomplete="off"></label><small>Vytvořte jej v NetBird Dashboardu v nastavení svého uživatele. Pro náhled i potvrzení vložte stejný PAT; aplikace jej neukládá.</small><button class="button">Načíst a zobrazit plán</button></form>''' + plan_summary + '''</section>'''
     catalog_reports = {}
     if doc:
         for node in doc['config']['nodes']:

@@ -24,6 +24,10 @@ pouze read-only náhled. Aplikování token vyžádá znovu a proběhne jen tehd
 se přepočtený plán shoduje s náhledem. Použitý token se neukládá do souboru,
 HTML ani logu. Při dílčí chybě se mažou v opačném pořadí pouze objekty vytvořené
 daným pokusem; existující cloudová konfigurace zůstává nedotčená.
+Jde o Personal Access Token (PAT) vytvořený v nastavení NetBird uživatele s rolí
+Network Admin (případně Admin nebo Owner), nikoli o setup key zařízení. Stejný
+krátkodobý PAT se vloží pro náhled i potvrzení a po úspěšném aplikování jej lze
+v NetBirdu zrušit.
 
 Před cloudovým krokem část **Místní NetBird klient** vytvoří read-only plán
 instalace balíčku z oficiálního OpenWrt feedu, povolení a spuštění procd služby,
