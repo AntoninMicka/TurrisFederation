@@ -1598,6 +1598,29 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(b'', hosts_path.read_bytes())
         self.assertFalse(runtime_hosts.exists())
 
+    def test_proxy_lan_dns_reconciles_without_general_service_zone(self):
+        service = {'id': 'workspace', 'name': 'Workspace',
+                   'hostAddress': '192.168.1.20', 'protocol': 'http',
+                   'port': 8080, 'path': '/'}
+        f.save_local_service(self.root, node(1), service)
+        f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '')
+        f.atomic(self.root / f.PROXY_LAN_CONFIG,
+                 {'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'})
+        runtime_hosts = self.root / 'kresd' / 'turris-federation.hosts'
+        runtime_hosts.parent.mkdir()
+        commands = []
+
+        result = f.reconcile_service_dns(
+            self.root, node(1), lambda command: commands.append(command) or True,
+            runtime_hosts)
+
+        expected = b'192.168.1.10 workspace.proxy.cacke.internal\n'
+        self.assertEqual({'zone': None, 'records': 1}, result)
+        self.assertEqual(expected, (self.root / f.SERVICE_DNS_HOSTS).read_bytes())
+        self.assertEqual(expected, runtime_hosts.read_bytes())
+        self.assertEqual(
+            ['hints.add_hosts(%s)' % json.dumps(str(runtime_hosts))], commands)
+
     def test_service_dns_reports_kresd_rejection_instead_of_false_success(self):
         service = {'id': 'ollama', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
                    'protocol': 'tcp', 'port': 11434, 'path': None}

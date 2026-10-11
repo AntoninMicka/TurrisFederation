@@ -91,7 +91,8 @@ služby povolené ve Zlatých stránkách. Stejné jméno `<id>.<doména>` tam u
 na LAN IP LXC. Doména proxy musí být platná `.internal` zóna. Pokud se shoduje
 s místní zónou služeb, proxy alias povolené služby nahradí její přímý LAN záznam,
 aby jedno jméno nikdy neukazovalo současně na upstream i LXC. Zakázaná nebo
-odstraněná služba se při dalším reconcile odstraní; wildcard nevzniká.
+odstraněná služba se při dalším reconcile odstraní; wildcard nevzniká. Tyto
+proxy aliasy fungují i bez zapnutí obecné místní DNS zóny Zlatých stránek.
 
 Každá služba je dostupná jako `https://<id>.<zadaná-doména>/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,

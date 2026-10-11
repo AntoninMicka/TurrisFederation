@@ -1241,7 +1241,7 @@ def render_service_dns_hosts(node, services, zone, router_addresses=()):
     return ('\n'.join(rows) + ('\n' if rows else '')).encode()
 
 
-def render_proxy_lan_dns_hosts(root, node, zone):
+def render_proxy_lan_dns_hosts(root, node, zone=None):
     """Publish exact proxy aliases in local DNS, never a wildcard."""
     value = read(Path(root) / PROXY_LAN_CONFIG)
     if value is None:
@@ -1249,7 +1249,8 @@ def render_proxy_lan_dns_hosts(root, node, zone):
     if not isinstance(value, dict) or set(value) != {'domain', 'address'}:
         raise ValueError('Neplatne verejne nastaveni LAN proxy.')
     domain = validate_service_dns_zone(value['domain'])
-    validate_service_dns_zone(zone)
+    if zone is not None:
+        validate_service_dns_zone(zone)
     address = ipaddress.ip_address(value['address'])
     networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
     if address.version != 4 or not any(address in network for network in networks):
@@ -1358,11 +1359,13 @@ def reconcile_service_dns(root, node, hint_command=kresd_hint_command,
     configuration = service_dns_configuration(root)
     if configuration and router_addresses is None:
         router_addresses = local_router_lan_addresses(node)
-    desired = (merge_exact_dns_hosts(
-                   render_service_dns_hosts(node, local_services(root, node),
-                                            configuration['zone'], router_addresses or []),
-                   render_proxy_lan_dns_hosts(root, node, configuration['zone']))
-               if configuration else b'')
+    service_hosts = (render_service_dns_hosts(
+        node, local_services(root, node), configuration['zone'], router_addresses or [])
+        if configuration else b'')
+    desired = merge_exact_dns_hosts(
+        service_hosts,
+        render_proxy_lan_dns_hosts(root, node,
+                                   configuration['zone'] if configuration else None))
     loaded_path = root / SERVICE_DNS_LOADED
     loaded = loaded_path.read_bytes() if loaded_path.exists() else b''
     desired_path = root / SERVICE_DNS_HOSTS
@@ -3416,9 +3419,6 @@ def configure_proxy_lan_access(root, node, credentials, current):
         domain = validate_service_dns_zone(config['domain'])
     except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
         raise ValueError('Konfigurace LXC proxy neni platna pro LAN pristup.') from error
-    dns = service_dns_configuration(root)
-    if not dns:
-        raise ValueError('LAN pristup proxy vyzaduje zapnutou mistni DNS zonu.')
     config['listenAddresses'] = [vpn_address, lan_address]
     write_config = ('umask 077; cat > /etc/turris-federation-proxy/config.json.new && '
                     'mv /etc/turris-federation-proxy/config.json.new '
