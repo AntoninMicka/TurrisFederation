@@ -3172,7 +3172,7 @@ if ! lxc-info -n "$name" >/dev/null 2>&1; then finish "missing $name"; fi
 state="$(lxc-info -n "$name" -sH)"
 if test "$state" != RUNNING; then finish "stopped $name"; fi
 echo "running $name"
-lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; calculated="$(cat "$@" | sha256sum | awk "{print \\$1}")"; receipt="$(cat /var/lib/turris-federation-proxy/artifact-hash 2>/dev/null || true)"; if test "$calculated" = "$receipt"; then echo "$calculated  -"; else echo missing; fi; connected=0; if command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then connected=1; echo netbird-connected; fi; if test -s /etc/turris-federation-proxy/config.json && test "$connected" = 1; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; calculated="$(cat "$@" | sha256sum | awk "{print \\$1}")"; receipt="$(cat /var/lib/turris-federation-proxy/artifact-hash 2>/dev/null || true)"; if test "$calculated" = "$receipt"; then echo "$calculated  -"; else echo missing; fi; connected=0; if command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then connected=1; echo netbird-connected; fi; if test -s /etc/turris-federation-proxy/config.json && test "$connected" = 1 && systemctl is-active --quiet turris-federation-proxy.timer && test "$(systemctl show -p Result --value turris-federation-proxy.service)" = success; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
 echo "__meta__ $storage $architecture"
 '''
     lines = ssh(node, credentials, command).decode().splitlines()
@@ -3330,7 +3330,9 @@ rm -f server.csr server.ext
     ssh(node, credentials, 'umask 077; cat > %s/proxy-ca.crt' % REMOTE, input_data=ca_public)
     ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
         'set -eu; nginx -t; systemctl enable --now nginx netbird turris-federation-proxy.timer; '
-        'systemctl start turris-federation-proxy.service')))
+        'if ! systemctl start turris-federation-proxy.service; then '
+        'systemctl status --no-pager --full turris-federation-proxy.service >&2 || true; '
+        'journalctl --no-pager -n 30 -u turris-federation-proxy.service >&2 || true; exit 1; fi')))
     return proxy_lxc_status(node, credentials)
 
 
@@ -3752,12 +3754,16 @@ def controller(root, req):
     if installed_artifact_components(node, credentials) != plan.get('installedArtifactComponents'):
         raise ValueError('Verze komponent routeru se od validace změnily. Validujte znovu.')
     proxy_plan = plan.get('proxyLxc', {})
-    if proxy_plan.get('needsBootstrap'):
-        if proxy_plan.get('creationRequired'):
-            raise ValueError('LXC tf-proxy chybi. Vytvorte jej rucne z Debian Trixie a validujte znovu.')
-        bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
-    elif proxy_plan.get('state') == 'running':
-        update_proxy_lxc(node, credentials, proxy_plan)
+    if proxy_plan.get('needsBootstrap') and proxy_plan.get('creationRequired'):
+        raise ValueError('LXC tf-proxy chybi. Vytvorte jej rucne z Debian Trixie a validujte znovu.')
+
+    def deploy_proxy_after_router_agent():
+        # The forced SSH command invokes the just-installed router agent. Running
+        # this earlier makes first-time proxy bootstrap fail against an old agent.
+        if proxy_plan.get('needsBootstrap'):
+            bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
+        elif proxy_plan.get('state') == 'running':
+            update_proxy_lxc(node, credentials, proxy_plan)
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))
@@ -3771,6 +3777,7 @@ def controller(root, req):
         check_member = 'import json; assert json.load(open("/etc/turris-federation/node.json")) == ' + repr(members[node['id']])
         ssh(node, credentials, 'set -eu; test -f ' + REMOTE + '/root.pub; ' + check +
             '; test ! -f ' + REMOTE + '/pending.json; python3 -c ' + shell_quote(check_member))
+        deploy_proxy_after_router_agent()
     else:
         if existing_member:
             ssh(node, credentials, software_backup_command())
@@ -3807,6 +3814,7 @@ def controller(root, req):
                 # Activate and verify the replacement before touching network settings.
                 ssh(node, credentials, '/etc/init.d/turris-federation enable && /etc/init.d/turris-federation restart && sleep 2 && /etc/init.d/turris-federation running')
                 ssh(node, credentials, 'python3 ' + PROGRAM + ' web-check ' + REMOTE)
+            deploy_proxy_after_router_agent()
         except Exception as error:
             if software_backup:
                 try:

@@ -659,6 +659,32 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('home', result['nodes'][node(1)['id']]['services'][0]['id'])
         self.assertFalse((self.root / ('plan-' + node(1)['id'] + '.json')).exists())
 
+    def test_proxy_bootstrap_runs_after_router_agent_update(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        plan['proxyLxc'] = {'state': 'running', 'container': 'tf-proxy',
+                            'needsBootstrap': True, 'creationRequired': False}
+        f.atomic(self.root / ('plan-' + node(1)['id'] + '.json'), plan)
+        req.update(action='deploy', mode='software', planId=plan['id'],
+                   proxyBootstrap={'domain': 'proxy.example.internal', 'setupKey': ''})
+        events = []
+        def ssh_result(_node, _credentials, command, **kwargs):
+            if ' install-web ' in command:
+                events.append('router-agent')
+            return b'hash'
+        def bootstrap(*_args, **_kwargs):
+            events.append('proxy')
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', side_effect=ssh_result), \
+                patch.object(f, 'installed_artifact_hash',
+                             side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'],
+                                          f.artifact_components()]), \
+                patch.object(f, 'remote', side_effect=[self.member(1), {'state': 'active'}]), \
+                patch.object(f, 'bootstrap_proxy_lxc', side_effect=bootstrap):
+            f.controller(self.root, req)
+        self.assertEqual(['router-agent', 'proxy'], events)
+
     def test_software_only_failure_restores_all_components_and_service_state(self):
         req, plan, lan = self.validation_fixture('a' * 64)
         req.update(action='deploy', mode='software', planId=plan['id'])
@@ -1218,6 +1244,9 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(expected, status['installedArtifactHash'])
         self.assertFalse(status['setupKeyRequired'])
         commands = [call.args[2] for call in remote.call_args_list]
+        status_probe = next(command for command in commands if '__meta__' in command)
+        self.assertIn('systemctl show -p Result --value turris-federation-proxy.service',
+                      status_probe)
         self.assertTrue(all(call.kwargs.get('input_data') is None for call in remote.call_args_list))
         self.assertEqual(len(names), sum('base64 -d' in command for command in commands))
         finish = next(command for command in commands if 'artifact-hash.new' in command)
@@ -1385,6 +1414,9 @@ class FederationTests(unittest.TestCase):
                                     if '/etc/dropbear/authorized_keys' in command)
         self.assertIn('mkdir -p /etc/dropbear', router_authorization)
         self.assertNotIn('install ', router_authorization)
+        service_start = next(command for command, _, _ in calls
+                             if 'systemctl start turris-federation-proxy.service' in command)
+        self.assertIn('journalctl --no-pager -n 30', service_start)
         config_inputs = [data for command, data, _ in calls if 'config.json' in command]
         self.assertEqual(1, len(config_inputs))
         self.assertNotIn(secret.encode(), config_inputs[0])
