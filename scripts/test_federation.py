@@ -688,6 +688,31 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(['router-agent', 'proxy'], events)
         configure_lan.assert_called_once()
 
+    def test_proxy_update_rechecks_bootstrap_state_after_validation(self):
+        req, plan, lan = self.validation_fixture('a' * 64)
+        plan['proxyLxc'] = {'state': 'running', 'container': 'tf-proxy',
+                            'needsBootstrap': False, 'creationRequired': False}
+        f.atomic(self.root / ('plan-' + node(1)['id'] + '.json'), plan)
+        req.update(action='deploy', mode='software', planId=plan['id'])
+        changed = {'state': 'running', 'container': 'tf-proxy', 'needsBootstrap': True}
+        ready = {'state': 'running', 'container': 'tf-proxy', 'needsBootstrap': False}
+        with patch.object(f, 'direct_lan', return_value=lan), \
+                patch.object(f, 'ssh', return_value=b'hash'), \
+                patch.object(f, 'installed_artifact_hash',
+                             side_effect=['a' * 64, f.artifact_hash()]), \
+                patch.object(f, 'installed_artifact_components',
+                             side_effect=[plan['installedArtifactComponents'],
+                                          f.artifact_components()]), \
+                patch.object(f, 'remote', side_effect=[self.member(1), {'state': 'active'}]), \
+                patch.object(f, 'update_proxy_lxc', return_value=changed), \
+                patch.object(f, 'bootstrap_proxy_lxc', return_value=ready) as bootstrap, \
+                patch.object(f, 'configure_proxy_lan_access') as configure_lan:
+            f.controller(self.root, req)
+        bootstrap.assert_called_once_with(
+            unittest.mock.ANY, unittest.mock.ANY, unittest.mock.ANY, None)
+        configure_lan.assert_called_once_with(
+            self.root, unittest.mock.ANY, unittest.mock.ANY, ready)
+
     def test_software_only_failure_restores_all_components_and_service_state(self):
         req, plan, lan = self.validation_fixture('a' * 64)
         req.update(action='deploy', mode='software', planId=plan['id'])
@@ -1489,6 +1514,8 @@ class FederationTests(unittest.TestCase):
                 return b'100.81.1.4\n'
             if 'cat /etc/turris-federation-proxy/id_ed25519.pub' in command:
                 return ('ssh-ed25519 ' + 'A' * 48 + ' tf-proxy\n').encode()
+            if '-- cat /etc/turris-federation-proxy/config.json' in command:
+                return b'{"domain":"proxy.example.internal"}\n'
             if 'openssl pkey -in' in command:
                 return b'-----BEGIN PUBLIC KEY-----\nTEST\n-----END PUBLIC KEY-----\n'
             if 'cat /etc/turris-federation-proxy/tls/ca.pem' in command:
@@ -1502,8 +1529,7 @@ class FederationTests(unittest.TestCase):
                 patch.object(f, 'direct_lan', return_value={
                     'host': '192.168.1.1', 'device': 'eth0', 'source': '192.168.1.2'}), \
                 patch.object(f, 'ssh', side_effect=remote):
-            f.bootstrap_proxy_lxc(router_node, node(1), credentials,
-                                  {'domain': 'proxy.example.internal', 'setupKey': ''})
+            f.bootstrap_proxy_lxc(router_node, node(1), credentials, None)
         self.assertFalse(any('--setup-key' in command for command, _ in calls))
 
     def test_proxy_lan_access_migrates_config_and_publishes_router_dns_state(self):

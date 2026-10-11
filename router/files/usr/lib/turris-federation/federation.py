@@ -3280,6 +3280,20 @@ def proxy_known_hosts(host, port, trusted):
 
 def bootstrap_proxy_lxc(node, target, credentials, bootstrap):
     """One-shot, secret-minimising bootstrap of LXC, NetBird, SSH and local TLS."""
+    current = ensure_proxy_container(node, credentials)
+    current = update_proxy_lxc(node, credentials, current)
+    name = current['container']
+    if bootstrap is None:
+        try:
+            existing = json.loads(ssh(
+                node, credentials,
+                'lxc-attach -n %s -- cat /etc/turris-federation-proxy/config.json' %
+                shell_quote(name)))
+            bootstrap = {'domain': existing['domain'], 'setupKey': ''}
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+            raise ValueError(
+                'Stav LXC proxy se od validace zmenil a chybi jeji puvodni domena. '
+                'Validujte znovu.') from error
     if not isinstance(bootstrap, dict) or set(bootstrap) != {'domain', 'setupKey'}:
         raise ValueError('Chybi nastaveni pro automatickou instalaci LXC proxy.')
     domain, setup_key = bootstrap['domain'], bootstrap['setupKey']
@@ -3288,9 +3302,6 @@ def bootstrap_proxy_lxc(node, target, credentials, bootstrap):
         raise ValueError('Domena HTTPS proxy neni platna.')
     if not isinstance(setup_key, str) or any(value in setup_key for value in '\r\n\0'):
         raise ValueError('Jednorazovy NetBird setup key neni platny.')
-    current = ensure_proxy_container(node, credentials)
-    current = update_proxy_lxc(node, credentials, current)
-    name = current['container']
     install_netbird = '''set -eu
 apt-get update >&2
 DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg >&2
@@ -3898,6 +3909,9 @@ def controller(root, req):
             current = bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
         elif proxy_plan.get('state') == 'running':
             current = update_proxy_lxc(node, credentials, proxy_plan)
+            if current.get('needsBootstrap'):
+                current = bootstrap_proxy_lxc(
+                    node, target, credentials, req.get('proxyBootstrap'))
         else:
             return
         configure_proxy_lan_access(root, node, credentials, current)

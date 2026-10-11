@@ -53,6 +53,9 @@ která odmítnou celý klíč při uvedení volby pro funkci vypnutou při kompi
 Instalátor server odvodí z procesu obsluhujícího jeho vlastní SSH relaci, odstraní
 starou kopii stejného klíče z obou obvyklých úložišť a ještě před startem služby
 ověří přihlášení tímto klíčem přímo z LXC.
+Po aktualizaci artefaktů znovu načte skutečný stav LXC; pokud se potřeba
+dokončení bootstrapu objevila až po validaci, převezme doménu z existující
+konfigurace a bootstrap dokončí bez nového NetBird setup key.
 
 Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze
 vybrané endpointy, případný verifier pro nginx a platí 120 sekund. Proxy navíc připíná veřejnou identitu a
