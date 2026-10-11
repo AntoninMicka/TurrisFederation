@@ -3211,7 +3211,13 @@ def ensure_proxy_container(node, credentials):
                                    'x86_64': 'amd64 x86_64'}.get(architecture)
         if not architecture_candidates:
             raise ValueError('Architektura Turrisu nema podporovanou automatickou LXC sablonu.')
-        command = ('set -eu; image_index="$(lxc-create -n %s-index-probe -t download -- --list 2>/dev/null)"; '
+        command = ('set -eu; stage="nacteni katalogu LXC"; '
+                   'cleanup_failed() { code=$?; if test "$code" != 0; then '
+                   'echo "Automaticka instalace LXC selhala ve fazi: $stage (kod $code)." >&2; '
+                   'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
+                   'mv /srv/lxc/%s "$failed"; echo "Nedokonceny LXC byl zachovan v $failed." >&2; fi; fi; '
+                   'exit "$code"; }; trap cleanup_failed EXIT; '
+                   'image_index="$(lxc-create -n %s-index-probe -t download -- --list)"; '
                    'distribution=; release=; image_arch=; compatible_arches="%s"; '
                    'for image in "debian bookworm" "debian bullseye" "debian trixie" '
                    '"ubuntu noble" "ubuntu jammy" "ubuntu focal"; do '
@@ -3229,17 +3235,17 @@ def ensure_proxy_container(node, credentials):
                    "index(\" \" arches \" \", \" \" $3 \" \") { print }' >&2; exit 1; fi; "
                    'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
                    'mv /srv/lxc/%s "$failed"; echo "Nedokonceny predchozi pokus byl zachovan v $failed." >&2; fi; '
-                   'cleanup_failed() { code=$?; if test "$code" != 0 && test -e /srv/lxc/%s; then '
-                   'failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; mv /srv/lxc/%s "$failed"; '
-                   'echo "Nedokonceny LXC byl zachovan v $failed." >&2; fi; exit "$code"; }; trap cleanup_failed EXIT; '
+                   'stage="vytvoreni kontejneru $distribution/$release/$image_arch"; '
                    'lxc-create -n %s -t download -- -d "$distribution" -r "$release" -a "$image_arch" >&2; '
+                   'stage="nastaveni automatickeho startu"; '
                    'uci -q delete lxc-auto.tf_proxy || true; uci set lxc-auto.tf_proxy=container; '
                    'uci set lxc-auto.tf_proxy.name=%s; uci set lxc-auto.tf_proxy.timeout=120; '
-                   'uci commit lxc-auto; lxc-start -n %s; '
+                   'uci commit lxc-auto; stage="spusteni kontejneru"; lxc-start -n %s; '
+                   'stage="cekani na spusteni kontejneru"; '
                    'i=0; while test "$(lxc-info -n %s -sH)" != RUNNING; do i=$((i+1)); '
                    'test "$i" -lt 60; sleep 2; done; trap - EXIT' % (
-                       shell_quote(name), architecture_candidates, architecture,
-                       shell_quote(name), shell_quote(name), shell_quote(name),
+                       shell_quote(name), shell_quote(name), shell_quote(name), shell_quote(name),
+                       architecture_candidates, architecture,
                        shell_quote(name), shell_quote(name), shell_quote(name),
                        shell_quote(name), shell_quote(name), shell_quote(name), shell_quote(name)))
         ssh(node, credentials, command, timeout=600)

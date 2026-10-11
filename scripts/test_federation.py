@@ -1245,6 +1245,7 @@ class FederationTests(unittest.TestCase):
         create_log = self.root / 'lxc-create.log'
         (fake_bin / 'lxc-create').write_text(
             '#!/bin/sh\ncase " $* " in *" --list "*) '
+            'if test -n "${LXC_LIST_FAIL:-}"; then exit 7; fi; '
             'printf "DIST RELEASE ARCH VARIANT BUILD\\nubuntu jammy armhf default today\\n";; '
             '*) printf "%s\\n" "$*" > "$LXC_CREATE_LOG";; esac\n')
         for executable, body in [('uci', '#!/bin/sh\nexit 0\n'),
@@ -1261,6 +1262,11 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(b'', selected.stderr)
         self.assertEqual(0, selected.returncode)
         self.assertIn('-d ubuntu -r jammy -a armhf', create_log.read_text())
+        failed_environment = dict(environment, LXC_LIST_FAIL='1')
+        failed = subprocess.run(['sh', '-c', local_create], env=failed_environment,
+                                capture_output=True)
+        self.assertEqual(7, failed.returncode)
+        self.assertIn(b'nacteni katalogu LXC', failed.stderr)
 
         internal = dict(missing, storageReady=False)
         with patch.object(f, 'proxy_lxc_status', return_value=internal), \
