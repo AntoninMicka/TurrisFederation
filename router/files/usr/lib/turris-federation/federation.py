@@ -3206,18 +3206,34 @@ def ensure_proxy_container(node, credentials):
     if current['state'] == 'missing':
         if not current.get('storageReady'):
             raise ValueError('Automaticke vytvoreni LXC vyzaduje externi uloziste pripojene pod /srv.')
-        architecture = {'armv7l': 'armhf', 'aarch64': 'arm64',
-                        'x86_64': 'amd64'}.get(current.get('architecture'))
-        if not architecture:
+        architecture = current.get('architecture')
+        architecture_candidates = {'armv7l': 'armv7l armhf', 'aarch64': 'arm64 aarch64',
+                                   'x86_64': 'amd64 x86_64'}.get(architecture)
+        if not architecture_candidates:
             raise ValueError('Architektura Turrisu nema podporovanou automatickou LXC sablonu.')
-        values = [name, name, architecture, name, name, name]
-        command = ('set -eu; test ! -e /srv/lxc/%s; '
-                   'lxc-create -n %s -t download -- -d debian -r bookworm -a %s >&2; '
+        command = ('set -eu; image_index="$(lxc-create -n %s-index-probe -t download -- --list 2>/dev/null)"; '
+                   'distribution=; release=; image_arch=; '
+                   'for wanted_release in bookworm bullseye trixie; do for wanted_arch in %s; do '
+                   'if printf "%%s\\n" "$image_index" | awk -v r="$wanted_release" -v a="$wanted_arch" '
+                   "'$1 == \"debian\" && $2 == r && $3 == a { found=1 } END { exit !found }'; then "
+                   'distribution=debian; release="$wanted_release"; image_arch="$wanted_arch"; break 2; fi; done; done; '
+                   'if test -z "$distribution"; then echo "Katalog LXC neobsahuje podporovany Debian pro %s." >&2; '
+                   "printf \"%%s\\\\n\" \"$image_index\" | awk '$1 == \"debian\" { print }' >&2; exit 1; fi; "
+                   'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
+                   'mv /srv/lxc/%s "$failed"; echo "Nedokonceny predchozi pokus byl zachovan v $failed." >&2; fi; '
+                   'cleanup_failed() { code=$?; if test "$code" != 0 && test -e /srv/lxc/%s; then '
+                   'failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; mv /srv/lxc/%s "$failed"; '
+                   'echo "Nedokonceny LXC byl zachovan v $failed." >&2; fi; exit "$code"; }; trap cleanup_failed EXIT; '
+                   'lxc-create -n %s -t download -- -d "$distribution" -r "$release" -a "$image_arch" >&2; '
                    'uci -q delete lxc-auto.tf_proxy || true; uci set lxc-auto.tf_proxy=container; '
                    'uci set lxc-auto.tf_proxy.name=%s; uci set lxc-auto.tf_proxy.timeout=120; '
                    'uci commit lxc-auto; lxc-start -n %s; '
                    'i=0; while test "$(lxc-info -n %s -sH)" != RUNNING; do i=$((i+1)); '
-                   'test "$i" -lt 60; sleep 2; done' % tuple(shell_quote(value) for value in values))
+                   'test "$i" -lt 60; sleep 2; done; trap - EXIT' % (
+                       shell_quote(name), architecture_candidates, architecture,
+                       shell_quote(name), shell_quote(name), shell_quote(name),
+                       shell_quote(name), shell_quote(name), shell_quote(name),
+                       shell_quote(name), shell_quote(name), shell_quote(name), shell_quote(name)))
         ssh(node, credentials, command, timeout=600)
     elif current['state'] == 'stopped':
         ssh(node, credentials, 'lxc-start -n %s' % shell_quote(name))

@@ -1230,8 +1230,13 @@ class FederationTests(unittest.TestCase):
         self.assertTrue(any('opkg install lxc-create' in command for command in commands))
         create = next(command for command in commands if 'lxc-create' in command and 'opkg' not in command)
         self.assertIn("-n 'tf-proxy'", create)
-        self.assertIn("-r bookworm -a 'armhf'", create)
+        self.assertIn('for wanted_arch in armv7l armhf', create)
+        self.assertIn('-r "$release" -a "$image_arch"', create)
+        self.assertIn('.failed-', create)
         self.assertIn('lxc-auto.tf_proxy', create)
+        syntax = subprocess.run(['sh', '-n'], input=create.encode(), capture_output=True)
+        self.assertEqual(b'', syntax.stderr)
+        self.assertEqual(0, syntax.returncode)
 
         internal = dict(missing, storageReady=False)
         with patch.object(f, 'proxy_lxc_status', return_value=internal), \
