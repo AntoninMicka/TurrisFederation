@@ -31,6 +31,9 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   privilegovanou síťovou službu nebo login autostart. Legacy backend běží jen
   po dobu desktopové relace; zůstala pouze explicitní odinstalace starších
   artefaktů.
+- [x] Odstranit ZeroTier klienta z předpokladů instalace a validace routeru.
+  Přímá LAN validace nekontroluje `zerotier-cli`; agent bez ověřeného legacy
+  rozhraní nevytváří ZeroTier zónu ani pravidla a instalátor balíček nedoplňuje.
 - [~] Připravit aplikační LXC HTTPS gateway pro jednotlivé lokální služby.
   Podepsaný lokální manifest, nginx reconciler a oddělená desktop-only
   odinstalace jsou implementované; fyzicky zbývá LAN LXC, certifikáty,
@@ -268,6 +271,12 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
   aplikování nastavení odstraní dříve vlastněné `tf_service_*` sekce firewallu.
   Mobilní přístup pokračuje cílenými zdroji a politikami podle
   [návrhu klienta](docs/mobile-client-netbird.md).
+- [x] **P1: Svázat aplikační LXC proxy se Zlatými stránkami.** Editor místní
+  HTTP(S) služby nyní řídí publikaci a volitelný Basic Auth; ukládá pouze salted
+  verifier mimo veřejný katalog. Validace deploye kontroluje existující
+  `tf-proxy` a při instalaci/aktualizaci sjednotí jeho projektové artefakty bez
+  přepsání konfigurace, certifikátů, SSH klíčů nebo NetBird identity. První
+  vytvoření LXC a fyzická síťová/TLS akceptace zůstávají otevřené.
 - [x] Po přijetí druhého routeru ověřit `wg show`, vznik peerů, `latest handshake`,
   obousměrný ping přes `tf_wg`, přechod `waiting_peers → active` a následně LAN routing.
 - [ ] Ověřit odebrání/odvolání člena, odstranění jeho WireGuard peeru a později také

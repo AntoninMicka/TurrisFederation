@@ -237,6 +237,14 @@ export interface DeploymentPlan {
   installedArtifactComponents: RouterComponents;
   componentMismatches: (keyof RouterComponents)[];
   versionMismatch: boolean;
+  zeroTierRequired: false;
+  proxyLxc: {
+    state: "running" | "stopped" | "missing" | "unavailable" | "invalid";
+    container: string | null;
+    artifactHash: string | null;
+    installedArtifactHash: string | null;
+    updateRequired: boolean;
+  };
   availableModes: DeploymentMode[];
   recommendedMode: DeploymentMode;
   stepsByMode: Record<DeploymentMode, string[]>;

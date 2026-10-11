@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import http.client
 import http.server
+import io
 import ipaddress
 import json
 import math
@@ -21,6 +22,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 import uuid
@@ -46,6 +48,7 @@ SERVICE_LIMIT = 128
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
 SERVICE_DIRECTORY_DNS_LABEL = 'zlate-stranky'
 PROXY_SERVICES = 'proxy-services.json'
+PROXY_ACCESS = 'proxy-access.json'
 SERVICE_DNS_CONFIG = 'service-dns.json'
 SERVICE_DNS_HOSTS = 'service-dns.hosts'
 SERVICE_DNS_LOADED = 'service-dns.loaded'
@@ -355,22 +358,27 @@ def self_node(root, doc):
 def local_check(node, network_id):
     if os.geteuid() != 0:
         raise ValueError('Deploy vyžaduje root.')
-    networks = json.loads(run(['zerotier-cli', '-j', 'listnetworks']))
-    network = next((n for n in networks if n.get('nwid', n.get('id')) == network_id), None)
-    if not network or network.get('status') != 'OK':
-        raise ValueError('Router není autorizovaný ve společné ZeroTier síti.')
-    assigned = [str(ipaddress.ip_interface(ip).ip) for ip in network.get('assignedAddresses', [])]
-    if node['zeroTierAddress'] not in assigned:
-        raise ValueError('ZeroTier adresa návrhu není přidělena tomuto routeru.')
-    device = network.get('portDeviceName')
-    if not isinstance(device, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', device):
-        raise ValueError('ZeroTier rozhraní nebylo nalezeno. Zkontrolujte připojení do sítě.')
-    # Verify the kernel device and its address, not only ZeroTier's metadata.
-    device_output = run(['ip', '-o', 'addr', 'show', 'dev', device]).decode()
-    device_addresses = {str(ipaddress.ip_interface(ip).ip)
-                        for ip in re.findall(r'inet6?\s+(\S+/\d+)', device_output)}
-    if node['zeroTierAddress'] not in device_addresses:
-        raise ValueError('ZeroTier zařízení nemá očekávanou IP adresu.')
+    device = None
+    # ZeroTier is a retired, optional transport. A verified legacy interface may
+    # still be reused, but a missing client must not block installation, LAN
+    # validation, the web UI, or later NetBird onboarding.
+    if shutil.which('zerotier-cli'):
+        try:
+            networks = json.loads(run(['zerotier-cli', '-j', 'listnetworks']))
+            network = next((n for n in networks if n.get('nwid', n.get('id')) == network_id
+                            and n.get('status') == 'OK'), None)
+            assigned = ([str(ipaddress.ip_interface(ip).ip)
+                         for ip in network.get('assignedAddresses', [])] if network else [])
+            candidate = network.get('portDeviceName') if network else None
+            if (node.get('zeroTierAddress') in assigned and isinstance(candidate, str)
+                    and re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', candidate)):
+                device_output = run(['ip', '-o', 'addr', 'show', 'dev', candidate]).decode()
+                device_addresses = {str(ipaddress.ip_interface(ip).ip)
+                                    for ip in re.findall(r'inet6?\s+(\S+/\d+)', device_output)}
+                if node['zeroTierAddress'] in device_addresses:
+                    device = candidate
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            device = None
     output = run(['ip', '-o', 'addr', 'show']).decode()
     actual = {str(ipaddress.ip_interface(ip).network) for ip in re.findall(r'inet6?\s+(\S+/\d+)', output)}
     if not set(node['lanCidrs']).issubset(actual):
@@ -383,7 +391,8 @@ def local_check(node, network_id):
     firewall = run(['uci', 'export', 'firewall']).decode()
     if not re.search(r"option name ['\"]?lan['\"]?", firewall):
         raise ValueError('Chybí firewall zóna lan.')
-    return {'zeroTierDevice': device, 'localNetworks': sorted(actual)}
+    return {'zeroTierDevice': device, 'zeroTierAvailable': device is not None,
+            'localNetworks': sorted(actual)}
 
 
 def uci_section(package, name, kind, values):
@@ -463,7 +472,8 @@ def render_apply(root, doc):
     node = self_node(root, doc)
     own_id = read(Path(root) / 'node.json')['nodeId']
     local = local_check(node, doc['config']['networkId']) if own_id in doc['members'] else None
-    zero_tier_zone = firewall_zone_for_device(local['zeroTierDevice']) if local else None
+    zero_tier_device = local.get('zeroTierDevice') if local else None
+    zero_tier_zone = firewall_zone_for_device(zero_tier_device) if zero_tier_device else None
     # tf_* is an explicitly reserved namespace, checked on first install.
     for package in ['network', 'firewall']:
         for section in owned_sections(package):
@@ -492,21 +502,22 @@ def render_apply(root, doc):
             'allowed_ips': [peer['wireguardAddress'] + '/32']})
     uci_section('firewall', 'tf_zone', 'zone', {'name': 'tf_fed', 'network': ['tf_wg'],
                 'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
-    zero_tier_zone = zero_tier_zone or 'tf_zt'
-    if zero_tier_zone == 'tf_zt':
-        uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [local['zeroTierDevice']],
-                    'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
+    if zero_tier_device:
+        zero_tier_zone = zero_tier_zone or 'tf_zt'
+        if zero_tier_zone == 'tf_zt':
+            uci_section('firewall', 'tf_zt_zone', 'zone', {'name': 'tf_zt', 'device': [zero_tier_device],
+                        'input': 'REJECT', 'output': 'ACCEPT', 'forward': 'REJECT'})
     uci_section('firewall', 'tf_out', 'forwarding', {'src': 'lan', 'dest': 'tf_fed'})
     uci_section('firewall', 'tf_in', 'forwarding', {'src': 'tf_fed', 'dest': 'lan'})
     uci_section('firewall', 'tf_ping', 'rule', {'src': 'tf_fed', 'proto': 'icmp', 'icmp_type': ['echo-request'], 'target': 'ACCEPT', 'family': 'ipv4'})
-    for index, peer in enumerate(peers):
+    for index, peer in enumerate(peers if zero_tier_zone else []):
         uci_section('firewall', 'tf_zt_ping_%s' % index, 'rule', {'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'],
                     'dest_ip': node['zeroTierAddress'], 'proto': 'icmp', 'icmp_type': ['echo-request'],
                     'target': 'ACCEPT', 'family': 'ipv4'})
         for suffix, protocol, port in [('wg', 'udp', WG_PORT), ('sync', 'tcp', PORT)]:
             uci_section('firewall', 'tf_%s_%s' % (suffix, index), 'rule', {'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'],
                         'dest_ip': node['zeroTierAddress'], 'proto': protocol, 'dest_port': str(port), 'target': 'ACCEPT', 'family': 'ipv4'})
-    for index, peer in enumerate(notebooks):
+    for index, peer in enumerate(notebooks if zero_tier_zone else []):
         uci_section('firewall', 'tf_wg_notebook_%s' % index, 'rule', {
             'src': zero_tier_zone, 'src_ip': peer['zeroTierAddress'], 'dest_ip': node['zeroTierAddress'],
             'proto': 'udp', 'dest_port': str(WG_PORT), 'target': 'ACCEPT', 'family': 'ipv4'})
@@ -1009,8 +1020,120 @@ def delete_local_service(root, node, service_id):
         services = local_services(root, node)
         if not any(item['id'] == service_id for item in services):
             raise ValueError('Služba neexistuje.')
+        access = proxy_access(root, services)
         services = [item for item in services if item['id'] != service_id]
         store_local_services(root, services)
+        if service_id in access:
+            del access[service_id]
+            atomic(Path(root) / PROXY_ACCESS, access)
+        return services
+
+
+def proxy_password_hash(password, salt=None):
+    """Return an nginx-compatible salted SHA-1 verifier, never plaintext."""
+    if not isinstance(password, str) or not 1 <= len(password) <= 256:
+        raise ValueError('Heslo proxy musi mit 1 az 256 znaku.')
+    salt = os.urandom(16) if salt is None else salt
+    if not isinstance(salt, bytes) or not 8 <= len(salt) <= 32:
+        raise ValueError('Neplatna sul hesla proxy.')
+    return '{SSHA}' + base64.b64encode(hashlib.sha1(password.encode() + salt).digest() + salt).decode()
+
+
+def proxy_access(root, services):
+    """Load private per-service proxy settings without projecting them publicly."""
+    value = read(Path(root) / PROXY_ACCESS, {})
+    if not isinstance(value, dict) or len(value) > SERVICE_LIMIT:
+        raise ValueError('Neplatne nastaveni pristupu proxy.')
+    available = {service['id']: service for service in services
+                 if service['protocol'] in {'http', 'https'} and re.fullmatch(
+                     r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', service['id'])}
+    result = {}
+    for service_id, access in value.items():
+        if service_id not in available or not isinstance(access, dict) or set(access) != {'username', 'passwordHash'}:
+            raise ValueError('Proxy odkazuje na chybejici nebo nepodporovanou sluzbu.')
+        username, password_hash = access['username'], access['passwordHash']
+        if username is not None and (not isinstance(username, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username)):
+            raise ValueError('Neplatne uzivatelske jmeno proxy.')
+        if ((username is None) != (password_hash is None)
+                or password_hash is not None and (not isinstance(password_hash, str)
+                                                   or not re.fullmatch(r'\{SSHA\}[A-Za-z0-9+/=]{32,128}', password_hash))):
+            raise ValueError('Neplatny hash hesla proxy.')
+        result[service_id] = {'username': username, 'passwordHash': password_hash}
+    # One-time migration from the older ID-only allowlist.
+    if not result and not (Path(root) / PROXY_ACCESS).exists():
+        for service_id in proxy_service_ids(root, services):
+            result[service_id] = {'username': None, 'passwordHash': None}
+    return result
+
+
+def configure_proxy_access(root, node, service_id, enabled, username='', password=''):
+    services = local_services(root, node)
+    service = next((item for item in services if item['id'] == service_id), None)
+    if not service or service['protocol'] not in {'http', 'https'}:
+        raise ValueError('Proxy lze povolit jen pro mistni HTTP(S) sluzbu.')
+    if type(enabled) is not bool:
+        raise ValueError('Neplatna volba pristupu proxy.')
+    username = username.strip() if isinstance(username, str) else None
+    if username and not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username):
+        raise ValueError('Uzivatelske jmeno proxy smi obsahovat jen pismena, cisla, tecku, pomlcku a podtrzitko.')
+    with locked(root):
+        access = proxy_access(root, services)
+        if not enabled:
+            access.pop(service_id, None)
+        elif not username:
+            if password:
+                raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
+            access[service_id] = {'username': None, 'passwordHash': None}
+        else:
+            previous = access.get(service_id, {})
+            password_hash = proxy_password_hash(password) if password else previous.get('passwordHash')
+            if not password_hash or previous.get('username') not in {None, username} and not password:
+                raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
+            access[service_id] = {'username': username, 'passwordHash': password_hash}
+        atomic(Path(root) / PROXY_ACCESS, access)
+        return {key: {'enabled': key in access, 'username': value['username']}
+                for key, value in access.items()}
+
+
+def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
+                                  username='', password=''):
+    """Atomically validate and persist one service together with proxy access."""
+    root = Path(root)
+    with locked(root):
+        services = local_services(root, node)
+        validated = validate_services(node, [service])[0]
+        duplicate = next((item for item in services if item['id'] != validated['id'] and
+                          (item['hostAddress'], item['protocol'], item['port'], item['path']) ==
+                          (validated['hostAddress'], validated['protocol'], validated['port'], validated['path'])), None)
+        if duplicate and not allow_duplicate:
+            raise ValueError('Stejný endpoint už má jinou službu; potvrďte duplicitu.')
+        if type(enabled) is not bool:
+            raise ValueError('Neplatna volba pristupu proxy.')
+        access = proxy_access(root, services)
+        username = username.strip() if isinstance(username, str) else None
+        if not enabled:
+            access.pop(validated['id'], None)
+        elif validated['protocol'] not in {'http', 'https'}:
+            raise ValueError('Proxy lze povolit jen pro mistni HTTP(S) sluzbu.')
+        elif username and not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username):
+            raise ValueError('Neplatne uzivatelske jmeno proxy.')
+        elif not username:
+            if password:
+                raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
+            access[validated['id']] = {'username': None, 'passwordHash': None}
+        else:
+            previous = access.get(validated['id'], {})
+            password_hash = proxy_password_hash(password) if password else previous.get('passwordHash')
+            if not password_hash or previous.get('username') not in {None, username} and not password:
+                raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
+            access[validated['id']] = {'username': username, 'passwordHash': password_hash}
+        services = validate_services(node, [item for item in services
+                                            if item['id'] != validated['id']] + [validated])
+        configuration = service_dns_configuration(root)
+        if configuration:
+            render_service_dns_hosts(node, services, configuration['zone'])
+        store_local_services(root, services)
+        atomic(root / PROXY_ACCESS, access)
         return services
 
 
@@ -1058,18 +1181,19 @@ def proxy_manifest(root, now=None):
     if not node or node['id'] not in doc['members']:
         raise ValueError('Router nema platne clenstvi federace.')
     services = local_services(root, node)
-    selected = proxy_service_ids(root, services)
+    access = proxy_access(root, services)
     zone = service_dns_configuration(root)
     zone = zone['zone'] if zone else None
     by_id = {service['id']: service for service in services}
     published = []
-    for service_id in selected:
+    for service_id in sorted(access):
         service = by_id[service_id]
         published.append({
             'id': service['id'], 'name': service['name'],
             'scheme': service['protocol'], 'host': service['hostAddress'],
             'port': service['port'], 'basePath': service['path'] or '/',
             'serverName': service_dns_name(service['id'], zone) if zone else service['hostAddress'],
+            'auth': access[service_id],
         })
     return sign(root / 'identity.pem', {
         'schema': 1, 'nodeId': node['id'], 'issuedAt': now,
@@ -2057,7 +2181,7 @@ def serve(root):
     node = self_node(root, doc)
     if not node or node['id'] not in doc['members']:
         raise ValueError('Router není členem federace.')
-    local_check(node, doc['config']['networkId'])
+    local = local_check(node, doc['config']['networkId'])
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def setup(self):
@@ -2111,6 +2235,11 @@ def serve(root):
 
     # Serve incoming peer requests even while outgoing requests are waiting.
     # State mutations still use the same file lock as SSH commands/watchdog.
+    if not local['zeroTierAvailable']:
+        # Keep the agent alive for its web/DNS instances without opening the
+        # legacy synchronization listener on an unrelated interface.
+        sync_loop(root)
+        return
     with http.server.HTTPServer((node['zeroTierAddress'], PORT), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, name='federation-http', daemon=True)
         worker.start()
@@ -2343,10 +2472,14 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     selected_definitions = [service for service in local_definitions if service['hostAddress'] == editor_host]
     editing_service = next((service for service in selected_definitions
                             if service['id'] == filters['editorService']), None)
+    private_proxy_access = proxy_access(root, local_definitions) if own else {}
     local_service_rows = ''.join(
-        '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><a class="button" href="%s?editorHost=%s&amp;editorService=%s">Upravit</a> <form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
+        '<tr><td><strong>%s</strong><br><code>%s</code></td><td><code>%s</code></td><td>%s</td><td>%s</td><td><a class="button" href="%s?editorHost=%s&amp;editorService=%s">Upravit</a> <form class="inline-form" method="post" action="%sservices/delete"><input type="hidden" name="token" value="%s"><input type="hidden" name="id" value="%s"><button class="button danger">Odstranit</button></form></td></tr>' % (
             esc(service['name']), esc(service['id']), esc(service_endpoint(service)),
             esc('HTTP(S)' if service['protocol'] in {'http', 'https'} else 'TCP'),
+            esc(('Ano · ' + private_proxy_access[service['id']]['username'])
+                if service['id'] in private_proxy_access and private_proxy_access[service['id']]['username']
+                else 'Ano · bez hesla' if service['id'] in private_proxy_access else 'Ne'),
             WEB_OVERVIEW_PATH, esc(service['hostAddress']), esc(service['id']), WEB_OVERVIEW_PATH,
             esc(csrf_token), esc(service['id'])) for service in selected_definitions)
     host_selector = '''<form class="service-form" method="get" action="''' + WEB_OVERVIEW_PATH + '''">
@@ -2360,6 +2493,7 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     if own and csrf_token and editor_host:
         form_service = editing_service or {'id': '', 'name': '', 'protocol': 'tcp', 'port': '',
                                            'path': None}
+        form_proxy = private_proxy_access.get(form_service['id'], {'username': None})
         protocol_options = ''.join('<option value="%s"%s>%s</option>' % (
             protocol, ' selected' if form_service['protocol'] == protocol else '', protocol)
             for protocol in ['tcp', 'http', 'https'])
@@ -2372,6 +2506,10 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <label>Protokol<select name="protocol">''' + protocol_options + '''</select></label>
 <label>Port<input name="port" required type="number" min="1" max="65535" value="''' + esc(form_service['port']) + '''"></label>
 <label>Cesta HTTP(S)<input name="path" placeholder="/lovelace" value="''' + esc(form_service['path'] or '') + '''"></label>
+<label>Přístup přes HTTPS proxy<select name="proxyEnabled"><option value="0"''' + (' selected' if form_service['id'] not in private_proxy_access else '') + '''>Zakázaný</option><option value="1"''' + (' selected' if form_service['id'] in private_proxy_access else '') + '''>Povolený</option></select></label>
+<label>Uživatel proxy (volitelný)<input name="proxyUsername" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="username" value="''' + esc(form_proxy.get('username') or '') + '''"></label>
+<label>Nové heslo proxy (prázdné zachová stávající)<input name="proxyPassword" type="password" maxlength="256" autocomplete="new-password"></label>
+<small>Bez uživatele bude služba dostupná bez Basic Auth. Heslo se ukládá jen jako salted hash a nevstupuje do veřejných Zlatých stránek.</small>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
 <button class="button">''' + ('Uložit změny' if editing_service else 'Uložit službu') + '''</button>''' + (
     ''' <a class="button" href="''' + WEB_OVERVIEW_PATH + '''?editorHost=''' + esc(editor_host) + '''">Zrušit úpravy</a>'''
@@ -2379,8 +2517,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     selected_host = next((host for host in editable_hosts if host['address'] == editor_host), None)
     selected_host_label = (selected_host['name'] + ' · ' if selected_host and selected_host['name'] else '') + editor_host
     selected_services = ('''<h3>Služby hosta ''' + esc(selected_host_label) + '''</h3>
-<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Akce</th></tr></thead><tbody>''' +
-        (local_service_rows or '<tr><td colspan="4">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
+<div class="table-wrap"><table><thead><tr><th>Služba</th><th>Endpoint</th><th>Typ</th><th>Proxy</th><th>Akce</th></tr></thead><tbody>''' +
+        (local_service_rows or '<tr><td colspan="5">Tento host zatím nemá definovanou žádnou službu.</td></tr>') +
         '''</tbody></table></div>''' + service_editor) if editor_host else '<p class="muted">Nejdřív vyberte hosta; potom se zobrazí pouze jeho služby a formulář pro přidání další.</p>'
     local_services_section = '''<section><h2>Editor služeb · tento router</h2>
 <p class="muted">Služby se přiřazují ke konkrétním hostům propagovaným tímto routerem. Definice nemění síť, firewall ani cílového hosta. Je-li zapnutá místní DNS zóna, změna atomicky upraví jen její přesný záznam. Ostatní routery katalog převezmou v následujícím synchronizačním cyklu.</p>''' + host_selector + selected_services + '''</section>'''
@@ -2647,11 +2785,12 @@ def web_handler(root):
                             redirect_location += '?editorHost=' + existing['hostAddress']
                     else:
                         expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path',
-                                    'confirmDuplicate'}
+                                    'proxyEnabled', 'proxyUsername', 'proxyPassword', 'confirmDuplicate'}
                         if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
-                        if fields['confirmDuplicate'][0] not in {'0', '1'}:
+                        if (fields['confirmDuplicate'][0] not in {'0', '1'}
+                                or fields['proxyEnabled'][0] not in {'0', '1'}):
                             self.send_error(400)
                             return
                         try:
@@ -2666,7 +2805,10 @@ def web_handler(root):
                             node, read(Path(root) / 'report.json', {}), definitions)}
                         if service['hostAddress'] not in allowed_hosts:
                             raise ValueError('Vyberte hosta propagovaného tímto routerem.')
-                        save_local_service(root, node, service, fields['confirmDuplicate'][0] == '1')
+                        save_local_service_with_proxy(
+                            root, node, service, fields['confirmDuplicate'][0] == '1',
+                            fields['proxyEnabled'][0] == '1', fields['proxyUsername'][0],
+                            fields['proxyPassword'][0])
                         redirect_location += '?editorHost=' + service['hostAddress']
             except ValueError as error:
                 self.send_error(409, 'Operation unavailable', explain=str(error))
@@ -2979,6 +3121,89 @@ def installed_artifact_components(node, credentials):
     return result
 
 
+def proxy_artifacts():
+    directory = Path(__file__).parent / 'proxy-artifacts'
+    names = ['tf_proxy.py', 'turris-federation-proxy.service',
+             'turris-federation-proxy.timer', '90-turris-federation-proxy.conf',
+             'config.example.json']
+    if not all((directory / name).is_file() for name in names):
+        return None
+    return directory, names
+
+
+def proxy_artifact_hash():
+    artifacts = proxy_artifacts()
+    if not artifacts:
+        return None
+    directory, names = artifacts
+    return hashlib.sha256(b''.join((directory / name).read_bytes() for name in names)).hexdigest()
+
+
+def proxy_lxc_status(node, credentials):
+    desired = proxy_artifact_hash()
+    if desired is None:
+        return {'state': 'unavailable', 'container': None, 'artifactHash': None,
+                'installedArtifactHash': None, 'updateRequired': False}
+    command = '''set -eu
+name=tf-proxy
+test ! -s /etc/turris-federation/proxy-lxc-name || name="$(cat /etc/turris-federation/proxy-lxc-name)"
+case "$name" in (*[!A-Za-z0-9_.-]*|'') echo invalid; exit;; esac
+if ! command -v lxc-info >/dev/null; then echo unavailable; exit; fi
+if ! lxc-info -n "$name" >/dev/null 2>&1; then echo "missing $name"; exit; fi
+state="$(lxc-info -n "$name" -sH)"
+if test "$state" != RUNNING; then echo "stopped $name"; exit; fi
+echo "running $name"
+lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; exit; }; done; cat "$@" | sha256sum' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+'''
+    lines = ssh(node, credentials, command).decode().splitlines()
+    state, name = (lines[0].split(' ', 1) + [None])[:2]
+    installed = lines[1].split()[0] if state == 'running' and len(lines) > 1 else None
+    if installed is not None and not re.fullmatch(r'[0-9a-f]{64}', installed):
+        installed = None
+    return {'state': state, 'container': name, 'artifactHash': desired,
+            'installedArtifactHash': installed,
+            'updateRequired': state == 'running' and desired is not None and installed != desired}
+
+
+def update_proxy_lxc(node, credentials, expected):
+    current = proxy_lxc_status(node, credentials)
+    if current['state'] != 'running':
+        return current
+    if current['container'] != expected.get('container'):
+        raise ValueError('LXC proxy se od validace zmenilo. Validujte znovu.')
+    if not current['updateRequired']:
+        return current
+    artifacts = proxy_artifacts()
+    if not artifacts:
+        raise ValueError('V aplikaci chybi instalacni artefakty LXC proxy.')
+    directory, names = artifacts
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w:gz') as archive:
+        for name in names:
+            archive.add(directory / name, arcname=name)
+    inner = '''set -eu
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tar -xzf - -C "$tmp"
+if command -v apt-get >/dev/null; then apt-get update >&2; DEBIAN_FRONTEND=noninteractive apt-get install -y nginx openssh-client openssl ca-certificates python3 >&2; fi
+install -d -m 0755 /usr/local/lib/turris-federation-proxy /usr/local/share/turris-federation-proxy /etc/nginx/turris-federation-auth
+install -m 0755 "$tmp/tf_proxy.py" /usr/local/lib/turris-federation-proxy/tf_proxy.py
+install -m 0644 "$tmp/turris-federation-proxy.service" "$tmp/turris-federation-proxy.timer" /etc/systemd/system/
+install -m 0644 "$tmp/90-turris-federation-proxy.conf" /etc/sysctl.d/90-turris-federation-proxy.conf
+install -m 0644 "$tmp/config.example.json" /usr/local/share/turris-federation-proxy/config.example.json
+python3 -m py_compile /usr/local/lib/turris-federation-proxy/tf_proxy.py
+systemctl daemon-reload
+sysctl --system >/dev/null
+if test -f /etc/turris-federation-proxy/config.json; then systemctl enable --now nginx turris-federation-proxy.timer; fi
+'''
+    command = 'lxc-attach -n %s -- sh -c %s' % (
+        shell_quote(current['container']), shell_quote(inner))
+    ssh(node, credentials, command, input_data=stream.getvalue())
+    updated = proxy_lxc_status(node, credentials)
+    if updated['installedArtifactHash'] != proxy_artifact_hash():
+        raise ValueError('Aktualizace LXC proxy nedosahla ocekavane verze.')
+    return updated
+
+
 def software_component_paths():
     return [PROGRAM, '/etc/init.d/turris-federation',
             '/etc/turris-webapps/80-turris-federation.json',
@@ -3204,12 +3429,8 @@ def controller(root, req):
     if action == 'validate':
         lan = direct_lan(node)
         node = dict(node, _deployLan=lan)
-        probe = ssh(node, credentials, "set -eu; test \"$(id -u)\" = 0; test -f /etc/config/network; test -d /www; test -d /etc/lighttpd/conf.d; command -v lighttpd >/dev/null; command -v uci >/dev/null; command -v opkg >/dev/null; echo __BOARD__; ubus call system board; echo __ZT__; zerotier-cli -j listnetworks; echo __ADDR__; ip -o addr show; echo __END__")
+        probe = ssh(node, credentials, "set -eu; test \"$(id -u)\" = 0; test -f /etc/config/network; test -d /www; test -d /etc/lighttpd/conf.d; command -v lighttpd >/dev/null; command -v uci >/dev/null; command -v opkg >/dev/null; echo __BOARD__; ubus call system board; echo __ADDR__; ip -o addr show; echo __END__")
         text = probe.decode()
-        zt = json.loads(text.split('__ZT__\n', 1)[1].split('__ADDR__\n', 1)[0])
-        net = next((n for n in zt if n.get('nwid', n.get('id')) == config['networkId']), None)
-        if not net or net.get('status') != 'OK' or target['zeroTierAddress'] not in [str(ipaddress.ip_interface(v).ip) for v in net.get('assignedAddresses', [])]:
-            raise ValueError('Nejdřív zprovozněte ZeroTier a opravte jeho adresu v draftu.')
         actual = {str(ipaddress.ip_interface(v).network) for v in re.findall(r'inet6?\s+(\S+/\d+)', text.split('__ADDR__\n')[1])}
         if not set(target['lanCidrs']).issubset(actual):
             raise ValueError('LAN sítě draftu neodpovídají routeru. Opravte draft a validujte znovu.')
@@ -3223,6 +3444,7 @@ def controller(root, req):
         requires_endpoint_agent = any(notebook.get('wireguardKey')
                                       for notebook in config.get('notebooks', []))
         versions_match = installed == available and not component_mismatches
+        proxy_lxc = proxy_lxc_status(node, credentials)
         settings_supported = updating and installed and (versions_match or not requires_endpoint_agent)
         available_modes = ['full']
         if updating:
@@ -3233,6 +3455,8 @@ def controller(root, req):
                 'installedArtifactHash': installed, 'artifactComponents': available_parts,
                 'installedArtifactComponents': installed_parts,
                 'componentMismatches': component_mismatches, 'versionMismatch': not versions_match,
+                'zeroTierRequired': False,
+                'proxyLxc': proxy_lxc,
                 'availableModes': available_modes,
                 'recommendedMode': ('settings' if updating and versions_match else
                                     'software' if updating else 'full'),
@@ -3245,20 +3469,24 @@ def controller(root, req):
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
-                          'Předat nové síťové nastavení ostatním přijatým routerům přes ZeroTier; nedostupné uzly je převezmou po obnovení spojení.'],
+                          ('Aktualizovat běžící LXC proxy %s bez změny její konfigurace, certifikátů a VPN identity.' % proxy_lxc['container']
+                           if proxy_lxc['state'] == 'running' else
+                           'LXC proxy není běžící; ponechat ji beze změny a zobrazit stav v plánu.'),
+                          'Pokusit se předat nové síťové nastavení dostupným legacy peerům; jejich nedostupnost instalaci neblokuje.'],
                 'config': config, 'validatedAt': time.time()}
         plan['stepsByMode'] = {'full': plan['steps'], 'settings': [
             'Zachovat nainstalovaného agenta, web a závislosti.',
             'Podepsat a přenést konfiguraci včetně všech draftů.',
             'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
             'Ověřit další SSH spojení a potvrdit aplikování nastavení.',
-            'Předat síťové nastavení ostatním přijatým routerům přes ZeroTier.'],
+            'Pokusit se předat síťové nastavení dostupným legacy peerům; jejich nedostupnost aktualizaci neblokuje.'],
             'software': [
                 'Doinstalovat pouze chybějící závislosti z repozitáře routeru.',
                 'Zálohovat všechny nahrazované komponenty a původní stav služby pro automatický návrat při chybě.',
                 'Atomicky aktualizovat agenta, init službu a webové soubory přes přímou LAN.',
                 'Ověřit identitu již přijatého routeru a shodu všech komponent.',
                 'Restartovat agenta a načíst nový podepsaný provozní report.',
+                'Zkontrolovat a případně aktualizovat existující běžící LXC proxy.',
                 'Neměnit UCI síť, firewall, WireGuard ani podepsanou topologii.']}
         atomic(root / ('plan-' + node['id'] + '.json'), plan)
         return plan
@@ -3283,6 +3511,8 @@ def controller(root, req):
         raise ValueError('Verze agenta na routeru se od validace změnila. Validujte znovu.')
     if installed_artifact_components(node, credentials) != plan.get('installedArtifactComponents'):
         raise ValueError('Verze komponent routeru se od validace změnily. Validujte znovu.')
+    if plan.get('proxyLxc', {}).get('state') == 'running':
+        update_proxy_lxc(node, credentials, plan['proxyLxc'])
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))

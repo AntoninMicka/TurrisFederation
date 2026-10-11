@@ -80,6 +80,12 @@ platností, kontrolu změny UCI od validace, instalaci, WireGuard přes ZeroTier
 UCI zálohu a rollback a předávání revizí mezi routery. Import slučuje drafty
 podle ID a zachovává lokální SSH důvěru; audit již nesbírá privátní WG klíče.
 
+Validace a instalace routeru probíhají výhradně přes ověřené přímé LAN spojení
+a nevyžadují nainstalovaný, spuštěný ani autorizovaný ZeroTier klient. Pokud je
+starší ZeroTier transport přítomný a jeho rozhraní přesně odpovídá návrhu, agent
+jej může dočasně znovu použít; jinak nevytvoří jeho firewallovou zónu ani
+pravidla. Instalátor balíček ZeroTier nedoinstaluje.
+
 Při kontrole byla opravena záměna revizí během nepotvrzeného deploye:
 `accept` odmítne novější revizi, dokud je rozpracovaná předchozí, a `confirm`
 kontroluje shodu přijaté a rozpracované revize. Dva regresní testy pokrývají

@@ -865,6 +865,8 @@ async function submitConnection() {
             <details v-if="plans[node.id]">
               <summary>Validovaný plán · platný do {{ new Date(plans[node.id].expiresAt * 1000).toLocaleTimeString('cs-CZ') }}</summary>
               <p>LAN: {{ plans[node.id].lan.source }} → {{ plans[node.id].lan.host }} ({{ plans[node.id].lan.device }})</p>
+              <p>ZeroTier klient: není pro validaci ani instalaci vyžadován</p>
+              <p>LXC proxy: {{ plans[node.id].proxyLxc.state }}<template v-if="plans[node.id].proxyLxc.container"> · {{ plans[node.id].proxyLxc.container }}</template> · {{ plans[node.id].proxyLxc.updateRequired ? 'bude aktualizována' : 'bez požadované aktualizace' }}</p>
               <p>Verze agenta: {{ plans[node.id].installedArtifactHash?.slice(0, 12) ?? 'nenainstalováno' }} → {{ plans[node.id].artifactHash.slice(0, 12) }}</p>
               <p v-for="component in routerComponentKeys" :key="component">
                 {{ routerComponentLabels[component] }}:

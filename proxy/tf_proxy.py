@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ import time
 LIMIT = 256 * 1024
 ID = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z')
 DOMAIN = re.compile(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z')
+PASSWORD_HASH = re.compile(r'\{SSHA\}[A-Za-z0-9+/=]{32,128}\Z')
 
 
 def verify(public_key, envelope):
@@ -56,7 +58,7 @@ def validate_manifest(payload, node_id, now=None):
     if not isinstance(payload['services'], list) or len(payload['services']) > 128:
         raise ValueError('Manifest obsahuje neplatny seznam sluzeb.')
     result, seen = [], set()
-    fields = {'id', 'name', 'scheme', 'host', 'port', 'basePath', 'serverName'}
+    fields = {'id', 'name', 'scheme', 'host', 'port', 'basePath', 'serverName', 'auth'}
     for service in payload['services']:
         if not isinstance(service, dict) or set(service) != fields:
             raise ValueError('Manifest obsahuje neplatnou sluzbu.')
@@ -79,12 +81,23 @@ def validate_manifest(payload, node_id, now=None):
             raise ValueError('Manifest obsahuje neplatne TLS jmeno upstreamu.')
         if not isinstance(service['name'], str) or not service['name']:
             raise ValueError('Manifest obsahuje neplatny nazev sluzby.')
+        auth = service['auth']
+        if not isinstance(auth, dict) or set(auth) != {'username', 'passwordHash'}:
+            raise ValueError('Manifest obsahuje neplatne nastaveni autentizace.')
+        username, password_hash = auth['username'], auth['passwordHash']
+        if ((username is None) != (password_hash is None)
+                or username is not None and (not isinstance(username, str)
+                    or not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username))
+                or password_hash is not None and (not isinstance(password_hash, str)
+                    or not PASSWORD_HASH.fullmatch(password_hash))):
+            raise ValueError('Manifest obsahuje neplatne prihlasovaci udaje.')
         seen.add(service_id)
         result.append({**service, 'host': str(host)})
     return sorted(result, key=lambda item: item['id'])
 
 
-def nginx_config(services, domain, listen, certificate, certificate_key, upstream_ca):
+def nginx_config(services, domain, listen, certificate, certificate_key, upstream_ca,
+                 auth_directory='/etc/nginx/turris-federation-auth/current'):
     address = ipaddress.ip_address(listen)
     if (not DOMAIN.fullmatch(domain) or address.is_unspecified or address.is_multicast
             or address.is_loopback):
@@ -112,13 +125,18 @@ server {
                    '        proxy_ssl_verify on;\n'
                    '        proxy_ssl_trusted_certificate %s;\n' %
                    (service['serverName'], upstream_ca))
+        auth = ''
+        if service['auth']['username'] is not None:
+            auth = ('        auth_basic "Turris Federation";\n'
+                    '        auth_basic_user_file %s/%s.htpasswd;\n' %
+                    (auth_directory, service['id']))
         blocks.append('''server {
     listen %s:443 ssl;
     server_name %s.%s;
     ssl_certificate %s;
     ssl_certificate_key %s;
     location / {
-%s        proxy_pass %s;
+%s%s        proxy_pass %s;
         proxy_http_version 1.1;
         proxy_set_header Host %s;
         proxy_set_header X-Forwarded-Host $host;
@@ -129,7 +147,7 @@ server {
         proxy_set_header Connection $connection_upgrade;
     }
 }
-''' % (listen, service['id'], domain, certificate, certificate_key, tls, upstream,
+''' % (listen, service['id'], domain, certificate, certificate_key, tls, auth, upstream,
        service['serverName'], service['serverName'], service['id'], domain))
     return header + ''.join(blocks)
 
@@ -178,9 +196,18 @@ def reconcile(config_path):
         # Revocation is fail-closed: after the last signed manifest expires,
         # a disconnected proxy retains TLS but publishes no upstream servers.
         services, next_state = [], state
+    auth_root = Path(config.get('authDirectory', '/etc/nginx/turris-federation-auth'))
+    auth_generation = auth_root / str(int(time.time() * 1000000))
+    auth_generation.mkdir(parents=True, exist_ok=False)
+    for service in services:
+        if service['auth']['username'] is not None:
+            auth_file = auth_generation / (service['id'] + '.htpasswd')
+            atomic(auth_file, '%s:%s\n' % (service['auth']['username'], service['auth']['passwordHash']))
+            auth_file.chmod(0o600)
     rendered = nginx_config(services, config['domain'], config['listenAddress'],
                             config['certificate'], config['certificateKey'],
-                            config.get('upstreamCa', '/etc/ssl/certs/ca-certificates.crt'))
+                            config.get('upstreamCa', '/etc/ssl/certs/ca-certificates.crt'),
+                            str(auth_generation))
     destination = Path(config.get('nginxConfig', '/etc/nginx/conf.d/turris-federation.conf'))
     staged = destination.with_suffix('.candidate')
     atomic(staged, rendered)
@@ -188,10 +215,14 @@ def reconcile(config_path):
                             stderr=subprocess.PIPE, timeout=10)
     if result.returncode:
         staged.unlink(missing_ok=True)
+        shutil.rmtree(auth_generation, ignore_errors=True)
         raise ValueError('Nova konfigurace nginx neprosla kontrolou; posledni platna zustava aktivni.')
     os.replace(staged, destination)
     subprocess.run(['nginx', '-s', 'reload'], check=True, timeout=10)
     atomic(state_path, json.dumps(next_state, sort_keys=True) + '\n')
+    for previous in auth_root.iterdir():
+        if previous != auth_generation and previous.is_dir():
+            shutil.rmtree(previous)
 
 
 if __name__ == '__main__':

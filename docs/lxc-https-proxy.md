@@ -1,8 +1,9 @@
 # Aplikační HTTPS gateway v LXC
 
-Stav: implementovany format podepsaneho manifestu, fail-closed reconciler nginx a
-systemd timer. Vytvoření LXC, certifikát a NetBird policy zatím nebyly fyzicky
-přijaty.
+Stav: implementovaný podepsaný manifest, volba služby a volitelný Basic Auth
+přímo ve Zlatých stránkách, fail-closed reconciler nginx, systemd timer a
+automatická aktualizace již existujícího LXC při deployi routeru. Vytvoření LXC,
+certifikát a NetBird policy zatím nebyly fyzicky přijaty.
 
 ## Bezpecnostni hranice
 
@@ -24,8 +25,14 @@ jeho expirace (120 sekund), pak atomicky nasadí prázdnou konfiguraci bez upstr
 
 ## Zdroj seznamu
 
-Na lokalnim Turrisu vybere spravce pouze HTTP(S) ID z jeho vlastniho
-`services.json`:
+Na lokálním Turrisu správce ve Zlatých stránkách otevře editor služby, zapne
+„Přístup přes HTTPS proxy“ a volitelně zadá uživatelské jméno a heslo. Bez jména
+je endpoint publikovaný bez Basic Auth. Heslo se nikdy neukládá v otevřeném
+textu: router uloží pouze salted `{SSHA}` verifier do soukromého
+`proxy-access.json`; veřejný katalog `services.json` ani provozní report jej
+neobsahuje. Prázdné heslo při další editaci zachová dosavadní verifier.
+
+Starší výběr pouze podle ID lze jednorázově migrovat příkazem:
 
 ```sh
 printf '["neurodiary","chatbot"]' |
@@ -40,8 +47,8 @@ prikazem:
 restrict,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
 ```
 
-Manifest je podepsany clenskou identitou lokalniho Turrisu, obsahuje pouze
-vybrane endpointy a plati 120 sekund. Proxy navic pripina verejnou identitu a
+Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze
+vybrané endpointy, případný verifier pro nginx a platí 120 sekund. Proxy navíc připíná veřejnou identitu a
 `nodeId` tohoto routeru. SSH klic proxy tedy neumozni shell ani vyber jineho
 routeru a podvrzeny seznam neprojde.
 
@@ -71,6 +78,22 @@ Uvnitř Debian/Ubuntu LXC nainstalujte `nginx`, `openssh-client`, `openssl`,
    potom neukladejte;
 8. spustte `systemctl enable --now nginx netbird turris-federation-proxy.timer`
    a rucne `systemctl start turris-federation-proxy.service`.
+
+Kontejner pojmenujte `tf-proxy`. Používáte-li jiné jméno, uložte na Turrisu
+pouze toto jméno do `/etc/turris-federation/proxy-lxc-name` (povolené jsou
+písmena, čísla, tečka, pomlčka a podtržítko). Každá následná validace deploye
+zobrazí stav a verzi proxy. Instalace nebo aktualizace routeru pak u běžícího
+kontejneru automaticky:
+
+- doinstaluje běžné Debian/Ubuntu závislosti a atomicky nahradí projektové
+  skripty, systemd jednotky a sysctl profil;
+- ověří Python a výsledný hash artefaktů;
+- zachová `config.json`, SSH klíče, certifikáty, CA a NetBird identitu;
+- nic neudělá, pokud LXC runtime, kontejner nebo jeho běh chybí.
+
+První vytvoření kontejneru zůstává výslovný bootstrap, protože vyžaduje volbu
+externího úložiště, distribuce, LAN adresy, TLS jmen a jednorázového NetBird
+setup key. Tento klíč se do aplikace ani na Turris neukládá.
 
 Kazda sluzba je dostupna jako `https://<id>.proxy.cacke.internal/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,

@@ -5,6 +5,13 @@ use tokio::io::AsyncWriteExt;
 use std::{fs, process::Stdio, time::Duration};
 
 const CONTROLLER: &str = include_str!("../../router/files/usr/lib/turris-federation/federation.py");
+const PROXY_ARTIFACTS: &[(&str, &str)] = &[
+    ("tf_proxy.py", include_str!("../../proxy/tf_proxy.py")),
+    ("turris-federation-proxy.service", include_str!("../../proxy/turris-federation-proxy.service")),
+    ("turris-federation-proxy.timer", include_str!("../../proxy/turris-federation-proxy.timer")),
+    ("90-turris-federation-proxy.conf", include_str!("../../proxy/90-turris-federation-proxy.conf")),
+    ("config.example.json", include_str!("../../proxy/config.example.json")),
+];
 
 #[tauri::command]
 pub async fn deployment_action(action: String, node_id: Option<String>, credentials: Option<SshCredentials>, plan_id: Option<String>, mode: Option<String>, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
@@ -43,6 +50,11 @@ pub async fn deployment_action(action: String, node_id: Option<String>, credenti
     // Each process loads its own source; concurrent calls cannot truncate an executing script.
     let root = state.ssh_dir.parent().ok_or("Chybí datový adresář.")?.join("deployment");
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let proxy_dir = root.join("proxy-artifacts");
+    fs::create_dir_all(&proxy_dir).map_err(|e| e.to_string())?;
+    for (name, contents) in PROXY_ARTIFACTS {
+        fs::write(proxy_dir.join(name), contents).map_err(|e| e.to_string())?;
+    }
     let script = root.join(format!("controller-{}.py", uuid::Uuid::new_v4()));
     fs::write(&script, CONTROLLER).map_err(|e| e.to_string())?;
     let request = json!({"action": action, "nodeId": node_id, "planId": plan_id, "mode": mode, "credentials": auth,

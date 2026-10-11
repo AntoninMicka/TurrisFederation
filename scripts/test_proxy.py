@@ -24,10 +24,12 @@ class ProxyTests(unittest.TestCase):
                 'services': [
                     {'id': 'diary', 'name': 'Diary', 'scheme': 'https',
                      'host': '192.168.1.20', 'port': 443, 'basePath': '/app',
-                     'serverName': 'diary.cacke.internal'},
+                     'serverName': 'diary.cacke.internal',
+                     'auth': {'username': 'alice', 'passwordHash': '{SSHA}AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}},
                     {'id': 'chat', 'name': 'Chat', 'scheme': 'http',
                      'host': '192.168.1.21', 'port': 8080, 'basePath': '/',
-                     'serverName': '192.168.1.21'},
+                     'serverName': '192.168.1.21',
+                     'auth': {'username': None, 'passwordHash': None}},
                 ]}
 
     def test_manifest_is_short_lived_router_bound_and_private(self):
@@ -55,6 +57,9 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('proxy_pass https://192.168.1.20:443/app/;', config)
         self.assertIn('proxy_ssl_verify on;', config)
         self.assertIn('proxy_ssl_name diary.cacke.internal;', config)
+        self.assertIn('auth_basic "Turris Federation";', config)
+        self.assertIn('/diary.htpasswd;', config)
+        self.assertEqual(1, config.count('auth_basic_user_file'))
         self.assertIn('return 421;', config)
         self.assertNotIn('listen 0.0.0.0', config)
 
@@ -75,6 +80,7 @@ class ProxyTests(unittest.TestCase):
                 'domain': 'proxy.cacke.internal', 'listenAddress': '100.81.1.4',
                 'certificate': '/cert.pem', 'certificateKey': '/key.pem',
                 'nginxConfig': str(root / 'proxy.conf'), 'stateFile': str(root / 'state.json'),
+                'authDirectory': str(root / 'auth'),
             }
             (root / 'config.json').write_text(json.dumps(config))
             (root / 'state.json').write_text('{"expiresAt":1000}')

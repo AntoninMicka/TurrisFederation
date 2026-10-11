@@ -305,16 +305,16 @@ fn build_findings(node: &FederationNode, payload: &str, observed_at: &str, netwo
         });
     };
     let zt = zerotier::parse(payload, &node.id, network_id, observed_at);
-    if zt.state != "connected" && !(network_id.is_none() && zt.state == "no_network") {
+    if zt.installed && zt.state != "connected" && !(network_id.is_none() && zt.state == "no_network") {
         add(if zt.state == "not_installed" || zt.state == "error" || zt.state == "unknown" { "error" } else { "warning" }, "zerotier", zt.summary.clone(),
             "Použijte kontrolu a nastavení ZeroTier. Čekající router autorizujte v ZeroTier Central a obnovte stav.",
             network_id.map(|id| format!("ONLINE a členství OK v síti {id}")).unwrap_or_else(|| "ONLINE".into()), zt.details.clone());
-    } else if network_id.is_some() && (!zt.persistent || zt.service_enabled != Some(true)) {
+    } else if zt.installed && network_id.is_some() && (!zt.persistent || zt.service_enabled != Some(true)) {
         add("warning", "zerotier", "ZeroTier nemá potvrzené trvalé nastavení pro restart routeru.".into(),
             "Použijte nastavení ZeroTier pro uložení členství a zapnutí služby při startu.", "Trvalé členství a automatický start služby.".into(),
             format!("Členství v UCI: {}\nStart služby: {:?}", zt.persistent, zt.service_enabled));
     }
-    if zt.wireguard_interface_blocked == Some(false) {
+    if zt.installed && zt.wireguard_interface_blocked == Some(false) {
         add("warning", "zerotier", "ZeroTier může použít federační WireGuard rozhraní jako fyzickou cestu.".into(),
             "Spusťte nastavení ZeroTier; uloží interfacePrefixBlacklist pro tf_wg a bezpečně restartuje službu.",
             "ZeroTier má načtený zákaz prefixu rozhraní tf_wg.".into(), zt.details.clone());
@@ -375,6 +375,13 @@ mod audit_tests {
         assert!(display_observation(None).contains("nepodařilo"));
         assert!(display_observation(Some("")).contains("prázdný"));
         assert!(build_findings(&node(), "", "now", None).iter().all(|f| !f.observed_state.is_empty()));
+    }
+
+    #[test]
+    fn missing_zerotier_client_is_not_an_audit_finding() {
+        let payload = "__TF_ADDRESSES__\n[{\"local\":\"192.168.10.1\",\"prefixlen\":24}]\n__TF_ADDRESSES_STATUS__\n0\n__TF_ROUTES__\n[]\n__TF_ROUTES_STATUS__\n0\n__TF_ZT_INSTALLED__\n0\n__TF_WIREGUARD__\n";
+        let findings = build_findings(&node(), payload, "now", Some("abcdef0123456789"));
+        assert!(findings.iter().all(|finding| finding.component != "zerotier"));
     }
 
     #[test]

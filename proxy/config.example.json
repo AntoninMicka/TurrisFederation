@@ -11,5 +11,6 @@
   "certificateKey": "/etc/turris-federation-proxy/tls/key.pem",
   "upstreamCa": "/etc/ssl/certs/ca-certificates.crt",
   "nginxConfig": "/etc/nginx/conf.d/turris-federation.conf",
+  "authDirectory": "/etc/nginx/turris-federation-auth",
   "stateFile": "/var/lib/turris-federation-proxy/state.json"
 }

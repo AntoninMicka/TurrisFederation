@@ -524,8 +524,7 @@ class FederationTests(unittest.TestCase):
         target, _, _ = self.lan_fixture()
         f.atomic(self.root / 'members.json', {target['id']: self.member(1)})
         lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
-        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': 'abcdef0123456789', 'status': 'OK', 'portDeviceName': 'zt1234',
-                 'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
+        probe = b'__BOARD__\n{}\n__ADDR__\ninet 192.168.1.1/24\n__END__\n'
         req = {'action': 'validate', 'nodes': [target], 'networkId': 'abcdef0123456789',
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
         with patch.object(f, 'direct_lan', return_value=lan), \
@@ -535,14 +534,15 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('update', plan['operation'])
         self.assertEqual(lan, plan['lan'])
         self.assertEqual(f.artifact_hash(), plan['artifactHash'])
+        self.assertFalse(plan['zeroTierRequired'])
+        self.assertTrue(all('zerotier-cli' not in call.args[2] for call in ssh.call_args_list))
         self.assertTrue(all('opkg install' not in call.args[2] for call in ssh.call_args_list))
 
     def validation_fixture(self, installed, enrolled=True):
         target = node(1)
         f.atomic(self.root / 'members.json', {target['id']: self.member(1)} if enrolled else {})
         lan = {'host': target['sshHost'], 'device': 'eth0', 'source': '192.168.1.10'}
-        probe = ('__BOARD__\n{}\n__ZT__\n' + json.dumps([{'nwid': self.config['networkId'], 'status': 'OK',
-                 'assignedAddresses': ['10.147.0.1/24']}]) + '\n__ADDR__\ninet 192.168.1.1/24\n__END__\n').encode()
+        probe = b'__BOARD__\n{}\n__ADDR__\ninet 192.168.1.1/24\n__END__\n'
         req = {'action': 'validate', 'nodes': self.nodes, 'networkId': self.config['networkId'],
                'nodeId': target['id'], 'credentials': {'hostKey': 'key', 'password': 'test'}}
         parts = (f.artifact_components() if installed == f.artifact_hash() else
@@ -1178,16 +1178,42 @@ class FederationTests(unittest.TestCase):
         shutil.copy(self.root / 'root.pem', self.root / 'identity.pem')
 
         self.assertEqual([], f.proxy_service_ids(self.root, [https, tcp]))
-        self.assertEqual(['diary'], f.store_proxy_service_ids(self.root, node(1), ['diary']))
+        configured = f.configure_proxy_access(self.root, node(1), 'diary', True, 'alice', 'secret')
+        self.assertEqual('alice', configured['diary']['username'])
         payload = f.verify(self.public, f.proxy_manifest(self.root, now=1000))
         self.assertEqual((1, node(1)['id'], 1000, 1120),
                          (payload['schema'], payload['nodeId'], payload['issuedAt'], payload['expiresAt']))
         self.assertEqual([{'id': 'diary', 'name': 'Diary', 'scheme': 'https',
                            'host': '192.168.1.20', 'port': 443, 'basePath': '/app',
-                           'serverName': '192.168.1.20'}], payload['services'])
+                           'serverName': '192.168.1.20',
+                           'auth': {'username': 'alice', 'passwordHash': payload['services'][0]['auth']['passwordHash']}}], payload['services'])
+        self.assertTrue(payload['services'][0]['auth']['passwordHash'].startswith('{SSHA}'))
+        self.assertNotIn('secret', json.dumps(payload))
         with self.assertRaisesRegex(ValueError, 'chybejici|nepodporovanou'):
             f.store_proxy_service_ids(self.root, node(1), ['ollama'])
-        self.assertEqual(['diary'], f.read(self.root / f.PROXY_SERVICES))
+        self.assertEqual('alice', f.read(self.root / f.PROXY_ACCESS)['diary']['username'])
+
+    def test_proxy_lxc_update_preserves_private_configuration(self):
+        names = ['tf_proxy.py', 'turris-federation-proxy.service',
+                 'turris-federation-proxy.timer', '90-turris-federation-proxy.conf',
+                 'config.example.json']
+        directory = self.root / 'proxy-artifacts'
+        directory.mkdir()
+        for name in names:
+            (directory / name).write_text(name)
+        expected = f.hashlib.sha256(b''.join((directory / name).read_bytes()
+                                             for name in names)).hexdigest()
+        outputs = [b'running tf-proxy\n' + b'a' * 64 + b'  -\n', b'',
+                   ('running tf-proxy\n%s  -\n' % expected).encode()]
+        with patch.object(f, 'proxy_artifacts', return_value=(directory, names)), \
+                patch.object(f, 'ssh', side_effect=outputs) as remote:
+            status = f.update_proxy_lxc(node(1), {'password': 'x', 'hostKey': 'key'},
+                                        {'container': 'tf-proxy'})
+        self.assertEqual(expected, status['installedArtifactHash'])
+        command, payload = remote.call_args_list[1].args[2], remote.call_args_list[1].kwargs['input_data']
+        self.assertIn("lxc-attach -n 'tf-proxy'", command)
+        self.assertNotIn('/etc/turris-federation-proxy/config.json', command.split('test -f', 1)[0])
+        self.assertTrue(payload.startswith(b'\x1f\x8b'))
 
     def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
         first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
@@ -1645,7 +1671,8 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('Zlaté stránky služeb</h2>'.encode(), selected)
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
-                   'path': '/lovelace', 'confirmDuplicate': '0'}
+                   'path': '/lovelace', 'proxyEnabled': '1', 'proxyUsername': 'alice',
+                   'proxyPassword': 'secret', 'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
                                 ({'hostAddress': '192.168.1.21'}, b'409'),
                                 ({'hostAddress': '192.168.2.20'}, b'409')]:
@@ -1664,10 +1691,13 @@ class FederationTests(unittest.TestCase):
         edit_page = self.web_request(
             'GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20&editorService=home-assistant', handler=handler)
         for expected in [b'Upravit slu', b'value="home-assistant" readonly', b'value="Home Assistant"',
-                         b'value="8123"', b'value="/lovelace"', b'<option value="https" selected>']:
+                         b'value="8123"', b'value="/lovelace"', b'<option value="https" selected>',
+                         b'value="alice"']:
             self.assertIn(expected, edit_page)
+        self.assertNotIn(b'secret', edit_page)
+        self.assertNotIn(b'{SSHA}', edit_page)
         updated = {**service, 'name': 'Home Assistant upravený', 'protocol': 'http',
-                   'port': '8124', 'path': '/dashboard'}
+                   'port': '8124', 'path': '/dashboard', 'proxyPassword': ''}
         response = self.web_request('POST', f.WEB_OVERVIEW_PATH + 'services/save',
                                     urlencode(updated), handler)
         self.assertIn(b'303', response)
@@ -1906,7 +1936,7 @@ class FederationTests(unittest.TestCase):
         pings = [rule for rule in notebook_rules.values() if rule['proto'] == 'icmp']
         self.assertTrue(all(rule['icmp_type'] == ['echo-request'] for rule in pings))
 
-    def test_zerotier_device_must_exist_and_have_expected_address(self):
+    def test_zerotier_device_is_optional_and_only_used_when_verified(self):
         network = {'nwid': self.config['networkId'], 'status': 'OK',
                    'assignedAddresses': ['10.147.0.1/24'], 'portDeviceName': 'zt1234'}
 
@@ -1923,12 +1953,14 @@ class FederationTests(unittest.TestCase):
                 return b"config zone\n option name 'lan'\n"
             return b''
 
-        with patch.object(f.os, 'geteuid', return_value=0), patch.object(f, 'run', side_effect=run):
+        with patch.object(f.os, 'geteuid', return_value=0), \
+                patch.object(f.shutil, 'which', return_value='/usr/bin/zerotier-cli'), \
+                patch.object(f, 'run', side_effect=run):
             self.assertEqual('zt1234', f.local_check(node(1), self.config['networkId'])['zeroTierDevice'])
             for device in [None, '', '*', 'zt+', 'bad device', 'x' * 16]:
                 network['portDeviceName'] = device
-                with self.subTest(device=device), self.assertRaisesRegex(ValueError, 'rozhraní'):
-                    f.local_check(node(1), self.config['networkId'])
+                with self.subTest(device=device):
+                    self.assertIsNone(f.local_check(node(1), self.config['networkId'])['zeroTierDevice'])
             network['portDeviceName'] = 'zt1234'
 
         for result in [b'', b'7: zt1234 inet 10.147.0.99/24', ValueError('Device does not exist')]:
@@ -1939,8 +1971,17 @@ class FederationTests(unittest.TestCase):
                     return result
                 return run(args, **kwargs)
             with self.subTest(result=result), patch.object(f.os, 'geteuid', return_value=0), \
-                    patch.object(f, 'run', side_effect=missing), self.assertRaises(ValueError):
-                f.local_check(node(1), self.config['networkId'])
+                    patch.object(f.shutil, 'which', return_value='/usr/bin/zerotier-cli'), \
+                    patch.object(f, 'run', side_effect=missing):
+                self.assertIsNone(f.local_check(node(1), self.config['networkId'])['zeroTierDevice'])
+
+        with patch.object(f.os, 'geteuid', return_value=0), \
+                patch.object(f.shutil, 'which', return_value=None), \
+                patch.object(f, 'run', side_effect=run) as command:
+            result = f.local_check(node(1), self.config['networkId'])
+        self.assertFalse(result['zeroTierAvailable'])
+        self.assertIsNone(result['zeroTierDevice'])
+        self.assertFalse(any(call.args[0][0] == 'zerotier-cli' for call in command.call_args_list))
 
     def test_firewall_zones_peer_allowlist_and_cleanup(self):
         f.atomic(self.root / 'node.json', self.member(1))
@@ -2018,6 +2059,24 @@ network.zt0.device='zt1234'
                           if kind == 'rule' and values['src'] != 'tf_fed']
         self.assertTrue(underlay_rules)
         self.assertTrue(all(rule['src'] == 'vpn_zerotier' for rule in underlay_rules))
+
+    def test_apply_without_zerotier_skips_legacy_zone_and_rules(self):
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'wireguard.key', b'private-test-only')
+        doc = self.document(members={node(1)['id']: self.member(1), node(2)['id']: self.member(2)})
+        with patch.object(f, 'local_check', return_value={
+                    'zeroTierDevice': None, 'zeroTierAvailable': False,
+                    'localNetworks': ['192.168.1.0/24']}), \
+                patch.object(f, 'run', return_value=b''), \
+                patch.object(f, 'owned_sections', return_value=[]), \
+                patch.object(f, 'uci_section') as section:
+            f.render_apply(self.root, doc)
+        firewall = {call.args[1]: (call.args[2], call.args[3]) for call in section.call_args_list
+                    if call.args[0] == 'firewall'}
+        self.assertNotIn('tf_zt_zone', firewall)
+        self.assertFalse(any(name.startswith(('tf_zt_', 'tf_wg_', 'tf_sync_'))
+                             for name in firewall))
+        self.assertIn('tf_zone', firewall)
 
     def test_existing_zerotier_zone_must_have_restrictive_policies(self):
         existing = """firewall.vpn_zerotier=zone
@@ -2323,6 +2382,20 @@ firewall.vpn_zerotier.forward='REJECT'
                 f.serve(self.root)
         self.assertEqual(servers[0].fileno(), -1)
         self.assertFalse(any(t.name == 'federation-http' for t in threading.enumerate()))
+
+    def test_sync_agent_without_zerotier_opens_no_legacy_listener(self):
+        doc = self.document()
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', doc))
+        f.atomic(self.root / 'node.json', self.member(1))
+        with patch.object(f, 'local_check', return_value={
+                    'zeroTierDevice': None, 'zeroTierAvailable': False,
+                    'localNetworks': ['192.168.1.0/24']}), \
+                patch.object(f, 'rollback'), \
+                patch.object(f, 'sync_loop', side_effect=RuntimeError('stop idle sync')), \
+                patch.object(f.http.server, 'HTTPServer') as server:
+            with self.assertRaisesRegex(RuntimeError, 'stop idle sync'):
+                f.serve(self.root)
+        server.assert_not_called()
 
 
 if __name__ == '__main__':

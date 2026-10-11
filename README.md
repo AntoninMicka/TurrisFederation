@@ -94,9 +94,9 @@ potvrzené klíče; změna klíče vyžaduje nové ověření a potvrzení. Při
 používá přímo adresu, port a uživatele z draftu, bez aliasů v `~/.ssh/config`.
 Wrapper doplní potřebné balíčky `openssh-client` a `sshpass`.
 
-ZeroTier lze zkontrolovat, podle potřeby nainstalovat a trvale připojit do
-uložené sítě. Aplikace otevře ZeroTier Central v systémovém prohlížeči pro
-autorizaci routeru. Podrobný postup a rozsah změn: [ZeroTier](docs/zerotier.md).
+ZeroTier je pouze volitelný legacy transport. Instalace ani validace routeru
+nevyžaduje balíček, službu nebo členství ZeroTier a sama jej neinstaluje.
+Historický ruční postup zůstává v dokumentu [ZeroTier](docs/zerotier.md).
 
 Notebookové WireGuard uzly a jejich privilegovaná síťová služba jsou nyní pouze
 legacy rollback implementace. Desktop ji už neinstaluje ani neaktualizuje;
@@ -121,5 +121,8 @@ Podrobnosti: [webový přehled](docs/router-web.md).
 
 Pro úzce řízené zpřístupnění vybraných lokálních HTTP(S) služeb je připravena
 [aplikační LXC HTTPS gateway](docs/lxc-https-proxy.md). Kontejner může být běžný
-host v LAN, ale má vlastní NetBird peer, neroutuje LAN a přebírá krátce platný
+LAN host; přístup ke konkrétní HTTP(S) službě a volitelný Basic Auth se spravují
+přímo v editoru Zlatých stránek. Deploy Turrisu kontroluje a aktualizuje již
+existující běžící `tf-proxy`, ale nepřepisuje jeho certifikáty, klíče ani VPN identitu.
+Kontejner má vlastní NetBird peer, neroutuje LAN a přebírá krátce platný
 podepsaný seznam pouze z lokálního Turrisu.
