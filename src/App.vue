@@ -713,7 +713,7 @@ async function submitConnection() {
       message.value = `Stanoviště ${node.name} je validované. Zkontrolujte plán a spusťte deploy do 10 minut. ${plans.value[node.id].versionMismatch ? "Verze agenta se liší nebo chybí — nejdřív je doporučena aktualizace pouze softwaru bez zásahu do sítě." : "Verze agenta odpovídá, stačí aktualizovat nastavení."}`;
     } else if (connectionAction.value === "deploy") {
       const proxyBootstrap = plans.value[node.id].proxyLxc.needsBootstrap
-        ? { domain: proxyDomain.value.trim(), setupKey: proxySetupKey.value }
+        ? { domain: proxyDomain.value.trim(), setupKey: proxySetupKey.value.trim() }
         : null;
       deployment.value = await deploymentAction<DeploymentOverview>("deploy", node.id, credentials, plans.value[node.id].id, deployMode.value, proxyBootstrap);
       proxySetupKey.value = "";
@@ -1206,7 +1206,8 @@ async function submitConnection() {
             <p v-if="plans[connectionNode.id].proxyLxc.creationRequired" class="error">Nejdřív v Turrisu ručně vytvořte LXC <code>tf-proxy</code> z Debian Trixie a spusťte novou validaci.</p>
             <template v-else>
               <label>Doména HTTPS proxy<input v-model="proxyDomain" required pattern="[a-z0-9.-]+\.[a-z0-9-]+" placeholder="proxy.example.internal" :disabled="submitting" /></label>
-              <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required :disabled="submitting" /></label>
+              <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" :disabled="submitting" /></label>
+              <small>Vložte pouze hodnotu klíče z NetBird Setup Keys, ne celý příkaz ani API token.</small>
               <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
             </template>
           </div>

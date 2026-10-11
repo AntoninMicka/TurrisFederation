@@ -3239,9 +3239,14 @@ def bootstrap_proxy_lxc(node, target, credentials, bootstrap):
     domain_pattern = r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
     if not isinstance(domain, str) or not re.fullmatch(domain_pattern, domain):
         raise ValueError('Domena HTTPS proxy neni platna.')
-    if (not isinstance(setup_key, str) or not 8 <= len(setup_key) <= 4096
-            or any(value in setup_key for value in '\r\n\0')):
-        raise ValueError('Jednorazovy NetBird setup key neni platny.')
+    try:
+        canonical_setup_key = str(uuid.UUID(setup_key))
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError(
+            'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.') from None
+    if setup_key.lower() != canonical_setup_key:
+        raise ValueError(
+            'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.')
     current = ensure_proxy_container(node, credentials)
     current = update_proxy_lxc(node, credentials, current)
     name = current['container']
@@ -3260,9 +3265,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
         (shell_quote(name), shell_quote(
             "if netbird status 2>/dev/null | grep -qi 'Management: Connected'; then echo connected; else echo disconnected; fi"))).decode().strip()
     if connected != 'connected':
-        enroll = ('IFS= read -r setup_key; test -n "$setup_key"; printf "%%s\\n" "$setup_key" | '
-                  'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
-                      'IFS= read -r setup_key; netbird up --setup-key "$setup_key" >/dev/null')))
+        enroll = ('lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
+            'exec env -u NB_SETUP_KEY netbird up --setup-key-file /proc/self/fd/0 >/dev/null')))
         ssh(node, credentials, enroll, input_data=(setup_key + '\n').encode(), timeout=300)
     vpn_address = ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
         (shell_quote(name), shell_quote(

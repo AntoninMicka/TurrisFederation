@@ -1347,7 +1347,7 @@ class FederationTests(unittest.TestCase):
     def test_proxy_bootstrap_passes_setup_key_only_over_stdin(self):
         status = {'state': 'running', 'container': 'tf-proxy', 'storageReady': True,
                   'architecture': 'armv7l', 'needsBootstrap': False}
-        secret = 'ONE-OFF-SECRET-KEY'
+        secret = 'ce4bfade-cd61-4add-8e71-6a7bb76978f4'
         calls = []
 
         def remote(_node, _credentials, command, input_data=None, timeout=300):
@@ -1376,9 +1376,21 @@ class FederationTests(unittest.TestCase):
         self.assertFalse(any(secret in command for command, _, _ in calls))
         secret_inputs = [data for _, data, _ in calls if data and secret.encode() in data]
         self.assertEqual([secret.encode() + b'\n'], secret_inputs)
+        enroll = next(command for command, data, _ in calls if data and secret.encode() in data)
+        self.assertIn('env -u NB_SETUP_KEY', enroll)
+        self.assertIn('--setup-key-file /proc/self/fd/0', enroll)
+        self.assertNotIn('--setup-key ', enroll)
         config_inputs = [data for command, data, _ in calls if 'config.json' in command]
         self.assertEqual(1, len(config_inputs))
         self.assertNotIn(secret.encode(), config_inputs[0])
+
+    def test_proxy_bootstrap_rejects_non_uuid_setup_key_before_ssh(self):
+        with patch.object(f, 'ssh') as remote:
+            with self.assertRaisesRegex(ValueError, 'samotne UUID'):
+                f.bootstrap_proxy_lxc(node(1), node(1), {'password': 'x', 'hostKey': 'key'},
+                                      {'domain': 'proxy.example.internal',
+                                       'setupKey': '0123456789012345678901234567890123456789'})
+        remote.assert_not_called()
 
     def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
         first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',
