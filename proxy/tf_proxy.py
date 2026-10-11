@@ -112,7 +112,9 @@ def nginx_config(services, domain, listen, certificate, certificate_key, upstrea
                               for address in addresses).rstrip()
     service_listens = ''.join('    listen %s:443 ssl;\n' % address
                               for address in addresses).rstrip()
-    header = '''map $http_upgrade $connection_upgrade {
+    header = '''server_names_hash_bucket_size 256;
+server_names_hash_max_size 4096;
+map $http_upgrade $connection_upgrade {
     default upgrade;
     '' close;
 }
@@ -228,14 +230,32 @@ def reconcile(config_path):
     destination = Path(config.get('nginxConfig', '/etc/nginx/conf.d/turris-federation.conf'))
     staged = destination.with_suffix('.candidate')
     atomic(staged, rendered)
+    previous = destination.read_text() if destination.exists() else None
+    os.replace(staged, destination)
+
+    def restore_previous():
+        if previous is None:
+            destination.unlink(missing_ok=True)
+        else:
+            atomic(destination, previous)
+
     result = subprocess.run(['nginx', '-t'], stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, timeout=10)
     if result.returncode:
-        staged.unlink(missing_ok=True)
+        restore_previous()
         shutil.rmtree(auth_generation, ignore_errors=True)
         raise ValueError('Nova konfigurace nginx neprosla kontrolou; posledni platna zustava aktivni.')
-    os.replace(staged, destination)
-    subprocess.run(['nginx', '-s', 'reload'], check=True, timeout=10)
+    try:
+        subprocess.run(['nginx', '-s', 'reload'], check=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        restore_previous()
+        subprocess.run(['nginx', '-t'], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=False)
+        subprocess.run(['nginx', '-s', 'reload'], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=False)
+        shutil.rmtree(auth_generation, ignore_errors=True)
+        raise ValueError(
+            'Nginx novou konfiguraci nenacetl; posledni platna byla obnovena.') from error
     atomic(state_path, json.dumps(next_state, sort_keys=True) + '\n')
     for previous in auth_root.iterdir():
         if previous != auth_generation and previous.is_dir():

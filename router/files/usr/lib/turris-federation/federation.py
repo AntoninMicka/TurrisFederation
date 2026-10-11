@@ -3411,10 +3411,16 @@ rm -f server.csr server.ext
         'lxc-attach -n %s -- cat /etc/turris-federation-proxy/tls/ca.pem' % shell_quote(name))
     ssh(node, credentials, 'umask 077; cat > %s/proxy-ca.crt' % REMOTE, input_data=ca_public)
     ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
-        'set -eu; nginx -t; systemctl enable --now nginx netbird turris-federation-proxy.timer; '
+        'set -eu; managed=/etc/nginx/conf.d/turris-federation.conf; '
+        'recovery=/var/lib/turris-federation-proxy/nginx-config.before-bootstrap; '
+        'if ! nginx -t >/dev/null 2>&1; then test -f "$managed" || { nginx -t; exit 1; }; '
+        'mv "$managed" "$recovery"; '
+        'if ! nginx -t; then mv "$recovery" "$managed"; exit 1; fi; fi; '
+        'systemctl enable --now nginx netbird turris-federation-proxy.timer; '
         'if ! systemctl start turris-federation-proxy.service; then '
         'systemctl status --no-pager --full turris-federation-proxy.service >&2 || true; '
-        'journalctl --no-pager -n 30 -u turris-federation-proxy.service >&2 || true; exit 1; fi')))
+        'journalctl --no-pager -n 30 -u turris-federation-proxy.service >&2 || true; exit 1; fi; '
+        'rm -f "$recovery"')))
     return proxy_lxc_status(node, credentials)
 
 
@@ -3558,8 +3564,7 @@ ensure_forwarding_disabled() {
 ensure_forwarding_disabled net.ipv4.ip_forward
 ensure_forwarding_disabled net.ipv6.conf.all.forwarding
 if test -f /etc/turris-federation-proxy/config.json; then
-  nginx -t
-  systemctl enable --now nginx turris-federation-proxy.timer
+  systemctl enable nginx turris-federation-proxy.timer
 fi
 printf '%%s\n' %s > /var/lib/turris-federation-proxy/artifact-hash.new
 mv /var/lib/turris-federation-proxy/artifact-hash.new /var/lib/turris-federation-proxy/artifact-hash

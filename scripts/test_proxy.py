@@ -64,6 +64,8 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(1, config.count('auth_basic_user_file'))
         self.assertIn('return 421;', config)
         self.assertNotIn('listen 0.0.0.0', config)
+        self.assertIn('server_names_hash_bucket_size 256;', config)
+        self.assertIn('server_names_hash_max_size 4096;', config)
 
     def test_manifest_rejects_header_and_nginx_injection(self):
         for field, value in [('id', 'bad.name'), ('serverName', 'ok.internal; include /tmp/x'),
@@ -109,6 +111,57 @@ class ProxyTests(unittest.TestCase):
             rendered = (root / 'proxy.conf').read_text()
             self.assertIn('return 421;', rendered)
             self.assertNotIn('proxy_pass', rendered)
+
+    def test_invalid_candidate_restores_previous_nginx_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / 'proxy.conf'
+            destination.write_text('previous valid configuration\n')
+            config = {
+                'routerPublicKey': str(root / 'router.pub'), 'routerNodeId': 'router-1',
+                'domain': 'proxy.internal', 'listenAddress': '100.81.1.4',
+                'certificate': '/cert.pem', 'certificateKey': '/key.pem',
+                'nginxConfig': str(destination), 'stateFile': str(root / 'state.json'),
+                'authDirectory': str(root / 'auth'),
+            }
+            (root / 'config.json').write_text(json.dumps(config))
+            (root / 'state.json').write_text('{"expiresAt":1000}')
+            rejected = type('Result', (), {'returncode': 1, 'stderr': b'invalid'})()
+            with patch.object(p, 'fetch', side_effect=ValueError('offline')), \
+                    patch.object(p.time, 'time', return_value=1100), \
+                    patch.object(p.subprocess, 'run', return_value=rejected) as run, \
+                    self.assertRaisesRegex(ValueError, 'posledni platna'):
+                p.reconcile(root / 'config.json')
+            self.assertEqual('previous valid configuration\n', destination.read_text())
+            self.assertEqual([['nginx', '-t']], [call.args[0] for call in run.call_args_list])
+
+    def test_failed_reload_restores_and_reloads_previous_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / 'proxy.conf'
+            destination.write_text('previous valid configuration\n')
+            config = {
+                'routerPublicKey': str(root / 'router.pub'), 'routerNodeId': 'router-1',
+                'domain': 'proxy.internal', 'listenAddress': '100.81.1.4',
+                'certificate': '/cert.pem', 'certificateKey': '/key.pem',
+                'nginxConfig': str(destination), 'stateFile': str(root / 'state.json'),
+                'authDirectory': str(root / 'auth'),
+            }
+            (root / 'config.json').write_text(json.dumps(config))
+            (root / 'state.json').write_text('{"expiresAt":1000}')
+            success = type('Result', (), {'returncode': 0, 'stderr': b''})()
+            reload_error = p.subprocess.CalledProcessError(1, ['nginx', '-s', 'reload'])
+            with patch.object(p, 'fetch', side_effect=ValueError('offline')), \
+                    patch.object(p.time, 'time', return_value=1100), \
+                    patch.object(p.subprocess, 'run',
+                                 side_effect=[success, reload_error, success, success]) as run, \
+                    self.assertRaisesRegex(ValueError, 'obnovena'):
+                p.reconcile(root / 'config.json')
+            self.assertEqual('previous valid configuration\n', destination.read_text())
+            self.assertEqual(
+                [['nginx', '-t'], ['nginx', '-s', 'reload'],
+                 ['nginx', '-t'], ['nginx', '-s', 'reload']],
+                [call.args[0] for call in run.call_args_list])
 
 
 if __name__ == '__main__':

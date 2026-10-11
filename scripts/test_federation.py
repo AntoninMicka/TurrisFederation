@@ -1480,6 +1480,8 @@ class FederationTests(unittest.TestCase):
         service_index = next(index for index, (command, _, _) in enumerate(calls)
                              if 'systemctl start turris-federation-proxy.service' in command)
         self.assertLess(probe_index, service_index)
+        self.assertIn('nginx-config.before-bootstrap', service_start)
+        self.assertIn('test -f "$managed"', service_start)
         self.assertIn('journalctl --no-pager -n 30', service_start)
         config_inputs = [data for command, data, _ in calls if 'config.json' in command]
         self.assertEqual(1, len(config_inputs))
