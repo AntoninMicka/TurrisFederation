@@ -1203,10 +1203,12 @@ async function submitConnection() {
           <label v-if="plans[connectionNode.id].availableModes.includes('settings')" class="trust-check"><input v-model="deployMode" name="deployment-mode" type="radio" value="settings" :disabled="submitting" @change="deployConfirmed = false" /> Pouze nastavení — zachovat nainstalovaný software</label>
           <ol><li v-for="step in plans[connectionNode.id].stepsByMode[deployMode]" :key="step">{{ step }}</li></ol>
           <div v-if="plans[connectionNode.id].proxyLxc.needsBootstrap" class="connection-form">
-            <p v-if="plans[connectionNode.id].proxyLxc.creationRequired && !plans[connectionNode.id].proxyLxc.storageReady" class="error">Pro automatické vytvoření LXC musí být /srv na externím úložišti.</p>
-            <label>Doména HTTPS proxy<input v-model="proxyDomain" required pattern="[a-z0-9.-]+\.[a-z0-9-]+" placeholder="proxy.example.internal" :disabled="submitting" /></label>
-            <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required :disabled="submitting" /></label>
-            <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
+            <p v-if="plans[connectionNode.id].proxyLxc.creationRequired" class="error">Nejdřív v Turrisu ručně vytvořte LXC <code>tf-proxy</code> z Debian Trixie a spusťte novou validaci.</p>
+            <template v-else>
+              <label>Doména HTTPS proxy<input v-model="proxyDomain" required pattern="[a-z0-9.-]+\.[a-z0-9-]+" placeholder="proxy.example.internal" :disabled="submitting" /></label>
+              <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required :disabled="submitting" /></label>
+              <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
+            </template>
           </div>
           <p v-if="deployMode === 'software'" class="muted">Níže uvedené nastavení zůstane v tomto režimu beze změny a nebude publikováno ani aplikováno.</p>
           <details><summary>Nastavení včetně draftů</summary><pre>{{ JSON.stringify(plans[connectionNode.id].config, null, 2) }}</pre></details>
@@ -1223,7 +1225,7 @@ async function submitConnection() {
           <label v-if="identity.trust !== 'trusted'" class="trust-check"><input v-model="trustHostKey" type="checkbox" :disabled="submitting" />Ověřil(a) jsem otisky a důvěřuji tomuto routeru.</label>
           <label>SSH heslo<input v-model="password" type="password" autocomplete="off" required :disabled="submitting" /></label>
           <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ (connectionAction === 'zerotier-setup' || connectionAction === 'deploy') ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
-          <button :disabled="submitting || !password || (connectionAction === 'deploy' && (!deployConfirmed || (plans[connectionNode.id]?.proxyLxc.needsBootstrap && ((plans[connectionNode.id]?.proxyLxc.creationRequired && !plans[connectionNode.id]?.proxyLxc.storageReady) || !proxyDomain || !proxySetupKey)))) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
+          <button :disabled="submitting || !password || (connectionAction === 'deploy' && (!deployConfirmed || (plans[connectionNode.id]?.proxyLxc.needsBootstrap && (plans[connectionNode.id]?.proxyLxc.creationRequired || !proxyDomain || !proxySetupKey)))) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
         </form>
         <button class="secondary" :disabled="submitting || inspecting" @click="closeConnection">Zavřít</button>
       </section>

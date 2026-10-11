@@ -1215,64 +1215,35 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('/etc/turris-federation-proxy/config.json', command.split('test -f', 1)[0])
         self.assertTrue(payload.startswith(b'\x1f\x8b'))
 
-    def test_proxy_lxc_creation_requires_external_storage_and_is_idempotent(self):
+    def test_proxy_lxc_must_be_created_manually_and_start_is_idempotent(self):
         unavailable = {'state': 'unavailable', 'container': None, 'storageReady': True,
                        'architecture': 'armv7l'}
         missing = {'state': 'missing', 'container': 'tf-proxy', 'storageReady': True,
                    'architecture': 'armv7l'}
+        stopped = {'state': 'stopped', 'container': 'tf-proxy', 'storageReady': True,
+                   'architecture': 'armv7l'}
         running = {'state': 'running', 'container': 'tf-proxy', 'storageReady': True,
                    'architecture': 'armv7l'}
-        with patch.object(f, 'proxy_lxc_status', side_effect=[unavailable, missing, running]), \
+        with patch.object(f, 'proxy_lxc_status', side_effect=[unavailable, missing]), \
+                patch.object(f, 'ssh', return_value=b'') as remote, \
+                self.assertRaisesRegex(ValueError, 'Vytvorte jej rucne z Debian Trixie'):
+            f.ensure_proxy_container(node(1), {'password': 'x', 'hostKey': 'key'})
+        commands = [call.args[2] for call in remote.call_args_list]
+        self.assertTrue(any('opkg install lxc-create' in command for command in commands))
+        self.assertFalse(any('api.turris.cz/lxc' in command for command in commands))
+
+        with patch.object(f, 'proxy_lxc_status', return_value=missing), \
+                patch.object(f, 'ssh') as remote, \
+                self.assertRaisesRegex(ValueError, 'Vytvorte jej rucne z Debian Trixie'):
+            f.ensure_proxy_container(node(1), {'password': 'x', 'hostKey': 'key'})
+        remote.assert_not_called()
+
+        with patch.object(f, 'proxy_lxc_status', side_effect=[stopped, running]), \
                 patch.object(f, 'ssh', return_value=b'') as remote:
             self.assertEqual('running', f.ensure_proxy_container(
                 node(1), {'password': 'x', 'hostKey': 'key'})['state'])
-        commands = [call.args[2] for call in remote.call_args_list]
-        self.assertTrue(any('opkg install lxc-create' in command for command in commands))
-        create = next(command for command in commands if 'lxc-create' in command and 'opkg' not in command)
-        self.assertIn("-n 'tf-proxy'", create)
-        self.assertIn('compatible_arches="armv7l armhf"', create)
-        self.assertIn('"debian bookworm"', create)
-        self.assertIn('"ubuntu noble" "ubuntu jammy" "ubuntu focal"', create)
-        self.assertIn('-r "$release" -a "$image_arch"', create)
-        self.assertIn('.failed-', create)
-        self.assertIn('lxc-auto.tf_proxy', create)
-        syntax = subprocess.run(['sh', '-n'], input=create.encode(), capture_output=True)
-        self.assertEqual(b'', syntax.stderr)
-        self.assertEqual(0, syntax.returncode)
-
-        fake_bin = self.root / 'bin'
-        fake_bin.mkdir()
-        create_log = self.root / 'lxc-create.log'
-        (fake_bin / 'lxc-create').write_text(
-            '#!/bin/sh\ncase " $* " in *" --list "*) '
-            'if test -n "${LXC_LIST_FAIL:-}"; then exit 7; fi; '
-            'printf "DIST RELEASE ARCH VARIANT BUILD\\nubuntu jammy armhf default today\\n";; '
-            '*) printf "%s\\n" "$*" > "$LXC_CREATE_LOG";; esac\n')
-        for executable, body in [('uci', '#!/bin/sh\nexit 0\n'),
-                                 ('lxc-start', '#!/bin/sh\nexit 0\n'),
-                                 ('lxc-info', '#!/bin/sh\nprintf "RUNNING\\n"\n')]:
-            (fake_bin / executable).write_text(body)
-        for executable in fake_bin.iterdir():
-            executable.chmod(0o755)
-        local_create = create.replace('/srv/lxc', str(self.root / 'lxc'))
-        environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'],
-                           LXC_CREATE_LOG=str(create_log))
-        selected = subprocess.run(['sh', '-c', local_create], env=environment,
-                                  capture_output=True)
-        self.assertEqual(b'', selected.stderr)
-        self.assertEqual(0, selected.returncode)
-        self.assertIn('-d ubuntu -r jammy -a armhf', create_log.read_text())
-        failed_environment = dict(environment, LXC_LIST_FAIL='1')
-        failed = subprocess.run(['sh', '-c', local_create], env=failed_environment,
-                                capture_output=True)
-        self.assertEqual(7, failed.returncode)
-        self.assertIn(b'nacteni katalogu LXC', failed.stderr)
-
-        internal = dict(missing, storageReady=False)
-        with patch.object(f, 'proxy_lxc_status', return_value=internal), \
-                patch.object(f, 'ssh') as remote, self.assertRaisesRegex(ValueError, 'externi uloziste'):
-            f.ensure_proxy_container(node(1), {'password': 'x', 'hostKey': 'key'})
-        remote.assert_not_called()
+        self.assertIn("lxc-start -n 'tf-proxy'", remote.call_args.args[2])
+        self.assertEqual(180, remote.call_args.kwargs['timeout'])
 
         with patch.object(f, 'proxy_lxc_status', side_effect=[running, running]), \
                 patch.object(f, 'ssh') as remote:

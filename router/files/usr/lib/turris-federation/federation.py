@@ -3204,53 +3204,12 @@ def ensure_proxy_container(node, credentials):
         current = proxy_lxc_status(node, credentials)
     name = current.get('container') or 'tf-proxy'
     if current['state'] == 'missing':
-        if not current.get('storageReady'):
-            raise ValueError('Automaticke vytvoreni LXC vyzaduje externi uloziste pripojene pod /srv.')
-        architecture = current.get('architecture')
-        architecture_candidates = {'armv7l': 'armv7l armhf', 'aarch64': 'arm64 aarch64',
-                                   'x86_64': 'amd64 x86_64'}.get(architecture)
-        if not architecture_candidates:
-            raise ValueError('Architektura Turrisu nema podporovanou automatickou LXC sablonu.')
-        command = ('set -eu; stage="nacteni katalogu LXC"; '
-                   'cleanup_failed() { code=$?; if test "$code" != 0; then '
-                   'echo "Automaticka instalace LXC selhala ve fazi: $stage (kod $code)." >&2; '
-                   'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
-                   'mv /srv/lxc/%s "$failed"; echo "Nedokonceny LXC byl zachovan v $failed." >&2; fi; fi; '
-                   'exit "$code"; }; trap cleanup_failed EXIT; '
-                   'image_index="$(lxc-create -n %s-index-probe -t download -- --list)"; '
-                   'distribution=; release=; image_arch=; compatible_arches="%s"; '
-                   'for image in "debian bookworm" "debian bullseye" "debian trixie" '
-                   '"ubuntu noble" "ubuntu jammy" "ubuntu focal"; do '
-                   'wanted_distribution="${image%%%% *}"; wanted_release="${image#* }"; '
-                   'for wanted_arch in $compatible_arches; do '
-                   'if printf "%%s\\n" "$image_index" | awk -v d="$wanted_distribution" '
-                   '-v r="$wanted_release" -v a="$wanted_arch" '
-                   "'$1 == d && $2 == r && $3 == a { found=1 } END { exit !found }'; then "
-                   'distribution="$wanted_distribution"; release="$wanted_release"; '
-                   'image_arch="$wanted_arch"; break 2; fi; done; done; '
-                   'if test -z "$distribution"; then '
-                   'echo "Katalog LXC neobsahuje podporovany Debian ani Ubuntu pro %s. Dostupne kompatibilni obrazy:" >&2; '
-                   "printf \"%%s\\\\n\" \"$image_index\" | awk -v arches=\"$compatible_arches\" "
-                   "'($1 == \"debian\" || $1 == \"ubuntu\") && "
-                   "index(\" \" arches \" \", \" \" $3 \" \") { print }' >&2; exit 1; fi; "
-                   'if test -e /srv/lxc/%s; then failed=/srv/lxc/.%s.failed-$(date +%%s)-$$; '
-                   'mv /srv/lxc/%s "$failed"; echo "Nedokonceny predchozi pokus byl zachovan v $failed." >&2; fi; '
-                   'stage="vytvoreni kontejneru $distribution/$release/$image_arch"; '
-                   'lxc-create -n %s -t download -- -d "$distribution" -r "$release" -a "$image_arch" >&2; '
-                   'stage="nastaveni automatickeho startu"; '
-                   'uci -q delete lxc-auto.tf_proxy || true; uci set lxc-auto.tf_proxy=container; '
-                   'uci set lxc-auto.tf_proxy.name=%s; uci set lxc-auto.tf_proxy.timeout=120; '
-                   'uci commit lxc-auto; stage="spusteni kontejneru"; lxc-start -n %s; '
-                   'stage="cekani na spusteni kontejneru"; '
-                   'i=0; while test "$(lxc-info -n %s -sH)" != RUNNING; do i=$((i+1)); '
-                   'test "$i" -lt 60; sleep 2; done; trap - EXIT' % (
-                       shell_quote(name), shell_quote(name), shell_quote(name), shell_quote(name),
-                       architecture_candidates, architecture,
-                       shell_quote(name), shell_quote(name), shell_quote(name),
-                       shell_quote(name), shell_quote(name), shell_quote(name), shell_quote(name)))
-        ssh(node, credentials, command, timeout=600)
+        raise ValueError('LXC tf-proxy chybi. Vytvorte jej rucne z Debian Trixie a validujte znovu.')
     elif current['state'] == 'stopped':
-        ssh(node, credentials, 'lxc-start -n %s' % shell_quote(name))
+        ssh(node, credentials,
+            'set -eu; lxc-start -n %s; i=0; while test "$(lxc-info -n %s -sH)" != RUNNING; '
+            'do i=$((i+1)); test "$i" -lt 60; sleep 2; done' %
+            (shell_quote(name), shell_quote(name)), timeout=180)
     elif current['state'] != 'running':
         raise ValueError('LXC proxy nelze automaticky pripravit: %s.' % current['state'])
     ready = proxy_lxc_status(node, credentials)
@@ -3672,9 +3631,9 @@ def controller(root, req):
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
-                          ('Aktualizovat běžící LXC proxy %s bez změny její konfigurace, certifikátů a VPN identity.' % proxy_lxc['container']
-                           if proxy_lxc['state'] == 'running' else
-                           'Automaticky nainstalovat LXC utility, vytvořit a spustit tf-proxy na externím /srv.'),
+                          ('Aktualizovat existující LXC proxy %s bez změny její konfigurace, certifikátů a VPN identity.' % proxy_lxc['container']
+                           if proxy_lxc['state'] in {'running', 'stopped'} else
+                           'Vyžadovat ručně vytvořený kontejner tf-proxy s Debian Trixie; automaticky jej nevytvářet.'),
                           'Pokusit se předat nové síťové nastavení dostupným legacy peerům; jejich nedostupnost instalaci neblokuje.'],
                 'config': config, 'validatedAt': time.time()}
         plan['stepsByMode'] = {'full': plan['steps'], 'settings': [
@@ -3716,8 +3675,8 @@ def controller(root, req):
         raise ValueError('Verze komponent routeru se od validace změnily. Validujte znovu.')
     proxy_plan = plan.get('proxyLxc', {})
     if proxy_plan.get('needsBootstrap'):
-        if proxy_plan.get('creationRequired') and not proxy_plan.get('storageReady'):
-            raise ValueError('Automaticka instalace LXC proxy vyzaduje externi uloziste pod /srv.')
+        if proxy_plan.get('creationRequired'):
+            raise ValueError('LXC tf-proxy chybi. Vytvorte jej rucne z Debian Trixie a validujte znovu.')
         bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
     elif proxy_plan.get('state') == 'running':
         update_proxy_lxc(node, credentials, proxy_plan)

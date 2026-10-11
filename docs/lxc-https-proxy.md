@@ -54,21 +54,20 @@ routeru a podvrzeny seznam neprojde.
 
 ## LXC a proxy
 
-Turris musí mít `/srv` na externím SSD/HDD; automatika odmítne vytvořit LXC na
-interním eMMC. Při validaci routeru aplikace zjistí stav `tf-proxy`, LXC utilit,
-externího úložiště a nainstalované verze. Pokud proxy chybí, potvrzený deploy si
-vyžádá jen doménu proxy a jednorázový NetBird setup key a potom automaticky:
+Turris musí mít `/srv` na externím SSD/HDD. Uživatel v jeho LXC rozhraní ručně
+vytvoří kontejner s přesným názvem `tf-proxy` ze stabilního Debian Trixie.
+Při validaci routeru aplikace zjistí stav kontejneru a nainstalované verze.
+Pokud kontejner existuje, potvrzený deploy si vyžádá doménu proxy a jednorázový
+NetBird setup key a potom automaticky:
 
-1. doinstaluje potřebné LXC utility z repozitáře Turrisu;
-2. stáhne Debian Bookworm pro architekturu routeru, vytvoří `tf-proxy`, spustí
-   jej a zapíše do `/etc/config/lxc-auto`;
-3. nainstaluje nginx, Python, OpenSSH, OpenSSL a oficiální NetBird CLI;
-4. předá setup key pouze přes stdin procesu, zaregistruje samostatný peer a klíč
+1. spustí existující `tf-proxy`, pokud je zastavený;
+2. nainstaluje nginx, Python, OpenSSH, OpenSSL a oficiální NetBird CLI;
+3. předá setup key pouze přes stdin procesu, zaregistruje samostatný peer a klíč
    neuloží do plánu, databáze, routeru ani konfigurace;
-5. vytvoří omezený SSH klíč s forced command pouze pro podepsaný manifest;
-6. vytvoří lokální CA s šifrovaným privátním klíčem a serverový wildcard
+4. vytvoří omezený SSH klíč s forced command pouze pro podepsaný manifest;
+5. vytvoří lokální CA s šifrovaným privátním klíčem a serverový wildcard
    certifikát, přičemž veřejnou CA nabídne ke stažení na přihlášeném přehledu;
-7. zakáže IP forwarding, vygeneruje konfiguraci, ověří nginx a zapne timer.
+6. zakáže IP forwarding, vygeneruje konfiguraci, ověří nginx a zapne timer.
 
 Opakovaný deploy kontejner ani identity nevytváří znovu. Aktualizuje jen
 projektové skripty, systemd jednotky, závislosti a sysctl profil; zachová
