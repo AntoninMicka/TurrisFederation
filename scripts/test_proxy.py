@@ -7,12 +7,18 @@ import unittest
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'proxy/tf_proxy.py'
+ROOT = SOURCE.parents[1]
 spec = importlib.util.spec_from_file_location('tf_proxy', SOURCE)
 p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)
 
 
 class ProxyTests(unittest.TestCase):
+    def test_lxc_is_explicitly_not_a_router(self):
+        sysctl = (ROOT / 'proxy/90-turris-federation-proxy.conf').read_text()
+        self.assertIn('net.ipv4.ip_forward = 0', sysctl)
+        self.assertIn('net.ipv6.conf.all.forwarding = 0', sysctl)
+
     def manifest(self):
         return {'schema': 1, 'nodeId': 'router-1', 'issuedAt': 1000, 'expiresAt': 1120,
                 'services': [

@@ -1,5 +1,5 @@
 {
-  "routerHost": "10.89.0.1",
+  "routerHost": "192.168.100.1",
   "routerUser": "root",
   "routerNodeId": "00000000-0000-0000-0000-000000000001",
   "routerPublicKey": "/etc/turris-federation-proxy/router-identity.pub",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed reconciler for an isolated Turris Federation HTTPS proxy."""
+"""Fail-closed reconciler for a Turris Federation application gateway."""
 import base64
 import ipaddress
 import json

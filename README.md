@@ -121,7 +121,7 @@ LAN deploy a aktualizace instalují také **webový přehled na routeru** a dla�
 `https://<router>/turris-federation/`, s přihlášením přes systémové heslo routeru.
 Podrobnosti: [webový přehled](docs/router-web.md).
 
-Pro uzce rizene zverejneni vybranych lokalnich HTTP(S) sluzeb je pripraven
-[navrh izolovane LXC HTTPS proxy](docs/lxc-https-proxy.md). Proxy ma vlastni
-NetBird peer, prebira kratce platny podepsany seznam jen z lokalniho Turrisu a
-nesmi mit obecny pristup do LAN.
+Pro úzce řízené zpřístupnění vybraných lokálních HTTP(S) služeb je připravena
+[aplikační LXC HTTPS gateway](docs/lxc-https-proxy.md). Kontejner může být běžný
+host v LAN, ale má vlastní NetBird peer, neroutuje LAN a přebírá krátce platný
+podepsaný seznam pouze z lokálního Turrisu.

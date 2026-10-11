@@ -26,10 +26,10 @@ Priority: **P0** blokuje první spolehlivé použití, **P1** základní funkce,
 - [x] Rozhodnout, že trvalá aplikace poběží pouze na Turrisech a koncová zařízení
   budou používat jen oficiální NetBird klient.
 - [ ] Zmrazit desktopovou aplikaci jako legacy a nepřidávat do ní nové funkce.
-- [~] Pripravit izolovanou LXC HTTPS proxy pro jednotlive lokalni sluzby.
-  Podepsany lokalni manifest, nginx reconciler a oddelena desktop-only
-  odinstalace jsou implementovane; fyzicky zbyva LXC, `tf_proxy` firewall,
-  certifikaty, samostatny NetBird peer/policy a restartova akceptace.
+- [~] Připravit aplikační LXC HTTPS gateway pro jednotlivé lokální služby.
+  Podepsaný lokální manifest, nginx reconciler a oddělená desktop-only
+  odinstalace jsou implementované; fyzicky zbývá LAN LXC, certifikáty,
+  samostatný NetBird peer/policy, zákaz IP forwardingu a restartová akceptace.
 - [ ] Přesunout správu členství, podepsané topologie a NetBirdu do PAM chráněného
   routerového webu.
   Místní instalace klienta, registrace one-off setup key a jednorázové vytvoření
