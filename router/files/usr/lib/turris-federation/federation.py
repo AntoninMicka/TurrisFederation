@@ -43,6 +43,8 @@ DHCP_LEASES = Path('/tmp/dhcp.leases')
 HOST_LIMIT = 256
 HOST_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
 SERVICE_LIMIT = 128
+PROXY_CA_LIMIT = 16384
+PROXY_CA_TOTAL_LIMIT = 131072
 SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
 SERVICE_DIRECTORY_DNS_LABEL = 'zlate-stranky'
 PROXY_SERVICES = 'proxy-services.json'
@@ -1038,7 +1040,30 @@ def proxy_password_hash(password, salt=None):
     return '{SSHA}' + base64.b64encode(hashlib.sha1(password.encode() + salt).digest() + salt).decode()
 
 
-def proxy_access(root, services):
+def validate_proxy_upstream_ca(value, require_current=True):
+    """Validate one public trust certificate for an HTTPS upstream."""
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str) or len(value.encode()) > PROXY_CA_LIMIT or '\0' in value:
+        raise ValueError('Veřejný certifikát upstreamu je neplatný nebo příliš velký.')
+    value = value.replace('\r\n', '\n').strip() + '\n'
+    if not re.fullmatch(r'-----BEGIN CERTIFICATE-----\n(?:[A-Za-z0-9+/=]+\n)+-----END CERTIFICATE-----\n', value):
+        raise ValueError('Vložte právě jeden veřejný X.509 certifikát ve formátu PEM.')
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / 'ca.pem'
+        path.write_text(value)
+        command = ['openssl', 'x509', '-in', str(path), '-noout']
+        if require_current:
+            command += ['-checkend', '0']
+        result = subprocess.run(
+            command + ['-text'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    if result.returncode:
+        raise ValueError('Certifikát musí být platný veřejný X.509 certifikát.')
+    return value
+
+
+def proxy_access(root, services, require_current_ca=False):
     """Load private per-service proxy settings without projecting them publicly."""
     value = read(Path(root) / PROXY_ACCESS, {})
     if not isinstance(value, dict) or len(value) > SERVICE_LIMIT:
@@ -1048,7 +1073,9 @@ def proxy_access(root, services):
                      r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', service['id'])}
     result = {}
     for service_id, access in value.items():
-        if service_id not in available or not isinstance(access, dict) or set(access) != {'username', 'passwordHash'}:
+        if (service_id not in available or not isinstance(access, dict)
+                or not set(access).issubset({'username', 'passwordHash', 'upstreamCa'})
+                or not {'username', 'passwordHash'}.issubset(access)):
             raise ValueError('Proxy odkazuje na chybejici nebo nepodporovanou sluzbu.')
         username, password_hash = access['username'], access['passwordHash']
         if username is not None and (not isinstance(username, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username)):
@@ -1057,15 +1084,23 @@ def proxy_access(root, services):
                 or password_hash is not None and (not isinstance(password_hash, str)
                                                    or not re.fullmatch(r'\{SSHA\}[A-Za-z0-9+/=]{32,128}', password_hash))):
             raise ValueError('Neplatny hash hesla proxy.')
-        result[service_id] = {'username': username, 'passwordHash': password_hash}
+        upstream_ca = validate_proxy_upstream_ca(
+            access.get('upstreamCa'), require_current=require_current_ca)
+        if available[service_id]['protocol'] != 'https' and upstream_ca is not None:
+            raise ValueError('Vlastní certifikát lze použít jen pro HTTPS upstream.')
+        result[service_id] = {'username': username, 'passwordHash': password_hash,
+                              'upstreamCa': upstream_ca}
+    if sum(len(value['upstreamCa'].encode()) for value in result.values()
+           if value['upstreamCa']) > PROXY_CA_TOTAL_LIMIT:
+        raise ValueError('Součet certifikátů proxy je příliš velký.')
     # One-time migration from the older ID-only allowlist.
     if not result and not (Path(root) / PROXY_ACCESS).exists():
         for service_id in proxy_service_ids(root, services):
-            result[service_id] = {'username': None, 'passwordHash': None}
+            result[service_id] = {'username': None, 'passwordHash': None, 'upstreamCa': None}
     return result
 
 
-def configure_proxy_access(root, node, service_id, enabled, username='', password=''):
+def configure_proxy_access(root, node, service_id, enabled, username='', password='', upstream_ca=None):
     services = local_services(root, node)
     service = next((item for item in services if item['id'] == service_id), None)
     if not service or service['protocol'] not in {'http', 'https'}:
@@ -1073,6 +1108,9 @@ def configure_proxy_access(root, node, service_id, enabled, username='', passwor
     if type(enabled) is not bool:
         raise ValueError('Neplatna volba pristupu proxy.')
     username = username.strip() if isinstance(username, str) else None
+    upstream_ca = validate_proxy_upstream_ca(upstream_ca) if enabled else None
+    if service['protocol'] != 'https' and upstream_ca is not None:
+        raise ValueError('Vlastní certifikát lze použít jen pro HTTPS upstream.')
     if username and not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username):
         raise ValueError('Uzivatelske jmeno proxy smi obsahovat jen pismena, cisla, tecku, pomlcku a podtrzitko.')
     with locked(root):
@@ -1082,20 +1120,22 @@ def configure_proxy_access(root, node, service_id, enabled, username='', passwor
         elif not username:
             if password:
                 raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
-            access[service_id] = {'username': None, 'passwordHash': None}
+            access[service_id] = {'username': None, 'passwordHash': None,
+                                  'upstreamCa': upstream_ca}
         else:
             previous = access.get(service_id, {})
             password_hash = proxy_password_hash(password) if password else previous.get('passwordHash')
             if not password_hash or previous.get('username') not in {None, username} and not password:
                 raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
-            access[service_id] = {'username': username, 'passwordHash': password_hash}
+            access[service_id] = {'username': username, 'passwordHash': password_hash,
+                                  'upstreamCa': upstream_ca}
         atomic(Path(root) / PROXY_ACCESS, access)
         return {key: {'enabled': key in access, 'username': value['username']}
                 for key, value in access.items()}
 
 
 def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
-                                  username='', password=''):
+                                  username='', password='', upstream_ca=None):
     """Atomically validate and persist one service together with proxy access."""
     root = Path(root)
     with locked(root):
@@ -1110,22 +1150,27 @@ def save_local_service_with_proxy(root, node, service, allow_duplicate, enabled,
             raise ValueError('Neplatna volba pristupu proxy.')
         access = proxy_access(root, services)
         username = username.strip() if isinstance(username, str) else None
+        upstream_ca = validate_proxy_upstream_ca(upstream_ca) if enabled else None
         if not enabled:
             access.pop(validated['id'], None)
         elif validated['protocol'] not in {'http', 'https'}:
             raise ValueError('Proxy lze povolit jen pro mistni HTTP(S) sluzbu.')
+        elif validated['protocol'] != 'https' and upstream_ca is not None:
+            raise ValueError('Vlastní certifikát lze použít jen pro HTTPS upstream.')
         elif username and not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', username):
             raise ValueError('Neplatne uzivatelske jmeno proxy.')
         elif not username:
             if password:
                 raise ValueError('Heslo proxy vyzaduje uzivatelske jmeno.')
-            access[validated['id']] = {'username': None, 'passwordHash': None}
+            access[validated['id']] = {'username': None, 'passwordHash': None,
+                                       'upstreamCa': upstream_ca}
         else:
             previous = access.get(validated['id'], {})
             password_hash = proxy_password_hash(password) if password else previous.get('passwordHash')
             if not password_hash or previous.get('username') not in {None, username} and not password:
                 raise ValueError('Pri prvnim nastaveni nebo zmene jmena zadejte nove heslo proxy.')
-            access[validated['id']] = {'username': username, 'passwordHash': password_hash}
+            access[validated['id']] = {'username': username, 'passwordHash': password_hash,
+                                       'upstreamCa': upstream_ca}
         services = validate_services(node, [item for item in services
                                             if item['id'] != validated['id']] + [validated])
         configuration = service_dns_configuration(root)
@@ -1180,7 +1225,7 @@ def proxy_manifest(root, now=None):
     if not node or node['id'] not in doc['members']:
         raise ValueError('Router nema platne clenstvi federace.')
     services = local_services(root, node)
-    access = proxy_access(root, services)
+    access = proxy_access(root, services, require_current_ca=True)
     zone = service_dns_configuration(root)
     zone = zone['zone'] if zone else None
     by_id = {service['id']: service for service in services}
@@ -1192,10 +1237,11 @@ def proxy_manifest(root, now=None):
             'scheme': service['protocol'], 'host': service['hostAddress'],
             'port': service['port'], 'basePath': service['path'] or '/',
             'serverName': service_dns_name(service['id'], zone) if zone else service['hostAddress'],
-            'auth': access[service_id],
+            'auth': {key: access[service_id][key] for key in ['username', 'passwordHash']},
+            'upstreamCa': access[service_id]['upstreamCa'],
         })
     return sign(root / 'identity.pem', {
-        'schema': 1, 'nodeId': node['id'], 'issuedAt': now,
+        'schema': 2, 'nodeId': node['id'], 'issuedAt': now,
         'expiresAt': now + 120, 'services': published,
     })
 
@@ -2417,7 +2463,7 @@ td{overflow-wrap:anywhere}code{font-size:13px}.notice{border-left:3px solid #eeb
 .version{display:inline-block;white-space:nowrap;padding:4px 8px;border-radius:999px;font-size:13px;font-weight:700;background:#123e35}.version.red{background:#4b232b}.version-unknown{color:#ffe096;background:#493b1e}
 .button{padding:10px 16px;border:1px solid #517185;border-radius:8px;text-decoration:none;background:#13283a;color:#e6eff6;cursor:pointer}.web-tabs{display:flex;justify-content:flex-start;gap:8px}.web-tabs .active{background:#28556a;color:#fff}
 .service-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end;margin-top:18px}
-label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select{min-width:0;padding:10px;border:1px solid #517185;border-radius:7px;background:#0c1925;color:#e6eff6}
+label{display:grid;gap:6px;color:#a8bdcc;font-size:13px}input,select,textarea{min-width:0;padding:10px;border:1px solid #517185;border-radius:7px;background:#0c1925;color:#e6eff6}textarea{font-family:monospace;resize:vertical}
 .inline-form{display:inline}.danger{border-color:#a96060;color:#ffb4b4}
 @media(max-width:600px){main{padding:24px 14px}section{padding:16px}.cards{grid-template-columns:1fr}}
 '''
@@ -2535,7 +2581,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
     if own and csrf_token and editor_host:
         form_service = editing_service or {'id': '', 'name': '', 'protocol': 'tcp', 'port': '',
                                            'path': None}
-        form_proxy = private_proxy_access.get(form_service['id'], {'username': None})
+        form_proxy = private_proxy_access.get(
+            form_service['id'], {'username': None, 'upstreamCa': None})
         protocol_options = ''.join('<option value="%s"%s>%s</option>' % (
             protocol, ' selected' if form_service['protocol'] == protocol else '', protocol)
             for protocol in ['tcp', 'http', 'https'])
@@ -2552,6 +2599,8 @@ def web_page(root, csrf_token='', service_filters=None, authenticated=True):
 <label>Uživatel proxy (volitelný)<input name="proxyUsername" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="username" value="''' + esc(form_proxy.get('username') or '') + '''"></label>
 <label>Nové heslo proxy (prázdné zachová stávající)<input name="proxyPassword" type="password" maxlength="256" autocomplete="new-password"></label>
 <small>Bez uživatele bude služba dostupná bez Basic Auth. Heslo se ukládá jen jako salted hash a nevstupuje do veřejných Zlatých stránek.</small>
+<label>Důvěryhodný certifikát HTTPS upstreamu (PEM)<textarea name="proxyUpstreamCa" maxlength="16384" rows="8" placeholder="-----BEGIN CERTIFICATE-----">''' + esc(form_proxy.get('upstreamCa') or '') + '''</textarea></label>
+<small>Volitelné pouze pro HTTPS. Vložte jednu veřejnou CA nebo samopodepsaný serverový certifikát; nikdy soukromý klíč. Prázdná hodnota použije systémovou důvěru a uložený certifikát odstraní.</small>
 <label>Shodný endpoint<select name="confirmDuplicate"><option value="0">Odmítnout duplicitu</option><option value="1">Výslovně povolit</option></select></label>
 <button class="button">''' + ('Uložit změny' if editing_service else 'Uložit službu') + '''</button>''' + (
     ''' <a class="button" href="''' + WEB_OVERVIEW_PATH + '''?editorHost=''' + esc(editor_host) + '''">Zrušit úpravy</a>'''
@@ -2770,7 +2819,7 @@ def web_handler(root):
                 size = int(self.headers.get('Content-Length', '0'))
             except ValueError:
                 size = 0
-            if not 0 < size <= 4096 or self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
+            if not 0 < size <= 24576 or self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
                 self.send_error(400)
                 return
             fields = parse_qs(self.rfile.read(size).decode('utf-8', errors='replace'), keep_blank_values=True)
@@ -2841,7 +2890,8 @@ def web_handler(root):
                             redirect_location += '?editorHost=' + existing['hostAddress']
                     else:
                         expected = {'token', 'id', 'name', 'hostAddress', 'protocol', 'port', 'path',
-                                    'proxyEnabled', 'proxyUsername', 'proxyPassword', 'confirmDuplicate'}
+                                    'proxyEnabled', 'proxyUsername', 'proxyPassword',
+                                    'proxyUpstreamCa', 'confirmDuplicate'}
                         if set(fields) != expected or any(len(value) != 1 for value in fields.values()):
                             self.send_error(400)
                             return
@@ -2864,7 +2914,7 @@ def web_handler(root):
                         save_local_service_with_proxy(
                             root, node, service, fields['confirmDuplicate'][0] == '1',
                             fields['proxyEnabled'][0] == '1', fields['proxyUsername'][0],
-                            fields['proxyPassword'][0])
+                            fields['proxyPassword'][0], fields['proxyUpstreamCa'][0])
                         redirect_location += '?editorHost=' + service['hostAddress']
             except ValueError as error:
                 self.send_error(409, 'Operation unavailable', explain=str(error))

@@ -15,6 +15,31 @@ spec.loader.exec_module(p)
 
 
 class ProxyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ca_directory = tempfile.TemporaryDirectory()
+        root = Path(cls.ca_directory.name)
+        key, certificate = root / 'ca.key', root / 'ca.crt'
+        p.subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+            '-subj', '/CN=Turris Federation proxy test CA',
+            '-addext', 'basicConstraints=critical,CA:TRUE',
+            '-keyout', str(key), '-out', str(certificate),
+        ], stdout=p.subprocess.DEVNULL, stderr=p.subprocess.DEVNULL, check=True)
+        cls.public_ca = certificate.read_text()
+        leaf_key, leaf = root / 'leaf.key', root / 'leaf.crt'
+        p.subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+            '-subj', '/CN=workspace.cacke.internal',
+            '-addext', 'basicConstraints=critical,CA:FALSE',
+            '-keyout', str(leaf_key), '-out', str(leaf),
+        ], stdout=p.subprocess.DEVNULL, stderr=p.subprocess.DEVNULL, check=True)
+        cls.public_leaf = leaf.read_text()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ca_directory.cleanup()
+
     def test_lxc_is_explicitly_not_a_router(self):
         sysctl = (ROOT / 'proxy/90-turris-federation-proxy.conf').read_text()
         self.assertIn('net.ipv4.ip_forward = 0', sysctl)
@@ -51,6 +76,7 @@ class ProxyTests(unittest.TestCase):
 
     def test_nginx_binds_only_explicit_vpn_and_lan_ips_and_verifies_upstream(self):
         services = p.validate_manifest(self.manifest(), 'router-1', now=1050)
+        services[1]['upstreamCaFile'] = '/managed/diary.ca.pem'
         config = p.nginx_config(services, 'proxy.cacke.internal',
                                 ['100.81.1.4', '192.168.1.10'],
                                 '/cert.pem', '/key.pem', '/local-ca.pem')
@@ -60,6 +86,7 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('proxy_pass https://192.168.1.20:443/app/;', config)
         self.assertIn('proxy_ssl_verify on;', config)
         self.assertIn('proxy_ssl_name diary.cacke.internal;', config)
+        self.assertIn('proxy_ssl_trusted_certificate /managed/diary.ca.pem;', config)
         self.assertIn('auth_basic "Turris Federation";', config)
         self.assertIn('/diary.htpasswd;', config)
         self.assertEqual(1, config.count('auth_basic_user_file'))
@@ -67,6 +94,47 @@ class ProxyTests(unittest.TestCase):
         self.assertNotIn('listen 0.0.0.0', config)
         self.assertIn('server_names_hash_bucket_size 256;', config)
         self.assertIn('server_names_hash_max_size 4096;', config)
+
+    def test_schema_two_validates_managed_ca_and_rejects_it_for_http(self):
+        manifest = self.manifest()
+        manifest['schema'] = 2
+        manifest['services'][0]['upstreamCa'] = self.public_leaf
+        manifest['services'][1]['upstreamCa'] = None
+        services = p.validate_manifest(manifest, 'router-1', now=1050)
+        self.assertEqual(self.public_leaf, services[1]['upstreamCa'])
+        manifest['services'][1]['upstreamCa'] = self.public_ca
+        with self.assertRaisesRegex(ValueError, 'jen pro HTTPS'):
+            p.validate_manifest(manifest, 'router-1', now=1050)
+
+    def test_reconcile_writes_managed_ca_for_nginx_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            auth_root = root / 'auth'
+            config = {
+                'routerPublicKey': str(root / 'router.pub'), 'routerNodeId': 'router-1',
+                'domain': 'proxy.internal', 'listenAddress': '100.81.1.4',
+                'certificate': '/cert.pem', 'certificateKey': '/key.pem',
+                'nginxConfig': str(root / 'proxy.conf'),
+                'authDirectory': str(auth_root), 'nginxGroup': 'nginx-test',
+                'stateFile': str(root / 'state.json'),
+            }
+            (root / 'config.json').write_text(json.dumps(config))
+            services = p.validate_manifest(self.manifest(), 'router-1', now=1050)
+            services[1]['upstreamCa'] = self.public_ca
+            success = type('Result', (), {'returncode': 0, 'stderr': b''})()
+            group = type('Group', (), {'gr_gid': os.getgid()})()
+            with patch.object(p, 'fetch', return_value={}), \
+                    patch.object(p, 'verify', return_value={'expiresAt': 1120}), \
+                    patch.object(p, 'validate_manifest', return_value=services), \
+                    patch.object(p.grp, 'getgrnam', return_value=group), \
+                    patch.object(p.time, 'time', return_value=1050), \
+                    patch.object(p.subprocess, 'run', return_value=success):
+                p.reconcile(root / 'config.json')
+            generation = next(auth_root.iterdir())
+            ca_file = generation / 'diary.ca.pem'
+            self.assertEqual(self.public_ca, ca_file.read_text())
+            self.assertEqual(0o640, ca_file.stat().st_mode & 0o777)
+            self.assertIn(str(ca_file), (root / 'proxy.conf').read_text())
 
     def test_manifest_rejects_header_and_nginx_injection(self):
         for field, value in [('id', 'bad.name'), ('serverName', 'ok.internal; include /tmp/x'),

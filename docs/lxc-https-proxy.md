@@ -33,6 +33,14 @@ textu: router uloží pouze salted `{SSHA}` verifier do soukromého
 `proxy-access.json`; veřejný katalog `services.json` ani provozní report jej
 neobsahuje. Prázdné heslo při další editaci zachová dosavadní verifier.
 
+Pro HTTPS upstream lze ve stejném editoru uložit právě jeden veřejný důvěryhodný
+certifikát v PEM: CA nebo samopodepsaný serverový certifikát. Router před
+uložením ověří formát a aktuální platnost; soukromý klíč odmítne. Certifikát je
+součástí krátkodobého podepsaného manifestu, ale nikoli veřejného katalogu. LXC
+jej uloží s právy pro nginx do samostatného generačního souboru pouze dané služby a použije jej pro
+`proxy_ssl_verify on`. Prázdné pole vlastní certifikát odstraní a vrátí službu k
+systémovému trust store. Vypnutí ověřování certifikátu není podporováno.
+
 Starší výběr pouze podle ID lze jednorázově migrovat příkazem:
 
 ```sh
@@ -58,7 +66,8 @@ dokončení bootstrapu objevila až po validaci, převezme doménu z existujíc�
 konfigurace a bootstrap dokončí bez nového NetBird setup key.
 
 Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze
-vybrané endpointy, případný verifier pro nginx a platí 120 sekund. Proxy navíc připíná veřejnou identitu a
+vybrané endpointy, případný verifier a veřejnou upstream CA pro nginx a platí
+120 sekund. Proxy navíc připíná veřejnou identitu a
 `nodeId` tohoto routeru. SSH klic proxy tedy neumozni shell ani vyber jineho
 routeru a podvrzeny seznam neprojde.
 

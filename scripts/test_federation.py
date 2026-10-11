@@ -61,6 +61,17 @@ class FederationTests(unittest.TestCase):
         return {'schema': 1, 'federationId': str(uuid.UUID(int=900)), 'revision': revision,
                 'previous': None, 'config': config or self.config, 'members': members or {node(1)['id']: self.member(1)}}
 
+    def public_ca(self):
+        key = self.root / 'upstream-ca.key'
+        certificate = self.root / 'upstream-ca.crt'
+        subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+            '-subj', '/CN=Turris Federation test upstream CA',
+            '-addext', 'basicConstraints=critical,CA:TRUE',
+            '-keyout', str(key), '-out', str(certificate),
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return certificate.read_text()
+
     def test_two_sites_drafts_corrections_and_return_to_first(self):
         first, second = self.root / 'first', self.root / 'second'
         for site in [first, second]:
@@ -1235,17 +1246,41 @@ class FederationTests(unittest.TestCase):
         configured = f.configure_proxy_access(self.root, node(1), 'diary', True, 'alice', 'secret')
         self.assertEqual('alice', configured['diary']['username'])
         payload = f.verify(self.public, f.proxy_manifest(self.root, now=1000))
-        self.assertEqual((1, node(1)['id'], 1000, 1120),
+        self.assertEqual((2, node(1)['id'], 1000, 1120),
                          (payload['schema'], payload['nodeId'], payload['issuedAt'], payload['expiresAt']))
         self.assertEqual([{'id': 'diary', 'name': 'Diary', 'scheme': 'https',
                            'host': '192.168.1.20', 'port': 443, 'basePath': '/app',
                            'serverName': '192.168.1.20',
-                           'auth': {'username': 'alice', 'passwordHash': payload['services'][0]['auth']['passwordHash']}}], payload['services'])
+                           'auth': {'username': 'alice', 'passwordHash': payload['services'][0]['auth']['passwordHash']},
+                           'upstreamCa': None}], payload['services'])
         self.assertTrue(payload['services'][0]['auth']['passwordHash'].startswith('{SSHA}'))
         self.assertNotIn('secret', json.dumps(payload))
         with self.assertRaisesRegex(ValueError, 'chybejici|nepodporovanou'):
             f.store_proxy_service_ids(self.root, node(1), ['ollama'])
         self.assertEqual('alice', f.read(self.root / f.PROXY_ACCESS)['diary']['username'])
+
+    def test_proxy_manages_public_ca_for_one_https_upstream(self):
+        service = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',
+                   'protocol': 'https', 'port': 8443, 'path': '/'}
+        f.store_local_services(self.root, [service])
+        f.atomic(self.root / 'node.json', self.member(1))
+        f.atomic(self.root / 'accepted.json', f.sign(self.root / 'root.pem', self.document()))
+        shutil.copy(self.root / 'root.pem', self.root / 'identity.pem')
+        certificate = self.public_ca()
+
+        f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '', certificate)
+        stored = f.read(self.root / f.PROXY_ACCESS)['workspace']['upstreamCa']
+        self.assertEqual(certificate, stored)
+        payload = f.verify(self.public, f.proxy_manifest(self.root, now=1000))
+        self.assertEqual(certificate, payload['services'][0]['upstreamCa'])
+        self.assertNotIn('PRIVATE KEY', json.dumps(payload))
+
+        with self.assertRaisesRegex(ValueError, 'veřejný certifikát|X.509'):
+            f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '',
+                                     '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----')
+        f.store_local_services(self.root, [{**service, 'protocol': 'http'}])
+        with self.assertRaisesRegex(ValueError, 'jen pro HTTPS'):
+            f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '', certificate)
 
     def test_proxy_lan_dns_contains_only_enabled_exact_aliases(self):
         enabled = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',
@@ -2032,7 +2067,7 @@ class FederationTests(unittest.TestCase):
         service = {'token': token, 'id': 'home-assistant', 'name': 'Home Assistant',
                    'hostAddress': '192.168.1.20', 'protocol': 'https', 'port': '8123',
                    'path': '/lovelace', 'proxyEnabled': '1', 'proxyUsername': 'alice',
-                   'proxyPassword': 'secret', 'confirmDuplicate': '0'}
+                   'proxyPassword': 'secret', 'proxyUpstreamCa': '', 'confirmDuplicate': '0'}
         for changed, status in [({'token': '0' * 64}, b'403'), ({'extra': 'field'}, b'400'),
                                 ({'hostAddress': '192.168.1.21'}, b'409'),
                                 ({'hostAddress': '192.168.2.20'}, b'409')]:
@@ -2052,7 +2087,7 @@ class FederationTests(unittest.TestCase):
             'GET', f.WEB_OVERVIEW_PATH + '?editorHost=192.168.1.20&editorService=home-assistant', handler=handler)
         for expected in [b'Upravit slu', b'value="home-assistant" readonly', b'value="Home Assistant"',
                          b'value="8123"', b'value="/lovelace"', b'<option value="https" selected>',
-                         b'value="alice"']:
+                         b'value="alice"', b'name="proxyUpstreamCa"']:
             self.assertIn(expected, edit_page)
         self.assertNotIn(b'secret', edit_page)
         self.assertNotIn(b'{SSHA}', edit_page)
