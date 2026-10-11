@@ -1430,6 +1430,10 @@ class FederationTests(unittest.TestCase):
                                     if '/etc/dropbear/authorized_keys' in command)
         self.assertIn('mkdir -p /etc/dropbear', router_authorization)
         self.assertNotIn('install ', router_authorization)
+        self.assertIn('no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,',
+                      router_authorization)
+        self.assertNotIn('restrict,command=', router_authorization)
+        self.assertIn('authorized_keys.new', router_authorization)
         service_start = next(command for command, _, _ in calls
                              if 'systemctl start turris-federation-proxy.service' in command)
         self.assertIn('journalctl --no-pager -n 30', service_start)

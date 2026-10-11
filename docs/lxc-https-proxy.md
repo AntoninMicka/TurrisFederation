@@ -45,7 +45,7 @@ klic, pripina host key a na routeru ma klic v `authorized_keys` s vynucenym
 prikazem:
 
 ```text
-restrict,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
+no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
 ```
 
 Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze

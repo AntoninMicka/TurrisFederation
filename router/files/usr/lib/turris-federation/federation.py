@@ -3311,12 +3311,20 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
         'lxc-attach -n %s -- cat /etc/turris-federation-proxy/id_ed25519.pub' % shell_quote(name)).decode().strip()
     if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{40,4096}(?: .*)?', proxy_public):
         raise ValueError('LXC proxy nevytvorila platny SSH verejny klic.')
-    forced = 'restrict,command="python3 %s proxy-manifest %s" %s' % (PROGRAM, REMOTE, proxy_public)
+    forced = ('no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,'
+              'command="python3 %s proxy-manifest %s" %s' %
+              (PROGRAM, REMOTE, proxy_public))
+    public_material = proxy_public.split()[1]
     ssh(node, credentials,
         'set -eu; mkdir -p /etc/dropbear; chmod 0700 /etc/dropbear; touch /etc/dropbear/authorized_keys; '
-        'chmod 0600 /etc/dropbear/authorized_keys; grep -Fqx %s /etc/dropbear/authorized_keys || '
-        'printf "%%s\\n" %s >> /etc/dropbear/authorized_keys' %
-        (shell_quote(forced), shell_quote(forced)))
+        'chmod 0600 /etc/dropbear/authorized_keys; '
+        'awk -v key=%s %s /etc/dropbear/authorized_keys > /etc/dropbear/authorized_keys.new; '
+        'printf "%%s\\n" %s >> /etc/dropbear/authorized_keys.new; '
+        'chmod 0600 /etc/dropbear/authorized_keys.new; '
+        'mv /etc/dropbear/authorized_keys.new /etc/dropbear/authorized_keys' %
+        (shell_quote(public_material), shell_quote(
+            '{ keep=1; for (i=1; i<=NF; i++) if ($i==key) keep=0; if (keep) print }'),
+         shell_quote(forced)))
     router_public = ssh(node, credentials, 'openssl pkey -in %s/identity.pem -pubout' % REMOTE)
     lan = direct_lan(node)
     known_hosts = proxy_known_hosts(lan['host'], node['sshPort'], credentials['hostKey'])

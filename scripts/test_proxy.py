@@ -83,6 +83,11 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('2222', run.call_args.args[0])
         with self.assertRaises(ValueError):
             p.fetch({**config, 'routerPort': '2222'})
+        denied = type('Result', (), {
+            'returncode': 255, 'stdout': b'', 'stderr': b'root@router: Permission denied (publickey).\n'})()
+        with patch.object(p.subprocess, 'run', return_value=denied), \
+                self.assertRaisesRegex(ValueError, 'Permission denied'):
+            p.fetch(config)
 
     def test_expired_cached_manifest_removes_all_upstreams(self):
         with tempfile.TemporaryDirectory() as temporary:

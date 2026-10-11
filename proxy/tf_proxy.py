@@ -174,7 +174,10 @@ def fetch(config):
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=15, check=False)
     if result.returncode or len(result.stdout) > LIMIT:
-        raise ValueError('Manifest nelze nacist z lokalniho Turrisu omezenym SSH prikazem.')
+        detail = result.stderr.decode(errors='replace')[-600:].strip()
+        detail = re.sub(r'[^\x20-\x7e]+', ' ', detail)
+        suffix = ' SSH: ' + detail if detail else ''
+        raise ValueError('Manifest nelze nacist z lokalniho Turrisu omezenym SSH prikazem.' + suffix)
     return json.loads(result.stdout)
 
 
