@@ -1203,17 +1203,95 @@ class FederationTests(unittest.TestCase):
             (directory / name).write_text(name)
         expected = f.hashlib.sha256(b''.join((directory / name).read_bytes()
                                              for name in names)).hexdigest()
-        outputs = [b'running tf-proxy\n' + b'a' * 64 + b'  -\n', b'',
-                   ('running tf-proxy\n%s  -\n' % expected).encode()]
+        status_calls = 0
+        def remote_status(_node, _credentials, command, **_kwargs):
+            nonlocal status_calls
+            if '__meta__' in command:
+                status_calls += 1
+                installed = 'a' * 64 if status_calls == 1 else expected
+                return ('running tf-proxy\n%s  -\nbootstrap-missing\n__meta__ 1 armv7l\n' % installed).encode()
+            return b''
         with patch.object(f, 'proxy_artifacts', return_value=(directory, names)), \
-                patch.object(f, 'ssh', side_effect=outputs) as remote:
+                patch.object(f, 'ssh', side_effect=remote_status) as remote:
             status = f.update_proxy_lxc(node(1), {'password': 'x', 'hostKey': 'key'},
                                         {'container': 'tf-proxy'})
         self.assertEqual(expected, status['installedArtifactHash'])
-        command, payload = remote.call_args_list[1].args[2], remote.call_args_list[1].kwargs['input_data']
-        self.assertIn("lxc-attach -n 'tf-proxy'", command)
-        self.assertNotIn('/etc/turris-federation-proxy/config.json', command.split('test -f', 1)[0])
-        self.assertTrue(payload.startswith(b'\x1f\x8b'))
+        commands = [call.args[2] for call in remote.call_args_list]
+        self.assertTrue(all(call.kwargs.get('input_data') is None for call in remote.call_args_list))
+        self.assertEqual(len(names), sum('base64 -d' in command for command in commands))
+        finish = next(command for command in commands if 'artifact-hash.new' in command)
+        self.assertIn('rollback=1', finish)
+        self.assertIn('sha256sum -c -', finish)
+        self.assertIn('systemctl daemon-reload', finish)
+        self.assertNotIn('rm -f /etc/turris-federation-proxy/config.json', finish)
+        finish_inner = shlex.split(finish)[6]
+        install_root = self.root / 'installed-proxy'
+        local_stage = self.root / 'proxy-stage'
+        local_stage.mkdir()
+        for name in names:
+            shutil.copy2(directory / name, local_stage / name)
+        replacements = {
+            '/var/lib/turris-federation-proxy/.staging-' + expected: str(local_stage),
+            '/usr/local/lib/turris-federation-proxy': str(install_root / 'lib'),
+            '/usr/local/share/turris-federation-proxy': str(install_root / 'share'),
+            '/etc/systemd/system': str(install_root / 'systemd'),
+            '/etc/sysctl.d': str(install_root / 'sysctl'),
+            '/etc/nginx/turris-federation-auth': str(install_root / 'auth'),
+            '/var/lib/turris-federation-proxy': str(install_root / 'state'),
+        }
+        for source, target in replacements.items():
+            finish_inner = finish_inner.replace(source, target)
+        (install_root / 'systemd').mkdir(parents=True)
+        (install_root / 'sysctl').mkdir(parents=True)
+        fake_bin = self.root / 'proxy-bin'
+        fake_bin.mkdir()
+        (fake_bin / 'systemctl').write_text('#!/bin/sh\nexit 0\n')
+        (fake_bin / 'sysctl').write_text(
+            '#!/bin/sh\nif test -n "${FAIL_SYSCTL:-}"; then exit 9; fi\nexit 0\n')
+        for path in fake_bin.iterdir():
+            path.chmod(0o755)
+        installed_paths = {
+            'tf_proxy.py': install_root / 'lib/tf_proxy.py',
+            'turris-federation-proxy.service': install_root / 'systemd/turris-federation-proxy.service',
+            'turris-federation-proxy.timer': install_root / 'systemd/turris-federation-proxy.timer',
+            '90-turris-federation-proxy.conf': install_root / 'sysctl/90-turris-federation-proxy.conf',
+            'config.example.json': install_root / 'share/config.example.json',
+        }
+        for name, path in installed_paths.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(('old-' + name).encode())
+        base_environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'])
+        rolled_back = subprocess.run(['sh', '-c', finish_inner], capture_output=True,
+                                     env=dict(base_environment, FAIL_SYSCTL='1'))
+        self.assertEqual(9, rolled_back.returncode)
+        for name, path in installed_paths.items():
+            self.assertEqual(('old-' + name).encode(), path.read_bytes())
+        self.assertFalse((install_root / 'state/artifact-hash').exists())
+        local_stage.mkdir()
+        for name in names:
+            shutil.copy2(directory / name, local_stage / name)
+        installed = subprocess.run(['sh', '-c', finish_inner], capture_output=True,
+                                   env=base_environment)
+        self.assertEqual(0, installed.returncode, installed.stderr.decode(errors='replace'))
+        self.assertEqual(len(names), installed.stderr.count(b': OK'))
+        self.assertEqual(expected, (install_root / 'state/artifact-hash').read_text().strip())
+        self.assertEqual((directory / 'tf_proxy.py').read_bytes(), installed_paths['tf_proxy.py'].read_bytes())
+
+        current = {'state': 'running', 'container': 'tf-proxy', 'updateRequired': True}
+        calls = []
+        def fail_transfer(_node, _credentials, command, **_kwargs):
+            calls.append(command)
+            if 'base64 -d' in command:
+                raise ValueError('preruseny prenos')
+            return b''
+        with patch.object(f, 'proxy_artifacts', return_value=(directory, names)), \
+                patch.object(f, 'proxy_lxc_status', return_value=current), \
+                patch.object(f, 'ssh', side_effect=fail_transfer), \
+                self.assertRaisesRegex(ValueError, 'preruseny prenos'):
+            f.update_proxy_lxc(node(1), {'password': 'x', 'hostKey': 'key'},
+                               {'container': 'tf-proxy'})
+        self.assertIn('rm -rf', calls[-1])
+        self.assertIn('.staging-' + expected, calls[-1])
 
     def test_proxy_lxc_must_be_created_manually_and_start_is_idempotent(self):
         unavailable = {'state': 'unavailable', 'container': None, 'storageReady': True,

@@ -7,7 +7,6 @@ import fcntl
 import hashlib
 import http.client
 import http.server
-import io
 import ipaddress
 import json
 import math
@@ -22,7 +21,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import tarfile
 import threading
 import time
 import uuid
@@ -3173,7 +3171,7 @@ if ! lxc-info -n "$name" >/dev/null 2>&1; then finish "missing $name"; fi
 state="$(lxc-info -n "$name" -sH)"
 if test "$state" != RUNNING; then finish "stopped $name"; fi
 echo "running $name"
-lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; cat "$@" | sha256sum; if test -s /etc/turris-federation-proxy/config.json && command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; calculated="$(cat "$@" | sha256sum | awk "{print \\$1}")"; receipt="$(cat /var/lib/turris-federation-proxy/artifact-hash 2>/dev/null || true)"; if test "$calculated" = "$receipt"; then echo "$calculated  -"; else echo missing; fi; if test -s /etc/turris-federation-proxy/config.json && command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
 echo "__meta__ $storage $architecture"
 '''
     lines = ssh(node, credentials, command).decode().splitlines()
@@ -3339,27 +3337,90 @@ def update_proxy_lxc(node, credentials, expected):
     if not artifacts:
         raise ValueError('V aplikaci chybi instalacni artefakty LXC proxy.')
     directory, names = artifacts
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode='w:gz') as archive:
+    desired = proxy_artifact_hash()
+    staging = '/var/lib/turris-federation-proxy/.staging-' + desired
+    container = shell_quote(current['container'])
+    attach = 'lxc-attach -n %s -- sh -c ' % container
+    dependencies = ('set -eu; apt-get update >&2; DEBIAN_FRONTEND=noninteractive '
+                    'apt-get install -y nginx openssh-client openssl ca-certificates python3 coreutils >&2')
+    ssh(node, credentials, attach + shell_quote(dependencies), timeout=600)
+    ssh(node, credentials, attach + shell_quote(
+        'set -eu; rm -rf %s; install -d -m 0700 %s' %
+        (shell_quote(staging), shell_quote(staging))))
+    try:
+        hashes = {}
         for name in names:
-            archive.add(directory / name, arcname=name)
-    inner = '''set -eu
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-tar -xzf - -C "$tmp"
-if command -v apt-get >/dev/null; then apt-get update >&2; DEBIAN_FRONTEND=noninteractive apt-get install -y nginx openssh-client openssl ca-certificates python3 >&2; fi
-install -d -m 0755 /usr/local/lib/turris-federation-proxy /usr/local/share/turris-federation-proxy /etc/nginx/turris-federation-auth
-install -m 0755 "$tmp/tf_proxy.py" /usr/local/lib/turris-federation-proxy/tf_proxy.py
-install -m 0644 "$tmp/turris-federation-proxy.service" "$tmp/turris-federation-proxy.timer" /etc/systemd/system/
-install -m 0644 "$tmp/90-turris-federation-proxy.conf" /etc/sysctl.d/90-turris-federation-proxy.conf
-install -m 0644 "$tmp/config.example.json" /usr/local/share/turris-federation-proxy/config.example.json
-python3 -m py_compile /usr/local/lib/turris-federation-proxy/tf_proxy.py
+            data = (directory / name).read_bytes()
+            checksum = hashlib.sha256(data).hexdigest()
+            hashes[name] = checksum
+            target = staging + '/' + name
+            transfer = ('set -eu; umask 077; printf %%s %s | base64 -d > %s.new; '
+                        'printf "%%s  %%s\\n" %s %s | sha256sum -c - >&2; mv %s.new %s' %
+                        (shell_quote(base64.b64encode(data).decode()), shell_quote(target),
+                         shell_quote(checksum), shell_quote(target + '.new'),
+                         shell_quote(target), shell_quote(target)))
+            ssh(node, credentials, attach + shell_quote(transfer), timeout=120)
+        destinations = {
+            'tf_proxy.py': ('0755', '/usr/local/lib/turris-federation-proxy/tf_proxy.py'),
+            'turris-federation-proxy.service': ('0644', '/etc/systemd/system/turris-federation-proxy.service'),
+            'turris-federation-proxy.timer': ('0644', '/etc/systemd/system/turris-federation-proxy.timer'),
+            '90-turris-federation-proxy.conf': ('0644', '/etc/sysctl.d/90-turris-federation-proxy.conf'),
+            'config.example.json': ('0644', '/usr/local/share/turris-federation-proxy/config.example.json'),
+        }
+        checks = '; '.join('printf "%%s  %%s\\n" %s %s | sha256sum -c - >&2' %
+                           (shell_quote(hashes[name]), shell_quote(staging + '/' + name))
+                           for name in names)
+        specs = ' '.join(shell_quote('%s|%s|%s' % (name, destinations[name][0], destinations[name][1]))
+                         for name in names)
+        finish = '''set -eu
+stage=%s
+backup="$stage/backup"
+install -d -m 0700 "$backup"
+%s
+python3 -m py_compile "$stage/tf_proxy.py"
+install -d -m 0755 /usr/local/lib/turris-federation-proxy /usr/local/share/turris-federation-proxy /etc/nginx/turris-federation-auth /var/lib/turris-federation-proxy
+i=0
+for spec in %s; do
+  source="${spec%%%%|*}"; rest="${spec#*|}"; mode="${rest%%%%|*}"; destination="${rest#*|}"
+  i=$((i+1)); if test -e "$destination"; then cp -p "$destination" "$backup/$i"; touch "$backup/$i.present"; fi
+  install -m "$mode" "$stage/$source" "$destination.new"
+done
+rollback=1
+cleanup() {
+  code=$?
+  if test "$code" != 0 && test "$rollback" = 1; then
+    i=0
+    for spec in %s; do
+      rest="${spec#*|}"; destination="${rest#*|}"; i=$((i+1))
+      if test -f "$backup/$i.present"; then cp -p "$backup/$i" "$destination"; else rm -f "$destination"; fi
+      rm -f "$destination.new"
+    done
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  rm -rf "$stage"
+  exit "$code"
+}
+trap cleanup EXIT
+for spec in %s; do
+  rest="${spec#*|}"; destination="${rest#*|}"; mv "$destination.new" "$destination"
+done
 systemctl daemon-reload
 sysctl --system >/dev/null
-if test -f /etc/turris-federation-proxy/config.json; then systemctl enable --now nginx turris-federation-proxy.timer; fi
-'''
-    command = 'lxc-attach -n %s -- sh -c %s' % (
-        shell_quote(current['container']), shell_quote(inner))
-    ssh(node, credentials, command, input_data=stream.getvalue())
+if test -f /etc/turris-federation-proxy/config.json; then
+  nginx -t
+  systemctl enable --now nginx turris-federation-proxy.timer
+fi
+printf '%%s\n' %s > /var/lib/turris-federation-proxy/artifact-hash.new
+mv /var/lib/turris-federation-proxy/artifact-hash.new /var/lib/turris-federation-proxy/artifact-hash
+rollback=0
+''' % (shell_quote(staging), checks, specs, specs, specs, shell_quote(desired))
+        ssh(node, credentials, attach + shell_quote(finish), timeout=300)
+    except Exception:
+        try:
+            ssh(node, credentials, attach + shell_quote('rm -rf ' + shell_quote(staging)))
+        except Exception:
+            pass
+        raise
     updated = proxy_lxc_status(node, credentials)
     if updated['installedArtifactHash'] != proxy_artifact_hash():
         raise ValueError('Aktualizace LXC proxy nedosahla ocekavane verze.')

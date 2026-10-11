@@ -73,6 +73,11 @@ Opakovaný deploy kontejner ani identity nevytváří znovu. Aktualizuje jen
 projektové skripty, systemd jednotky, závislosti a sysctl profil; zachová
 `config.json`, SSH klíče, TLS CA, serverový klíč a NetBird identitu. Jiný název
 lze před prvním deployem uvést v `/etc/turris-federation/proxy-lxc-name`.
+Artefakty se přenášejí jednotlivě do dočasného stagingu a každý se ověří přes
+SHA-256. Původní spravované soubory se před výměnou zálohují; neúspěšný reload
+je obnoví a staging uklidí. Úspěšná verze se zapíše až nakonec do receipt, takže
+přerušený deploy zůstane při příští validaci označený k aktualizaci a bezpečně
+se dokončí opakováním.
 
 Setup key má proxy automaticky zařadit do samostatné cílové skupiny. NetBird
 policy musí zdrojovým klientům povolit pouze tento peer a TCP/443; proxy nesmí
