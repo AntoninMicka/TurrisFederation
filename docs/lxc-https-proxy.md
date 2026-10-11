@@ -123,6 +123,13 @@ aby jedno jméno nikdy neukazovalo současně na upstream i LXC. Zakázaná nebo
 odstraněná služba se při dalším reconcile odstraní; wildcard nevzniká. Tyto
 proxy aliasy fungují i bez zapnutí obecné místní DNS zóny Zlatých stránek.
 
+Pokud NetBird publikuje místní zónu jako doménový Network resource, cloudový
+plán přidá také samostatný wildcard resource pro podzónu proxy. Například
+`*.cacke.internal` nepokrývá `workspace.proxy.cacke.internal`, proto je pro
+proxy potřeba ještě `*.proxy.cacke.internal`. Oba resources používají stejný
+Turris routing peer, cílovou skupinu a lokální přesné DNS záznamy; LXC se
+nestává routing peerem.
+
 Každá služba je dostupná jako `https://<id>.<zadaná-doména>/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,
 overuje TLS upstreamu a neznamy Host odmita kodem 421. Aplikace s pevnym

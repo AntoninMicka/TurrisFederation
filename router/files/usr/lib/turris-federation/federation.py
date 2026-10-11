@@ -1919,6 +1919,17 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
         raise ValueError('Nejdřív zapněte místní DNS zónu lokality.')
     zone = zone['zone']
     wildcard = '*.' + zone
+    domain_resources = {wildcard: node['name'] + ' DNS'}
+    proxy_lan = read(Path(root) / PROXY_LAN_CONFIG)
+    if proxy_lan is not None:
+        if not isinstance(proxy_lan, dict) or set(proxy_lan) != {'domain', 'address'}:
+            raise ValueError('Neplatne verejne nastaveni LAN proxy.')
+        proxy_domain = validate_service_dns_zone(proxy_lan['domain'])
+        proxy_address = ipaddress.ip_address(proxy_lan['address'])
+        lan_networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+        if proxy_address.version != 4 or not any(proxy_address in network for network in lan_networks):
+            raise ValueError('Adresa LAN proxy nelezi v LAN siti routeru.')
+        domain_resources.setdefault('*.' + proxy_domain, node['name'] + ' proxy DNS')
     network_name = 'Turris Federation · ' + node['name']
     resource_group_name = 'tf-site-' + zone.replace('.', '-')
     policy_name = 'Turris Federation · ' + node['name'] + ' access'
@@ -1932,10 +1943,10 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
         routers = get('/networks/%s/routers' % quote(str(network_id), safe=''))
         inventories.append((network, resources, routers))
     containing = [(network, resources, routers) for network, resources, routers in inventories
-                  if any(resource.get('address') == wildcard for resource in resources)]
+                  if any(resource.get('address') in domain_resources for resource in resources)]
     named = unique_named(networks, network_name, 'Network')
     if len(containing) > 1:
-        raise ValueError('Doménový resource je v několika NetBird Networks.')
+        raise ValueError('Doménové resources lokality jsou v několika NetBird Networks.')
     if containing and named and containing[0][0].get('id') != named.get('id'):
         raise ValueError('Doménový resource je v jiné Network než spravovaná lokalita.')
     selected = containing[0] if containing else next(
@@ -1945,23 +1956,24 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
     resources = selected[1] if selected else []
     routers = selected[2] if selected else []
     destination = unique_named(groups, resource_group_name, 'cílovou skupinu')
-    orphaned_wildcard = None
+    orphaned_wildcards = []
     if containing:
-        wildcard_resource = next(resource for resource in resources if resource.get('address') == wildcard)
-        wildcard_groups = wildcard_resource.get('groups') or []
-        if len(wildcard_groups) > 1:
-            raise ValueError('Doménový resource patří do více skupin; program jej bez výběru nepřevezme.')
-        if wildcard_groups:
-            cloud_destination = wildcard_groups[0]
-            if not isinstance(cloud_destination, dict) or not cloud_destination.get('id'):
-                raise ValueError('Doménový resource má neplatnou cílovou skupinu.')
-            if destination and destination.get('id') != cloud_destination.get('id'):
-                raise ValueError('Doménový resource používá jinou cílovou skupinu.')
-            destination = cloud_destination
-        else:
-            if not wildcard_resource.get('id'):
-                raise ValueError('Doménový resource nemá platné ID.')
-            orphaned_wildcard = wildcard_resource
+        for wildcard_resource in (resource for resource in resources
+                                  if resource.get('address') in domain_resources):
+            wildcard_groups = wildcard_resource.get('groups') or []
+            if len(wildcard_groups) > 1:
+                raise ValueError('Doménový resource patří do více skupin; program jej bez výběru nepřevezme.')
+            if wildcard_groups:
+                cloud_destination = wildcard_groups[0]
+                if not isinstance(cloud_destination, dict) or not cloud_destination.get('id'):
+                    raise ValueError('Doménový resource má neplatnou cílovou skupinu.')
+                if destination and destination.get('id') != cloud_destination.get('id'):
+                    raise ValueError('Doménové resources používají jiné cílové skupiny.')
+                destination = cloud_destination
+            else:
+                if not wildcard_resource.get('id'):
+                    raise ValueError('Doménový resource nemá platné ID.')
+                orphaned_wildcards.append(wildcard_resource)
     actions = []
     if not network:
         actions.append({'kind': 'create-network', 'name': network_name})
@@ -1971,14 +1983,17 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
     present_addresses = {resource.get('address') for resource in resources}
     for cidr in sorted(lan_addresses - present_addresses):
         actions.append({'kind': 'create-resource', 'name': node['name'] + ' LAN', 'address': cidr})
-    if wildcard not in present_addresses:
-        actions.append({'kind': 'create-resource', 'name': node['name'] + ' DNS', 'address': wildcard})
-    elif orphaned_wildcard:
-        actions.append({'kind': 'assign-resource', 'resourceId': orphaned_wildcard['id'],
-                        'name': orphaned_wildcard.get('name') or node['name'] + ' DNS',
-                        'description': orphaned_wildcard.get('description') or '',
-                        'address': wildcard, 'enabled': orphaned_wildcard.get('enabled', True),
-                        'previousGroups': []})
+    for address, resource_name in sorted(domain_resources.items()):
+        orphaned = next((resource for resource in orphaned_wildcards
+                         if resource.get('address') == address), None)
+        if address not in present_addresses:
+            actions.append({'kind': 'create-resource', 'name': resource_name, 'address': address})
+        elif orphaned:
+            actions.append({'kind': 'assign-resource', 'resourceId': orphaned['id'],
+                            'name': orphaned.get('name') or resource_name,
+                            'description': orphaned.get('description') or '',
+                            'address': address, 'enabled': orphaned.get('enabled', True),
+                            'previousGroups': []})
     if not any(router.get('peer') == peer_id for router in routers):
         actions.append({'kind': 'create-router', 'peerId': peer_id, 'peer': identity['fqdn']})
     policies = get('/policies')
@@ -1996,6 +2011,7 @@ def netbird_cloud_plan(root, node, token, source_group_name, api=netbird_api_req
             'networkName': network_name, 'destinationGroupId': destination.get('id') if destination else None,
             'destinationGroupName': resource_group_name, 'sourceGroupId': source.get('id'),
             'sourceGroupName': source_group_name, 'peerId': peer_id, 'zone': zone,
+            'dnsWildcards': sorted(domain_resources),
             'lanCidrs': sorted(node['lanCidrs']), 'actions': actions}
     return {**plan, 'digest': digest(plan)}
 

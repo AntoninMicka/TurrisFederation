@@ -1849,6 +1849,8 @@ class FederationTests(unittest.TestCase):
 
     def test_netbird_cloud_plan_and_apply_are_idempotent_and_secret_free(self):
         f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        f.atomic(self.root / f.PROXY_LAN_CONFIG,
+                 {'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'})
         calls = []
         def api(token, method, path, payload=None):
             self.assertEqual('s' * 24, token)
@@ -1869,9 +1871,11 @@ class FederationTests(unittest.TestCase):
                 'ip': '100.81.156.128', 'fqdn': 'cacke-1450.netbird.cloud'}):
             plan = f.netbird_cloud_plan(self.root, node(1), 's' * 24, 'All', api)
             self.assertEqual(['create-network', 'create-group', 'create-resource',
-                              'create-resource', 'create-router', 'create-policy'],
+                              'create-resource', 'create-resource', 'create-router',
+                              'create-policy'],
                              [action['kind'] for action in plan['actions']])
-            self.assertEqual({'192.168.1.0/24', '*.cacke.internal'}, {
+            self.assertEqual({'192.168.1.0/24', '*.cacke.internal',
+                              '*.proxy.cacke.internal'}, {
                 action['address'] for action in plan['actions'] if action['kind'] == 'create-resource'})
             self.assertNotIn('s' * 24, json.dumps(plan))
             result = f.apply_netbird_cloud_plan(self.root, node(1), 's' * 24, 'All',
@@ -1879,6 +1883,8 @@ class FederationTests(unittest.TestCase):
         self.assertEqual('network-cacke', result['networkId'])
         payloads = [payload for method, path, payload in calls if method == 'POST']
         self.assertTrue(any(payload and payload.get('address') == '*.cacke.internal'
+                            for payload in payloads))
+        self.assertTrue(any(payload and payload.get('address') == '*.proxy.cacke.internal'
                             for payload in payloads))
         self.assertTrue(any(payload and payload.get('protocol') is None
                             and payload.get('rules', [{}])[0].get('protocol') == 'all'
