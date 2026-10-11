@@ -3331,7 +3331,10 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
         'lxc-attach -n %s -- cat /etc/turris-federation-proxy/id_ed25519.pub' % shell_quote(name)).decode().strip()
     if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{40,4096}(?: .*)?', proxy_public):
         raise ValueError('LXC proxy nevytvorila platny SSH verejny klic.')
-    forced = ('no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,'
+    # Old Dropbear builds reject a whole authorized_keys entry when an option
+    # names a feature compiled out of the server. Keep only the restrictions
+    # required for this non-interactive, non-forwarding manifest endpoint.
+    forced = ('no-port-forwarding,no-pty,'
               'command="python3 %s proxy-manifest %s" %s' %
               (PROGRAM, REMOTE, proxy_public))
     public_material = proxy_public.split()[1]

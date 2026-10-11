@@ -45,8 +45,11 @@ klic, pripina host key a na routeru ma klic v `authorized_keys` s vynucenym
 prikazem:
 
 ```text
-no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
+no-port-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
 ```
+
+Použité minimum restrikcí je kompatibilní i se staršími sestaveními Dropbearu,
+která odmítnou celý klíč při uvedení volby pro funkci vypnutou při kompilaci.
 
 Manifest je podepsaný členskou identitou lokálního Turrisu, obsahuje pouze
 vybrané endpointy, případný verifier pro nginx a platí 120 sekund. Proxy navíc připíná veřejnou identitu a
