@@ -3156,7 +3156,8 @@ def proxy_lxc_status(node, credentials):
     if desired is None:
         return {'state': 'unavailable', 'container': None, 'artifactHash': None,
                 'installedArtifactHash': None, 'updateRequired': False,
-                'storageReady': False, 'needsBootstrap': False, 'creationRequired': False}
+                'storageReady': False, 'needsBootstrap': False, 'creationRequired': False,
+                'setupKeyRequired': False}
     command = '''set -eu
 name=tf-proxy
 test ! -s /etc/turris-federation/proxy-lxc-name || name="$(cat /etc/turris-federation/proxy-lxc-name)"
@@ -3171,7 +3172,7 @@ if ! lxc-info -n "$name" >/dev/null 2>&1; then finish "missing $name"; fi
 state="$(lxc-info -n "$name" -sH)"
 if test "$state" != RUNNING; then finish "stopped $name"; fi
 echo "running $name"
-lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; calculated="$(cat "$@" | sha256sum | awk "{print \\$1}")"; receipt="$(cat /var/lib/turris-federation-proxy/artifact-hash 2>/dev/null || true)"; if test "$calculated" = "$receipt"; then echo "$calculated  -"; else echo missing; fi; if test -s /etc/turris-federation-proxy/config.json && command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
+lxc-attach -n "$name" -- sh -c 'for p in /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json; do test -f "$p" || { echo missing; echo bootstrap-missing; exit; }; done; calculated="$(cat "$@" | sha256sum | awk "{print \\$1}")"; receipt="$(cat /var/lib/turris-federation-proxy/artifact-hash 2>/dev/null || true)"; if test "$calculated" = "$receipt"; then echo "$calculated  -"; else echo missing; fi; connected=0; if command -v netbird >/dev/null && netbird status 2>/dev/null | grep -qi "Management: Connected"; then connected=1; echo netbird-connected; fi; if test -s /etc/turris-federation-proxy/config.json && test "$connected" = 1; then echo bootstrap-ready; else echo bootstrap-missing; fi' sh /usr/local/lib/turris-federation-proxy/tf_proxy.py /etc/systemd/system/turris-federation-proxy.service /etc/systemd/system/turris-federation-proxy.timer /etc/sysctl.d/90-turris-federation-proxy.conf /usr/local/share/turris-federation-proxy/config.example.json
 echo "__meta__ $storage $architecture"
 '''
     lines = ssh(node, credentials, command).decode().splitlines()
@@ -3182,11 +3183,13 @@ echo "__meta__ $storage $architecture"
     metadata = next((line.split() for line in lines if line.startswith('__meta__ ')), [])
     storage_ready = len(metadata) == 3 and metadata[1] == '1'
     bootstrap_ready = 'bootstrap-ready' in lines
+    netbird_connected = 'netbird-connected' in lines
     return {'state': state, 'container': name, 'artifactHash': desired,
             'installedArtifactHash': installed,
             'updateRequired': state == 'running' and desired is not None and installed != desired,
             'storageReady': storage_ready, 'needsBootstrap': not bootstrap_ready,
             'creationRequired': state in {'unavailable', 'missing'},
+            'setupKeyRequired': state == 'running' and not netbird_connected,
             'architecture': metadata[2] if len(metadata) == 3 else None}
 
 
@@ -3239,14 +3242,8 @@ def bootstrap_proxy_lxc(node, target, credentials, bootstrap):
     domain_pattern = r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
     if not isinstance(domain, str) or not re.fullmatch(domain_pattern, domain):
         raise ValueError('Domena HTTPS proxy neni platna.')
-    try:
-        canonical_setup_key = str(uuid.UUID(setup_key))
-    except (AttributeError, TypeError, ValueError):
-        raise ValueError(
-            'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.') from None
-    if setup_key.lower() != canonical_setup_key:
-        raise ValueError(
-            'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.')
+    if not isinstance(setup_key, str) or any(value in setup_key for value in '\r\n\0'):
+        raise ValueError('Jednorazovy NetBird setup key neni platny.')
     current = ensure_proxy_container(node, credentials)
     current = update_proxy_lxc(node, credentials, current)
     name = current['container']
@@ -3265,6 +3262,14 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
         (shell_quote(name), shell_quote(
             "if netbird status 2>/dev/null | grep -qi 'Management: Connected'; then echo connected; else echo disconnected; fi"))).decode().strip()
     if connected != 'connected':
+        try:
+            canonical_setup_key = str(uuid.UUID(setup_key))
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError(
+                'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.') from None
+        if setup_key.lower() != canonical_setup_key:
+            raise ValueError(
+                'Jednorazovy NetBird setup key musi byt samotne UUID z NetBird Setup Keys, ne API token ani cely prikaz.')
         enroll = ('lxc-attach -n %s -- sh -c %s' % (shell_quote(name), shell_quote(
             'exec env -u NB_SETUP_KEY netbird up --setup-key-file /proc/self/fd/0 >/dev/null')))
         ssh(node, credentials, enroll, input_data=(setup_key + '\n').encode(), timeout=300)
@@ -3284,7 +3289,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
         raise ValueError('LXC proxy nevytvorila platny SSH verejny klic.')
     forced = 'restrict,command="python3 %s proxy-manifest %s" %s' % (PROGRAM, REMOTE, proxy_public)
     ssh(node, credentials,
-        'set -eu; install -d -m 0700 /etc/dropbear; touch /etc/dropbear/authorized_keys; '
+        'set -eu; mkdir -p /etc/dropbear; chmod 0700 /etc/dropbear; touch /etc/dropbear/authorized_keys; '
         'chmod 0600 /etc/dropbear/authorized_keys; grep -Fqx %s /etc/dropbear/authorized_keys || '
         'printf "%%s\\n" %s >> /etc/dropbear/authorized_keys' %
         (shell_quote(forced), shell_quote(forced)))

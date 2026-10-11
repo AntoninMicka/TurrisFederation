@@ -1206,9 +1206,12 @@ async function submitConnection() {
             <p v-if="plans[connectionNode.id].proxyLxc.creationRequired" class="error">Nejdřív v Turrisu ručně vytvořte LXC <code>tf-proxy</code> z Debian Trixie a spusťte novou validaci.</p>
             <template v-else>
               <label>Doména HTTPS proxy<input v-model="proxyDomain" required pattern="[a-z0-9.-]+\.[a-z0-9-]+" placeholder="proxy.example.internal" :disabled="submitting" /></label>
-              <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" :disabled="submitting" /></label>
-              <small>Vložte pouze hodnotu klíče z NetBird Setup Keys, ne celý příkaz ani API token.</small>
-              <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
+              <template v-if="plans[connectionNode.id].proxyLxc.setupKeyRequired">
+                <label>Jednorázový NetBird setup key<input v-model="proxySetupKey" type="password" autocomplete="off" required pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" :disabled="submitting" /></label>
+                <small>Vložte pouze hodnotu klíče z NetBird Setup Keys, ne celý příkaz ani API token.</small>
+                <small>Setup key se předá pouze tomuto deployi a neuloží se do plánu, databáze ani konfigurace routeru.</small>
+              </template>
+              <small v-else>NetBird peer je už připojený; předchozí registrace se zachová a setup key není potřeba.</small>
             </template>
           </div>
           <p v-if="deployMode === 'software'" class="muted">Níže uvedené nastavení zůstane v tomto režimu beze změny a nebude publikováno ani aplikováno.</p>
@@ -1226,7 +1229,7 @@ async function submitConnection() {
           <label v-if="identity.trust !== 'trusted'" class="trust-check"><input v-model="trustHostKey" type="checkbox" :disabled="submitting" />Ověřil(a) jsem otisky a důvěřuji tomuto routeru.</label>
           <label>SSH heslo<input v-model="password" type="password" autocomplete="off" required :disabled="submitting" /></label>
           <small>Heslo použijeme pouze pro tento pokus a neuložíme ho. {{ (connectionAction === 'zerotier-setup' || connectionAction === 'deploy') ? 'Instalace může trvat několik minut.' : 'Tato akce pouze načte nebo ověří stav routeru.' }}</small>
-          <button :disabled="submitting || !password || (connectionAction === 'deploy' && (!deployConfirmed || (plans[connectionNode.id]?.proxyLxc.needsBootstrap && (plans[connectionNode.id]?.proxyLxc.creationRequired || !proxyDomain || !proxySetupKey)))) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
+          <button :disabled="submitting || !password || (connectionAction === 'deploy' && (!deployConfirmed || (plans[connectionNode.id]?.proxyLxc.needsBootstrap && (plans[connectionNode.id]?.proxyLxc.creationRequired || !proxyDomain || (plans[connectionNode.id]?.proxyLxc.setupKeyRequired && !proxySetupKey))))) || (identity.trust !== 'trusted' && !trustHostKey)">{{ submitting ? (connectionAction === 'zerotier-setup' ? 'Nastavuji ZeroTier…' : 'Načítám…') : actionLabels[connectionAction] }}</button>
         </form>
         <button class="secondary" :disabled="submitting || inspecting" @click="closeConnection">Zavřít</button>
       </section>

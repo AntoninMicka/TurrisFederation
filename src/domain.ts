@@ -252,6 +252,7 @@ export interface DeploymentPlan {
     storageReady: boolean;
     needsBootstrap: boolean;
     creationRequired: boolean;
+    setupKeyRequired: boolean;
   };
   availableModes: DeploymentMode[];
   recommendedMode: DeploymentMode;
