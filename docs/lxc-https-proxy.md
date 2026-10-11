@@ -9,9 +9,10 @@ přijat na skutečném Turrisu, LXC a NetBird síti.
 
 Proxy je samostatný LXC v běžné LAN a samostatný NetBird peer. Je to aplikační
 gateway, nikoli L3 router: neinzeruje LAN prefix, nemá IP forwarding ani NAT a
-není NetBird routing peerem. Nginx poslouchá pouze na NetBird IP kontejneru,
-nikoli na jeho LAN adrese. Klientská NetBird skupina dostane peer-to-peer policy
-jen na tento peer a TCP/443; nedostane LAN resource ani cestu do LAN.
+není NetBird routing peerem. Nginx poslouchá pouze na dvou explicitních adresách
+kontejneru: NetBird IP pro vzdálené klienty a LAN IP pro místní klienty; nikdy
+nepoužívá wildcard `0.0.0.0`. Klientská NetBird skupina dostane peer-to-peer
+policy jen na tento peer a TCP/443; nedostane LAN resource ani cestu do LAN.
 
 LXC tedy smí jako běžný LAN host navazovat spojení k lokálním službám. VPN klient
 však nikdy neposílá LAN pakety skrz kontejner: ukončí TLS na nginx a nginx vytvoří
@@ -85,6 +86,12 @@ být routing peer ani dostat LAN resource. DNS zóna domény musí směrovat ná
 `<id>.<doména>` na NetBird IP proxy. Tato cloudová policy/DNS část se při fyzické
 akceptaci musí ověřit proti konkrétnímu NetBird účtu.
 
+V místní LAN agent automaticky přidá do Knot Resolveru přesné záznamy pouze pro
+služby povolené ve Zlatých stránkách. Stejné jméno `<id>.<doména>` tam ukazuje
+na LAN IP LXC. Doména proxy musí být podzónou zapnuté místní `.internal` zóny,
+například `proxy.cacke.internal` pod `cacke.internal`. Zakázaná nebo odstraněná
+služba se z místního DNS při dalším reconcile odstraní; wildcard nevzniká.
+
 Každá služba je dostupná jako `https://<id>.<zadaná-doména>/`. Nginx mapuje
 koren verejneho hostu na deklarovanou `basePath`, predava WebSocket upgrade,
 overuje TLS upstreamu a neznamy Host odmita kodem 421. Aplikace s pevnym
@@ -96,8 +103,8 @@ akceptaci; samotny uspesny TLS handshake nestaci.
 - `lxc-info`, autostart a restart Turrisu potvrdi samostatny bezici kontejner;
 - `sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding` vrátí dvě nuly a
   kontejner neprovádí NAT;
-- nginx posloucha jen na NetBird IP a certifikat projde `openssl s_client` pro
-  kazde publikovane jmeno;
+- nginx posloucha jen na explicitni NetBird a LAN IP a certifikat projde
+  `openssl s_client` pro kazde publikovane jmeno;
 - klient ve schvalene NetBird skupine vidi TCP/443 proxy, ale ne LAN prefix;
 - klient mimo skupinu proxy neotevre;
 - z VPN klienta neprojde ping, TCP ani UDP přímo na žádnou LAN adresu;

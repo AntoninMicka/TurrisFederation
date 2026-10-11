@@ -8,6 +8,7 @@
   "identityFile": "/etc/turris-federation-proxy/id_ed25519",
   "domain": "proxy.cacke.internal",
   "listenAddress": "100.81.1.4",
+  "listenAddresses": ["100.81.1.4", "192.168.100.10"],
   "certificate": "/etc/turris-federation-proxy/tls/fullchain.pem",
   "certificateKey": "/etc/turris-federation-proxy/tls/key.pem",
   "upstreamCa": "/etc/ssl/certs/ca-certificates.crt",

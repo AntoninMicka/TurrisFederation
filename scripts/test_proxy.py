@@ -48,11 +48,13 @@ class ProxyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'upstream'):
             p.validate_manifest(public, 'router-1', now=1050)
 
-    def test_nginx_binds_only_vpn_ip_and_verifies_https_upstream(self):
+    def test_nginx_binds_only_explicit_vpn_and_lan_ips_and_verifies_upstream(self):
         services = p.validate_manifest(self.manifest(), 'router-1', now=1050)
-        config = p.nginx_config(services, 'proxy.cacke.internal', '100.81.1.4',
+        config = p.nginx_config(services, 'proxy.cacke.internal',
+                                ['100.81.1.4', '192.168.1.10'],
                                 '/cert.pem', '/key.pem', '/local-ca.pem')
         self.assertEqual(3, config.count('listen 100.81.1.4:443 ssl'))
+        self.assertEqual(3, config.count('listen 192.168.1.10:443 ssl'))
         self.assertIn('server_name diary.proxy.cacke.internal;', config)
         self.assertIn('proxy_pass https://192.168.1.20:443/app/;', config)
         self.assertIn('proxy_ssl_verify on;', config)

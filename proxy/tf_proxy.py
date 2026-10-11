@@ -98,22 +98,32 @@ def validate_manifest(payload, node_id, now=None):
 
 def nginx_config(services, domain, listen, certificate, certificate_key, upstream_ca,
                  auth_directory='/etc/nginx/turris-federation-auth/current'):
-    address = ipaddress.ip_address(listen)
-    if (not DOMAIN.fullmatch(domain) or address.is_unspecified or address.is_multicast
-            or address.is_loopback):
+    listens = listen if isinstance(listen, list) else [listen]
+    if not 1 <= len(listens) <= 2 or len(set(listens)) != len(listens):
         raise ValueError('Proxy domena nebo VPN adresa neni platna.')
+    try:
+        addresses = [ipaddress.ip_address(value) for value in listens]
+    except (TypeError, ValueError) as error:
+        raise ValueError('Proxy domena nebo VPN adresa neni platna.') from error
+    if (not DOMAIN.fullmatch(domain) or any(address.version != 4 or address.is_unspecified
+            or address.is_multicast or address.is_loopback for address in addresses)):
+        raise ValueError('Proxy domena nebo VPN adresa neni platna.')
+    default_listens = ''.join('    listen %s:443 ssl default_server;\n' % address
+                              for address in addresses).rstrip()
+    service_listens = ''.join('    listen %s:443 ssl;\n' % address
+                              for address in addresses).rstrip()
     header = '''map $http_upgrade $connection_upgrade {
     default upgrade;
     '' close;
 }
 server {
-    listen %s:443 ssl default_server;
+%s
     server_name _;
     ssl_certificate %s;
     ssl_certificate_key %s;
     return 421;
 }
-''' % (listen, certificate, certificate_key)
+''' % (default_listens, certificate, certificate_key)
     blocks = []
     for service in services:
         upstream = '%s://%s:%d%s' % (service['scheme'], service['host'], service['port'],
@@ -131,7 +141,7 @@ server {
                     '        auth_basic_user_file %s/%s.htpasswd;\n' %
                     (auth_directory, service['id']))
         blocks.append('''server {
-    listen %s:443 ssl;
+%s
     server_name %s.%s;
     ssl_certificate %s;
     ssl_certificate_key %s;
@@ -147,7 +157,7 @@ server {
         proxy_set_header Connection $connection_upgrade;
     }
 }
-''' % (listen, service['id'], domain, certificate, certificate_key, tls, auth, upstream,
+''' % (service_listens, service['id'], domain, certificate, certificate_key, tls, auth, upstream,
        service['serverName'], service['serverName'], service['id'], domain))
     return header + ''.join(blocks)
 
@@ -207,7 +217,8 @@ def reconcile(config_path):
             auth_file = auth_generation / (service['id'] + '.htpasswd')
             atomic(auth_file, '%s:%s\n' % (service['auth']['username'], service['auth']['passwordHash']))
             auth_file.chmod(0o600)
-    rendered = nginx_config(services, config['domain'], config['listenAddress'],
+    rendered = nginx_config(services, config['domain'],
+                            config.get('listenAddresses', config['listenAddress']),
                             config['certificate'], config['certificateKey'],
                             config.get('upstreamCa', '/etc/ssl/certs/ca-certificates.crt'),
                             str(auth_generation))

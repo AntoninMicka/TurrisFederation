@@ -673,6 +673,7 @@ class FederationTests(unittest.TestCase):
             return b'hash'
         def bootstrap(*_args, **_kwargs):
             events.append('proxy')
+            return {'state': 'running', 'container': 'tf-proxy'}
         with patch.object(f, 'direct_lan', return_value=lan), \
                 patch.object(f, 'ssh', side_effect=ssh_result), \
                 patch.object(f, 'installed_artifact_hash',
@@ -681,9 +682,11 @@ class FederationTests(unittest.TestCase):
                              side_effect=[plan['installedArtifactComponents'],
                                           f.artifact_components()]), \
                 patch.object(f, 'remote', side_effect=[self.member(1), {'state': 'active'}]), \
-                patch.object(f, 'bootstrap_proxy_lxc', side_effect=bootstrap):
+                patch.object(f, 'bootstrap_proxy_lxc', side_effect=bootstrap), \
+                patch.object(f, 'configure_proxy_lan_access') as configure_lan:
             f.controller(self.root, req)
         self.assertEqual(['router-agent', 'proxy'], events)
+        configure_lan.assert_called_once()
 
     def test_software_only_failure_restores_all_components_and_service_state(self):
         req, plan, lan = self.validation_fixture('a' * 64)
@@ -1219,6 +1222,19 @@ class FederationTests(unittest.TestCase):
             f.store_proxy_service_ids(self.root, node(1), ['ollama'])
         self.assertEqual('alice', f.read(self.root / f.PROXY_ACCESS)['diary']['username'])
 
+    def test_proxy_lan_dns_contains_only_enabled_exact_aliases(self):
+        enabled = {'id': 'workspace', 'name': 'Workspace', 'hostAddress': '192.168.1.20',
+                   'protocol': 'http', 'port': 8080, 'path': '/'}
+        disabled = {**enabled, 'id': 'private', 'name': 'Private', 'port': 8081}
+        f.store_local_services(self.root, f.validate_services(node(1), [enabled, disabled]))
+        f.configure_proxy_access(self.root, node(1), 'workspace', True, '', '')
+        f.atomic(self.root / f.PROXY_LAN_CONFIG,
+                 {'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'})
+        self.assertEqual(b'192.168.1.10 workspace.proxy.cacke.internal\n',
+                         f.render_proxy_lan_dns_hosts(self.root, node(1), 'cacke.internal'))
+        with self.assertRaisesRegex(ValueError, 'podzonou'):
+            f.render_proxy_lan_dns_hosts(self.root, node(1), 'other.internal')
+
     def test_proxy_lxc_update_preserves_private_configuration(self):
         names = ['tf_proxy.py', 'turris-federation-proxy.service',
                  'turris-federation-proxy.timer', '90-turris-federation-proxy.conf',
@@ -1467,6 +1483,22 @@ class FederationTests(unittest.TestCase):
             f.bootstrap_proxy_lxc(router_node, node(1), credentials,
                                   {'domain': 'proxy.example.internal', 'setupKey': ''})
         self.assertFalse(any('--setup-key' in command for command, _ in calls))
+
+    def test_proxy_lan_access_migrates_config_and_publishes_router_dns_state(self):
+        f.configure_service_dns(self.root, node(1), 'cacke.internal')
+        old = {'domain': 'proxy.cacke.internal', 'listenAddress': '100.81.1.4'}
+        replies = [b'192.168.1.10\n', json.dumps(old).encode(), b'', b'', b'']
+        with patch.object(f, 'ssh', side_effect=replies) as remote:
+            result = f.configure_proxy_lan_access(
+                self.root, node(1), {'password': 'x', 'hostKey': 'key'},
+                {'state': 'running', 'container': 'tf-proxy'})
+        self.assertEqual({'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'}, result)
+        calls = remote.call_args_list
+        migrated = json.loads(calls[2].kwargs['input_data'])
+        self.assertEqual(['100.81.1.4', '192.168.1.10'], migrated['listenAddresses'])
+        self.assertIn('systemctl start turris-federation-proxy.service', calls[3].args[2])
+        self.assertEqual({'domain': 'proxy.cacke.internal', 'address': '192.168.1.10'},
+                         json.loads(calls[4].kwargs['input_data']))
 
     def test_duplicate_service_endpoint_requires_explicit_confirmation(self):
         first = {'id': 'ollama-main', 'name': 'Ollama', 'hostAddress': '192.168.1.20',

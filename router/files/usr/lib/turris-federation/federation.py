@@ -47,6 +47,7 @@ SERVICE_PROTOCOLS = {'tcp', 'http', 'https'}
 SERVICE_DIRECTORY_DNS_LABEL = 'zlate-stranky'
 PROXY_SERVICES = 'proxy-services.json'
 PROXY_ACCESS = 'proxy-access.json'
+PROXY_LAN_CONFIG = 'proxy-lan.json'
 SERVICE_DNS_CONFIG = 'service-dns.json'
 SERVICE_DNS_HOSTS = 'service-dns.hosts'
 SERVICE_DNS_LOADED = 'service-dns.loaded'
@@ -1240,6 +1241,28 @@ def render_service_dns_hosts(node, services, zone, router_addresses=()):
     return ('\n'.join(rows) + ('\n' if rows else '')).encode()
 
 
+def render_proxy_lan_dns_hosts(root, node, zone):
+    """Publish exact proxy aliases in local DNS, never a wildcard."""
+    value = read(Path(root) / PROXY_LAN_CONFIG)
+    if value is None:
+        return b''
+    if not isinstance(value, dict) or set(value) != {'domain', 'address'}:
+        raise ValueError('Neplatne verejne nastaveni LAN proxy.')
+    domain = validate_service_dns_zone(value['domain'])
+    zone = validate_service_dns_zone(zone)
+    if not domain.endswith('.' + zone):
+        raise ValueError('Domena LAN proxy musi byt podzonou mistni DNS zony.')
+    address = ipaddress.ip_address(value['address'])
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    if address.version != 4 or not any(address in network for network in networks):
+        raise ValueError('Adresa LAN proxy nelezi v LAN siti routeru.')
+    services = local_services(root, node)
+    access = proxy_access(root, services)
+    rows = ['%s %s.%s' % (address, service_id, domain)
+            for service_id in sorted(access)]
+    return ('\n'.join(rows) + ('\n' if rows else '')).encode()
+
+
 def local_router_lan_addresses(node):
     """Read this router's real addresses and retain only signed LAN prefixes."""
     networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
@@ -1321,6 +1344,7 @@ def reconcile_service_dns(root, node, hint_command=kresd_hint_command,
         router_addresses = local_router_lan_addresses(node)
     desired = (render_service_dns_hosts(node, local_services(root, node), configuration['zone'],
                                         router_addresses or [])
+               + render_proxy_lan_dns_hosts(root, node, configuration['zone'])
                if configuration else b'')
     loaded_path = root / SERVICE_DNS_LOADED
     loaded = loaded_path.read_bytes() if loaded_path.exists() else b''
@@ -3336,6 +3360,59 @@ rm -f server.csr server.ext
     return proxy_lxc_status(node, credentials)
 
 
+def configure_proxy_lan_access(root, node, credentials, current):
+    """Bind HTTPS to the LXC LAN address and publish exact local DNS aliases."""
+    name = current.get('container')
+    if current.get('state') != 'running' or not name:
+        raise ValueError('LAN pristup proxy vyzaduje bezici LXC.')
+    raw_addresses = ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' % (
+        shell_quote(name), shell_quote(
+            'interface="$(ip -4 route show default | awk "NR==1 {print \\$5}")"; '
+            'test -n "$interface"; ip -4 -o addr show dev "$interface" scope global | '
+            'awk "{sub(/\\/.*/, \\"\\", \\$4); print \\$4}"'))).decode().splitlines()
+    networks = [ipaddress.ip_network(cidr) for cidr in node['lanCidrs']]
+    lan_addresses = []
+    for value in raw_addresses:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        if address.version == 4 and any(address in network for network in networks):
+            lan_addresses.append(str(address))
+    if len(set(lan_addresses)) != 1:
+        raise ValueError('LXC proxy nema prave jednu IPv4 adresu v LAN routeru.')
+    lan_address = lan_addresses[0]
+    raw_config = ssh(node, credentials,
+        'lxc-attach -n %s -- cat /etc/turris-federation-proxy/config.json' %
+        shell_quote(name))
+    try:
+        config = json.loads(raw_config)
+        vpn_address = str(ipaddress.ip_address(config['listenAddress']))
+        domain = validate_service_dns_zone(config['domain'])
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+        raise ValueError('Konfigurace LXC proxy neni platna pro LAN pristup.') from error
+    dns = service_dns_configuration(root)
+    if not dns or not domain.endswith('.' + dns['zone']):
+        raise ValueError('Domena proxy musi byt podzonou zapnute mistni DNS zony.')
+    config['listenAddresses'] = [vpn_address, lan_address]
+    write_config = ('umask 077; cat > /etc/turris-federation-proxy/config.json.new && '
+                    'mv /etc/turris-federation-proxy/config.json.new '
+                    '/etc/turris-federation-proxy/config.json')
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(write_config)), input_data=encode(config) + b'\n')
+    start = ('if ! systemctl start turris-federation-proxy.service; then '
+             'systemctl status --no-pager --full turris-federation-proxy.service >&2 || true; '
+             'journalctl --no-pager -n 30 -u turris-federation-proxy.service >&2 || true; exit 1; fi')
+    ssh(node, credentials, 'lxc-attach -n %s -- sh -c %s' %
+        (shell_quote(name), shell_quote(start)))
+    public = encode({'domain': domain, 'address': lan_address}) + b'\n'
+    publish = ('umask 077; cat > %s/%s.new && mv %s/%s.new %s/%s' %
+               (REMOTE, PROXY_LAN_CONFIG, REMOTE, PROXY_LAN_CONFIG,
+                REMOTE, PROXY_LAN_CONFIG))
+    ssh(node, credentials, publish, input_data=public)
+    return {'domain': domain, 'address': lan_address}
+
+
 def update_proxy_lxc(node, credentials, expected):
     current = proxy_lxc_status(node, credentials)
     if current['state'] != 'running':
@@ -3711,7 +3788,7 @@ def controller(root, req):
                           'Podepsat a přenést konfiguraci včetně všech draftů.',
                           'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
                           'Ověřit další SSH spojení, potvrdit deploy a spustit synchronizaci.',
-                          ('Aktualizovat existující LXC proxy %s bez změny její konfigurace, certifikátů a VPN identity.' % proxy_lxc['container']
+                          ('Aktualizovat LXC proxy %s, zachovat certifikáty a VPN identitu a zapnout explicitní LAN HTTPS adresu.' % proxy_lxc['container']
                            if proxy_lxc['state'] in {'running', 'stopped'} else
                            'Vyžadovat ručně vytvořený kontejner tf-proxy s Debian Trixie; automaticky jej nevytvářet.'),
                           'Pokusit se předat nové síťové nastavení dostupným legacy peerům; jejich nedostupnost instalaci neblokuje.'],
@@ -3720,6 +3797,7 @@ def controller(root, req):
             'Zachovat nainstalovaného agenta, web a závislosti.',
             'Podepsat a přenést konfiguraci včetně všech draftů.',
             'Zálohovat UCI, zapnout 120s rollback a nastavit WireGuard, routy a firewall.',
+            'Zachovat identitu LXC proxy a promítnout její explicitní LAN HTTPS adresu do místního DNS.',
             'Ověřit další SSH spojení a potvrdit aplikování nastavení.',
             'Pokusit se předat síťové nastavení dostupným legacy peerům; jejich nedostupnost aktualizaci neblokuje.'],
             'software': [
@@ -3728,7 +3806,7 @@ def controller(root, req):
                 'Atomicky aktualizovat agenta, init službu a webové soubory přes přímou LAN.',
                 'Ověřit identitu již přijatého routeru a shodu všech komponent.',
                 'Restartovat agenta a načíst nový podepsaný provozní report.',
-                'Zkontrolovat a případně aktualizovat existující běžící LXC proxy.',
+                'Aktualizovat LXC proxy a přesné místní DNS aliasy bez routování mezi VPN a LAN.',
                 'Neměnit UCI síť, firewall, WireGuard ani podepsanou topologii.']}
         atomic(root / ('plan-' + node['id'] + '.json'), plan)
         return plan
@@ -3761,9 +3839,12 @@ def controller(root, req):
         # The forced SSH command invokes the just-installed router agent. Running
         # this earlier makes first-time proxy bootstrap fail against an old agent.
         if proxy_plan.get('needsBootstrap'):
-            bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
+            current = bootstrap_proxy_lxc(node, target, credentials, req.get('proxyBootstrap'))
         elif proxy_plan.get('state') == 'running':
-            update_proxy_lxc(node, credentials, proxy_plan)
+            current = update_proxy_lxc(node, credentials, proxy_plan)
+        else:
+            return
+        configure_proxy_lan_access(root, node, credentials, current)
     root_public = identity(root / 'root.pem')
     # Refuse to replace executable code on a router belonging to another notebook.
     check = "test ! -f %s/root.pub || test \"$(cat %s/root.pub)\" = %s" % (REMOTE, REMOTE, shell_quote(root_public.strip()))
