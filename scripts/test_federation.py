@@ -1464,9 +1464,10 @@ class FederationTests(unittest.TestCase):
         self.assertNotIn('--setup-key ', enroll)
         router_authorization = next(command for command, data, _ in calls
                                     if '/root/.ssh/authorized_keys' in command)
-        self.assertIn('/proc/$PPID/exe', router_authorization)
-        self.assertIn('sshd) directory=/root/.ssh', router_authorization)
-        self.assertIn('dropbear) directory=/etc/dropbear', router_authorization)
+        self.assertNotIn('/proc/$PPID/exe', router_authorization)
+        self.assertIn(
+            'for requested in /root/.ssh/authorized_keys /etc/dropbear/authorized_keys',
+            router_authorization)
         self.assertNotIn('install ', router_authorization)
         self.assertIn('no-port-forwarding,no-pty,command=', router_authorization)
         self.assertNotIn('restrict,command=', router_authorization)

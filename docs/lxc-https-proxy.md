@@ -41,8 +41,8 @@ printf '["neurodiary","chatbot"]' |
 ```
 
 `tcp` sluzby ani cizi/federovane katalogy vybrat nelze. LXC pouziva vlastni SSH
-klic, pripina host key a na routeru ma klic v `authorized_keys` právě aktivního
-SSH serveru (OpenSSH nebo Dropbear) s vynucenym prikazem:
+klic, pripina host key a na routeru má stejný omezený klíč ve standardním
+`authorized_keys` OpenSSH i Dropbearu s vynucenym prikazem:
 
 ```text
 no-port-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation.py proxy-manifest /etc/turris-federation" ssh-ed25519 AAAA... tf-proxy
@@ -50,9 +50,9 @@ no-port-forwarding,no-pty,command="python3 /usr/lib/turris-federation/federation
 
 Použité minimum restrikcí je kompatibilní i se staršími sestaveními Dropbearu,
 která odmítnou celý klíč při uvedení volby pro funkci vypnutou při kompilaci.
-Instalátor server odvodí z procesu obsluhujícího jeho vlastní SSH relaci, odstraní
-starou kopii stejného klíče z obou obvyklých úložišť a ještě před startem služby
-ověří přihlášení tímto klíčem přímo z LXC.
+Instalátor v obou úložištích atomicky nahradí pouze řádek stejného klíče a ještě
+před startem služby ověří přihlášení tímto klíčem přímo z LXC. Nepředpokládá
+název procesu, který SSH relaci na konkrétní verzi Turris OS obsluhuje.
 Po aktualizaci artefaktů znovu načte skutečný stav LXC; pokud se potřeba
 dokončení bootstrapu objevila až po validaci, převezme doménu z existující
 konfigurace a bootstrap dokončí bez nového NetBird setup key.

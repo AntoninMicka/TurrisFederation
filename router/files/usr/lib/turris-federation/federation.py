@@ -3352,30 +3352,18 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y netbird >&2
     key_filter = shell_quote(
         '{ keep=1; for (i=1; i<=NF; i++) if ($i==key) keep=0; if (keep) print }')
     authorization = '''set -eu
-server="$(basename "$(readlink /proc/$PPID/exe 2>/dev/null || true)")"
-case "$server" in
-  sshd) directory=/root/.ssh ;;
-  dropbear) directory=/etc/dropbear ;;
-  *) echo "Nelze urcit SSH server obsluhujici instalaci proxy." >&2; exit 1 ;;
-esac
-active="$directory/authorized_keys"
 for requested in /root/.ssh/authorized_keys /etc/dropbear/authorized_keys; do
+  directory="${requested%%/authorized_keys}"
+  mkdir -p "$directory"
+  chmod 0700 "$directory"
   file="$(readlink -f "$requested" 2>/dev/null || printf '%%s' "$requested")"
-  test -f "$file" || continue
+  touch "$file"
   awk -v key=%s %s "$file" > "$file.new"
+  printf '%%s\n' %s >> "$file.new"
   chmod 0600 "$file.new"
   mv "$file.new" "$file"
 done
-mkdir -p "$directory"
-chmod 0700 "$directory"
-file="$(readlink -f "$active" 2>/dev/null || printf '%%s' "$active")"
-touch "$file"
-awk -v key=%s %s "$file" > "$file.new"
-printf '%%s\n' %s >> "$file.new"
-chmod 0600 "$file.new"
-mv "$file.new" "$file"
-''' % (shell_quote(public_material), key_filter,
-       shell_quote(public_material), key_filter, shell_quote(forced))
+''' % (shell_quote(public_material), key_filter, shell_quote(forced))
     ssh(node, credentials, authorization)
     router_public = ssh(node, credentials, 'openssl pkey -in %s/identity.pem -pubout' % REMOTE)
     lan = direct_lan(node)
